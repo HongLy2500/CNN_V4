@@ -1,0 +1,39 @@
+# Vivado generated folders
+*.cache/
+*.hw/
+*.ip_user_files/
+*.runs/
+*.sim/
+*.gen/
+.Xil/
+xsim.dir/
+
+# Vivado generated/log files
+*.jou
+*.log
+*.str
+*.wdb
+*.pb
+*.backup.jou
+*.backup.log
+
+# Simulation/output temporary files
+*.vcd
+*.fst
+*.vpd
+*.saif
+
+# Bitstream/checkpoint generated outputs
+*.bit
+*.bin
+*.ltx
+*.dcp
+*.rpt
+*.mmi
+*.mcs
+*.prm
+
+# Windows/editor
+Thumbs.db
+Desktop.ini
+.vscode/
