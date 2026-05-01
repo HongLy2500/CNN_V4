@@ -19,7 +19,7 @@ module ofm_buffer #(
 
     // ============================================================
     // Layer configuration
-    // cfg_src_mode  = 0: write stream comes from mode 1 pooling
+    // cfg_src_mode  = 0: write stream comes from mode 1 pooling or no-pool bypass
     // cfg_src_mode  = 1: write stream comes from mode 2 pooling
     // cfg_next_mode = 0: next layer IFM uses mode 1 layout
     // cfg_next_mode = 1: next layer IFM uses mode 2 layout
@@ -35,6 +35,11 @@ module ofm_buffer #(
     input  logic                        layer_start,
     input  logic                        cfg_src_mode,
     input  logic                        cfg_next_mode,
+    // For mode-1 source writes:
+    //   cfg_pool_en = 1 -> input comes from pooling_mode1, source pack = max(Pv_cur/2, 1)
+    //   cfg_pool_en = 0 -> input comes from no-pool bypass, source pack = 1 spatial pixel/write
+    // For non-mode1 sources this signal is ignored. Treat X/Z as enabled to preserve legacy behavior.
+    input  logic                        cfg_pool_en,
     input  logic [$clog2(H_MAX+1)-1:0]  cfg_h_out,
     input  logic [$clog2(W_MAX+1)-1:0]  cfg_w_out,
     input  logic [7:0]                  cfg_f_out,
@@ -45,8 +50,9 @@ module ofm_buffer #(
 
     // ============================================================
     // Write input from mode1 pooling / compute path
-    // Lane mapping assumed from pooling_mode1:
-    //   lane = pf * (Pv_cur/2) + x
+    // Lane mapping:
+    //   pool_en=1: lane = pf * max(Pv_cur/2, 1) + x  // pooling output
+    //   pool_en=0: lane = pf                         // no-pool direct bypass, one x per write
     // ============================================================
     input  logic                        m1_wr_en,
     input  logic [15:0]                 m1_wr_filter_base,
@@ -179,13 +185,28 @@ module ofm_buffer #(
     logic [$clog2(W_MAX+1)-1:0] w_out_q;
     logic [7:0]   f_out_q;
     logic [7:0]   pv_cur_q, pf_cur_q, pv_next_q, pf_next_q;
-    logic [15:0]  src_pack_q;      // pooled Pv from current mode1 layer
+    logic [15:0]  src_pack_q;      // mode1 source pack: pooled Pv if pool_en=1, 1 if no-pool bypass
     logic [15:0]  store_pack_q;    // pack used by stored words for this layer
     logic [15:0]  stored_groups_q; // groups per row in storage
     logic [31:0]  total_pixels_q;
     logic [31:0]  pixels_written_q;
     logic         layer_write_done_q;
     logic [TAG_W-1:0] layer_tag_q;
+    // Tag of the layer that was active immediately before the current layer.
+    // Used by OFM->IFM runtime refill after layer advance: the OFM source
+    // still belongs to the previous layer while the current layer may already
+    // be writing new OFM data with layer_tag_q.
+    logic [TAG_W-1:0] prev_layer_tag_q;
+    // Geometry/layout of the previous layer's OFM storage. These values are
+    // needed for OFM->IFM runtime refill after the scheduler advances to the
+    // next layer: the current layer config may already describe the new OFM,
+    // while the stream source still belongs to the previous layer.
+    logic [$clog2(H_MAX+1)-1:0] prev_h_out_q;
+    logic [$clog2(W_MAX+1)-1:0] prev_w_out_q;
+    logic [7:0]                 prev_f_out_q;
+    logic [7:0]                 prev_pv_next_q;
+    logic [7:0]                 prev_pf_next_q;
+    logic [15:0]                prev_stored_groups_q;
     logic         error_q;
 
     assign layer_num_words      = f_out_q * h_out_q * stored_groups_q;
@@ -245,22 +266,6 @@ module ofm_buffer #(
                 ceil_div_u32 = 32'd0;
             else
                 ceil_div_u32 = (a + b - 1) / b;
-        end
-    endfunction
-
-    // Mode-1 source pack:
-    // - pool_en=1 or X/Z: pooling output packs max(Pv_cur/2, 1) spatial pixels.
-    // - pool_en=0       : no-pool bypass emits exactly 1 spatial pixel per write.
-    // Treating X/Z as enabled preserves the legacy pooling behavior.
-    function automatic [15:0] mode1_src_pack(
-        input logic [7:0] pv_cur,
-        input logic       pool_en
-    );
-        begin
-            if (pool_en === 1'b0)
-                mode1_src_pack = 16'd1;
-            else
-                mode1_src_pack = (pv_cur > 1) ? {9'd0, pv_cur[7:1]} : 16'd1;
         end
     endfunction
 
@@ -356,10 +361,6 @@ module ofm_buffer #(
         integer i_tok;
         integer pf_idx;
         integer x;
-        integer x_prev;
-        integer prev_col;
-        integer prev_grp;
-        logic   first_lane_for_word;
         integer ch;
         integer row;
         integer col;
@@ -401,6 +402,13 @@ module ofm_buffer #(
             pixels_written_q   <= '0;
             layer_write_done_q <= 1'b0;
             layer_tag_q        <= '0;
+            prev_layer_tag_q   <= '0;
+            prev_h_out_q       <= '0;
+            prev_w_out_q       <= '0;
+            prev_f_out_q       <= '0;
+            prev_pv_next_q     <= '0;
+            prev_pf_next_q     <= '0;
+            prev_stored_groups_q <= '0;
             error_q            <= 1'b0;
 
             strm_mode_q        <= STRM_IDLE;
@@ -565,24 +573,46 @@ module ofm_buffer #(
                 pf_cur_q           <= cfg_pf_cur;
                 pv_next_q          <= cfg_pv_next;
                 pf_next_q          <= cfg_pf_next;
-                src_pack_q         <= mode1_src_pack(cfg_pv_cur, cfg_pool_en);
+                // Source packing for mode-1 writes depends on whether the layer used pooling.
+                // Keep legacy behavior for pool_en=1 or X/Z; use one spatial pixel per write for no-pool bypass.
+                if (!cfg_src_mode && (cfg_pool_en === 1'b0))
+                    src_pack_q      <= 16'd1;
+                else
+                    src_pack_q      <= (cfg_pv_cur > 1) ? (cfg_pv_cur >> 1) : 16'd1;
 
-                if (!cfg_src_mode && !cfg_next_mode)
+                if (!cfg_src_mode && !cfg_next_mode) begin
+                    // Same-mode M1->M1 stores in the next layer's Pv layout, independent of source packing.
                     store_pack_q    <= (cfg_pv_next == 0) ? 16'd1 : cfg_pv_next;
-                else if (!cfg_src_mode && cfg_next_mode)
-                    store_pack_q    <= mode1_src_pack(cfg_pv_cur, cfg_pool_en);
-                else
+                end
+                else if (!cfg_src_mode && cfg_next_mode) begin
+                    // M1->M2 transition stores in source-mode layout and later repacks to PC lanes.
+                    // For no-pool bypass, the source layout is one pixel per OFM write.
+                    store_pack_q    <= (cfg_pool_en === 1'b0) ? 16'd1 : ((cfg_pv_cur > 1) ? (cfg_pv_cur >> 1) : 16'd1);
+                end
+                else begin
                     store_pack_q    <= PC;
+                end
 
-                if (!cfg_src_mode && !cfg_next_mode)
+                if (!cfg_src_mode && !cfg_next_mode) begin
                     stored_groups_q <= ceil_div_u32(cfg_w_out, (cfg_pv_next == 0) ? 1 : cfg_pv_next);
-                else if (!cfg_src_mode && cfg_next_mode)
-                    stored_groups_q <= ceil_div_u32(cfg_w_out, mode1_src_pack(cfg_pv_cur, cfg_pool_en));
-                else
+                end
+                else if (!cfg_src_mode && cfg_next_mode) begin
+                    stored_groups_q <= ceil_div_u32(cfg_w_out,
+                                                    (cfg_pool_en === 1'b0) ? 1 : ((cfg_pv_cur > 1) ? (cfg_pv_cur >> 1) : 1));
+                end
+                else begin
                     stored_groups_q <= ceil_div_u32(cfg_w_out, PC);
+                end
                 total_pixels_q     <= cfg_f_out * cfg_h_out * cfg_w_out;
                 pixels_written_q   <= '0;
                 layer_write_done_q <= 1'b0;
+                prev_layer_tag_q   <= layer_tag_q;
+                prev_h_out_q       <= h_out_q;
+                prev_w_out_q       <= w_out_q;
+                prev_f_out_q       <= f_out_q;
+                prev_pv_next_q     <= pv_next_q;
+                prev_pf_next_q     <= pf_next_q;
+                prev_stored_groups_q <= stored_groups_q;
                 layer_tag_q        <= layer_tag_q + 1'b1;
                 error_q            <= 1'b0;
 
@@ -593,8 +623,11 @@ module ofm_buffer #(
                 if (cfg_src_mode && !cfg_next_mode)
                     error_q <= 1'b1;
                 if ((cfg_h_out * ceil_div_u32(cfg_w_out,
-                        (!cfg_src_mode && !cfg_next_mode) ? ((cfg_pv_next == 0) ? 1 : cfg_pv_next) :
-                        ((!cfg_src_mode && cfg_next_mode) ? mode1_src_pack(cfg_pv_cur, cfg_pool_en) : PC))) > DEPTH)
+                        (!cfg_src_mode && !cfg_next_mode)
+                            ? ((cfg_pv_next == 0) ? 1 : cfg_pv_next)
+                            : ((!cfg_src_mode && cfg_next_mode)
+                                ? ((cfg_pool_en === 1'b0) ? 1 : ((cfg_pv_cur > 1) ? (cfg_pv_cur >> 1) : 1))
+                                : PC))) > DEPTH)
                     error_q <= 1'b1;
 
                 strm_mode_q        <= STRM_IDLE;
@@ -637,14 +670,35 @@ module ofm_buffer #(
                     end
                 end
                 else if (strm_active_q && ifm_ofm_wr_en && ifm_ofm_wr_ready) begin
+                    // Once a same-mode stream word has been accepted by IFM buffer,
+                    // the source OFM word is consumed. Clear its fill bits so the
+                    // storage location can be reused by the next layer without being
+                    // treated as still holding unconsumed previous-layer data.
+                    // M1_TO_M2 builds a word from multiple source words, so it is not
+                    // cleared here by this single-address logic.
+                    if (((strm_mode_q == STRM_M1_DIRECT) || (strm_mode_q == STRM_M2_DIRECT)) &&
+                        (stream_bank_v < C_MAX) &&
+                        (phys_addr_v < DEPTH) &&
+                        (mem_tag[stream_bank_v][phys_addr_v] == stream_src_tag_v)) begin
+                        mem_fill[stream_bank_v][phys_addr_v] <=
+                            mem_fill[stream_bank_v][phys_addr_v] & ~expected_keep_v;
+                    end
+
                     case (strm_mode_q)
                         STRM_M1_DIRECT: begin
                             integer m1_blk_span;
                             integer m1_ch_base;
                             integer m1_num_ch;
-                            m1_blk_span = (pf_next_q == 0) ? 1 : pf_next_q;
-                            m1_ch_base  = strm_m1_ch_blk_q * m1_blk_span;
-                            m1_num_ch   = (m1_ch_base >= f_out_q) ? 0 : (f_out_q - m1_ch_base);
+                            if (stream_src_tag_v == prev_layer_tag_q) begin
+                                m1_blk_span = (prev_pf_next_q == 0) ? 1 : prev_pf_next_q;
+                                m1_ch_base  = strm_m1_ch_blk_q * m1_blk_span;
+                                m1_num_ch   = (m1_ch_base >= prev_f_out_q) ? 0 : (prev_f_out_q - m1_ch_base);
+                            end
+                            else begin
+                                m1_blk_span = (pf_next_q == 0) ? 1 : pf_next_q;
+                                m1_ch_base  = strm_m1_ch_blk_q * m1_blk_span;
+                                m1_num_ch   = (m1_ch_base >= f_out_q) ? 0 : (f_out_q - m1_ch_base);
+                            end
                             if (m1_num_ch > m1_blk_span)
                                 m1_num_ch = m1_blk_span;
 
@@ -663,7 +717,10 @@ module ofm_buffer #(
                             integer m2_ch_base;
                             integer m2_num_ch;
                             m2_ch_base = strm_m2_cgrp_q * PC;
-                            m2_num_ch  = (m2_ch_base >= f_out_q) ? 0 : (f_out_q - m2_ch_base);
+                            if (stream_src_tag_v == prev_layer_tag_q)
+                                m2_num_ch  = (m2_ch_base >= prev_f_out_q) ? 0 : (prev_f_out_q - m2_ch_base);
+                            else
+                                m2_num_ch  = (m2_ch_base >= f_out_q) ? 0 : (f_out_q - m2_ch_base);
                             if (m2_num_ch > PC)
                                 m2_num_ch = PC;
 
@@ -723,27 +780,7 @@ module ofm_buffer #(
                                     px1     = sat_m1(m1_wr_data[(pf_idx * src_pack_q) + x]);
 
                                     if ((row < h_out_q) && (col < w_out_q) && (addr < DEPTH) && (lane < PV_MAX)) begin
-                                        // A single source write can update multiple lanes of the same
-                                        // stored word when src_pack_q > 1, and can also merge multiple
-                                        // source writes into one wider next-layer word when store_pack_q
-                                        // > src_pack_q.  Clear a newly-tagged word only once per target
-                                        // word in this write transaction; otherwise later lanes would be
-                                        // wiped by repeated whole-word clears scheduled in the same cycle.
-                                        first_lane_for_word = 1'b1;
-                                        for (x_prev = 0; x_prev < PTOTAL; x_prev++) begin
-                                            if (x_prev < x) begin
-                                                prev_col = m1_wr_col_base + x_prev;
-                                                prev_grp = (store_pack_q == 0) ? 0 : (prev_col / store_pack_q);
-                                                if ((x_prev < src_pack_q) &&
-                                                    (((pf_idx * src_pack_q) + x_prev) < m1_wr_count) &&
-                                                    (prev_col < w_out_q) &&
-                                                    (prev_grp == grp)) begin
-                                                    first_lane_for_word = 1'b0;
-                                                end
-                                            end
-                                        end
-
-                                        if ((mem_tag[ch][addr] !== layer_tag_q) && first_lane_for_word) begin
+                                        if (mem_tag[ch][addr] !== layer_tag_q) begin
                                             mem_tag[ch][addr]  <= layer_tag_q;
                                             mem_data[ch][addr] <= '0;
                                             mem_fill[ch][addr] <= '0;
@@ -870,11 +907,19 @@ module ofm_buffer #(
     logic               word_ready_v;
     logic [WORD_W-1:0]  stream_word_v;
     logic [BANK_W-1:0]  stream_bank_v;
+    logic [TAG_W-1:0]   stream_src_tag_v;
 
     always_comb begin
         integer m1_blk_span_v;
         integer m1_ch_base_v;
         integer m2_ch_base_v;
+        integer prev_m1_blk_span_v;
+        integer prev_m1_ch_base_v;
+        integer prev_m2_ch_base_v;
+        logic [15:0] prev_phys_grp_v;
+        logic [DEPTH_W-1:0] prev_phys_addr_v;
+        logic [PV_MAX-1:0] prev_expected_keep_v;
+        logic [BANK_W-1:0] prev_stream_bank_v;
 
         ifm_stream_busy    = strm_active_q;
         ifm_ofm_wr_en      = 1'b0;
@@ -892,6 +937,11 @@ module ofm_buffer #(
         word_ready_v    = 1'b0;
         stream_word_v   = '0;
         stream_bank_v   = '0;
+        stream_src_tag_v = layer_tag_q;
+        prev_phys_grp_v      = '0;
+        prev_phys_addr_v     = '0;
+        prev_expected_keep_v = '0;
+        prev_stream_bank_v   = '0;
 
         m1_blk_span_v = (pf_next_q == 0) ? 1 : pf_next_q;
         m1_ch_base_v  = strm_m1_ch_blk_q * m1_blk_span_v;
@@ -905,15 +955,46 @@ module ofm_buffer #(
                     phys_grp_v      = (pv_next_q == 0) ? '0 : (strm_col_base_q / pv_next_q);
                     phys_addr_v     = (abs_row_v * stored_groups_q) + phys_grp_v;
                     expected_keep_v = calc_keep_mask((pv_next_q == 0) ? 16'd1 : pv_next_q, abs_col_base_v, w_out_q);
-                    stream_bank_v = m1_ch_base_v + strm_ch_q;
+                    stream_bank_v   = m1_ch_base_v + strm_ch_q;
 
+                    // First try the current layer geometry/tag. This covers
+                    // the traditional pre-advance same-mode stream path.
                     if (((m1_ch_base_v + strm_ch_q) < f_out_q) &&
                         (abs_row_v < h_out_q) &&
-                        (phys_addr_v < DEPTH)) begin
-                        if ((mem_tag[stream_bank_v][phys_addr_v] == layer_tag_q) &&
-                            ((mem_fill[stream_bank_v][phys_addr_v] & expected_keep_v) == expected_keep_v)) begin
-                            word_ready_v  = 1'b1;
-                            stream_word_v = mem_data[stream_bank_v][phys_addr_v];
+                        (phys_addr_v < DEPTH) &&
+                        (mem_tag[stream_bank_v][phys_addr_v] == layer_tag_q) &&
+                        ((mem_fill[stream_bank_v][phys_addr_v] & expected_keep_v) == expected_keep_v)) begin
+                        word_ready_v     = 1'b1;
+                        stream_word_v    = mem_data[stream_bank_v][phys_addr_v];
+                        stream_src_tag_v = layer_tag_q;
+                    end
+                    else begin
+                        // Runtime OFM->IFM refill after the scheduler has
+                        // advanced: the source data belongs to the previous
+                        // layer and must be addressed using the previous
+                        // layer's storage geometry, not the current layer's
+                        // output geometry.
+                        prev_m1_blk_span_v   = (prev_pf_next_q == 0) ? 1 : prev_pf_next_q;
+                        prev_m1_ch_base_v    = strm_m1_ch_blk_q * prev_m1_blk_span_v;
+                        prev_phys_grp_v      = (prev_pv_next_q == 0) ? '0 : (strm_col_base_q / prev_pv_next_q);
+                        prev_phys_addr_v     = (abs_row_v * prev_stored_groups_q) + prev_phys_grp_v;
+                        prev_expected_keep_v = calc_keep_mask((prev_pv_next_q == 0) ? 16'd1 : prev_pv_next_q,
+                                                              abs_col_base_v,
+                                                              prev_w_out_q);
+                        prev_stream_bank_v   = prev_m1_ch_base_v + strm_ch_q;
+
+                        if (((prev_m1_ch_base_v + strm_ch_q) < prev_f_out_q) &&
+                            (abs_row_v < prev_h_out_q) &&
+                            (prev_phys_addr_v < DEPTH) &&
+                            (mem_tag[prev_stream_bank_v][prev_phys_addr_v] == prev_layer_tag_q) &&
+                            ((mem_fill[prev_stream_bank_v][prev_phys_addr_v] & prev_expected_keep_v) == prev_expected_keep_v)) begin
+                            word_ready_v     = 1'b1;
+                            stream_word_v    = mem_data[prev_stream_bank_v][prev_phys_addr_v];
+                            stream_src_tag_v = prev_layer_tag_q;
+                            stream_bank_v    = prev_stream_bank_v;
+                            phys_grp_v       = prev_phys_grp_v;
+                            phys_addr_v      = prev_phys_addr_v;
+                            expected_keep_v  = prev_expected_keep_v;
                         end
                     end
 
@@ -931,16 +1012,38 @@ module ofm_buffer #(
                     phys_grp_v      = strm_col_base_q / PC;
                     phys_addr_v     = (abs_row_v * stored_groups_q) + phys_grp_v;
                     expected_keep_v = calc_keep_mask(PC, strm_col_base_q, w_out_q);
-                    stream_bank_v = m2_ch_base_v + strm_ch_q;
+                    stream_bank_v   = m2_ch_base_v + strm_ch_q;
 
                     if (((m2_ch_base_v + strm_ch_q) < f_out_q) &&
                         (strm_row_q < strm_num_rows_q) &&
                         (abs_row_v < h_out_q) &&
-                        (phys_addr_v < DEPTH)) begin
-                        if ((mem_tag[stream_bank_v][phys_addr_v] == layer_tag_q) &&
-                            ((mem_fill[stream_bank_v][phys_addr_v] & expected_keep_v) == expected_keep_v)) begin
-                            word_ready_v  = 1'b1;
-                            stream_word_v = mem_data[stream_bank_v][phys_addr_v];
+                        (phys_addr_v < DEPTH) &&
+                        (mem_tag[stream_bank_v][phys_addr_v] == layer_tag_q) &&
+                        ((mem_fill[stream_bank_v][phys_addr_v] & expected_keep_v) == expected_keep_v)) begin
+                        word_ready_v     = 1'b1;
+                        stream_word_v    = mem_data[stream_bank_v][phys_addr_v];
+                        stream_src_tag_v = layer_tag_q;
+                    end
+                    else begin
+                        prev_m2_ch_base_v    = strm_m2_cgrp_q * PC;
+                        prev_phys_grp_v      = strm_col_base_q / PC;
+                        prev_phys_addr_v     = (abs_row_v * prev_stored_groups_q) + prev_phys_grp_v;
+                        prev_expected_keep_v = calc_keep_mask(PC, strm_col_base_q, prev_w_out_q);
+                        prev_stream_bank_v   = prev_m2_ch_base_v + strm_ch_q;
+
+                        if (((prev_m2_ch_base_v + strm_ch_q) < prev_f_out_q) &&
+                            (strm_row_q < strm_num_rows_q) &&
+                            (abs_row_v < prev_h_out_q) &&
+                            (prev_phys_addr_v < DEPTH) &&
+                            (mem_tag[prev_stream_bank_v][prev_phys_addr_v] == prev_layer_tag_q) &&
+                            ((mem_fill[prev_stream_bank_v][prev_phys_addr_v] & prev_expected_keep_v) == prev_expected_keep_v)) begin
+                            word_ready_v     = 1'b1;
+                            stream_word_v    = mem_data[prev_stream_bank_v][prev_phys_addr_v];
+                            stream_src_tag_v = prev_layer_tag_q;
+                            stream_bank_v    = prev_stream_bank_v;
+                            phys_grp_v       = prev_phys_grp_v;
+                            phys_addr_v      = prev_phys_addr_v;
+                            expected_keep_v  = prev_expected_keep_v;
                         end
                     end
 
