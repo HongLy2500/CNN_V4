@@ -1,89 +1,105 @@
 `timescale 1ns/1ps
 `include "cnn_ddr_defs.svh"
 
-module tb_cnn_top_9layer_m1_efficientnet_like_prefix_k3only_dyn_pvpf_front_pv8_back_pf8;
+module tb_cnn_top_9layer_m1_dcp_efficientnet_b0_tablevi_fullscale;
   import cnn_layer_desc_pkg::*;
 
   localparam int DATA_W=8, PSUM_W=32;
-  localparam int PTOTAL=32, PV_MAX=8, PF_MAX=8;
-  localparam int PC_MODE2=4, PF_MODE2=2;
-  localparam int C_MAX=16, F_MAX=16, W_MAX=96, H_MAX=96, HT=4, K_MAX=3;
-  localparam int WGT_DEPTH=4096, OFM_BANK_DEPTH=H_MAX*W_MAX;
+  // DCP-CNN Table VI EfficientNet mode-1 parallelism uses Pv*Pf = 2048.
+  localparam int PTOTAL=2048, PV_MAX=128, PF_MAX=128;
+  // Table VI reports the mode-2 point as (Pc, Pf) = (32, 64) after transition L=10.
+  localparam int PC_MODE2=32, PF_MODE2=64;
+  // EfficientNet-B0 mode-1 prefix reaches channels up to 192 in the table-derived channel pattern.
+  localparam int C_MAX=192, F_MAX=192, W_MAX=224, H_MAX=224, HT=4, K_MAX=3;
+  // Row-aligned OFM storage does not need W_MAX physical words per row.
+  // For the Table-VI Mode-1 prefix, min Pv_next is 16, so max groups/row is ceil(224/16)=14.
+  // Use 16 as a safe power-of-two physical row stride to avoid cross-layer aliasing
+  // while keeping XSim memory far below the W_MAX-stride version.
+  localparam int OFM_ROW_STRIDE=16;
+  localparam int WGT_DEPTH=8192, OFM_BANK_DEPTH=H_MAX*OFM_ROW_STRIDE;
   localparam int OFM_LINEAR_DEPTH=C_MAX*OFM_BANK_DEPTH, CFG_DEPTH=16;
   localparam int DDR_ADDR_W=`CNN_DDR_ADDR_W, DDR_WORD_W=PV_MAX*DATA_W;
   localparam int MEM_DEPTH=(`DDR_RSVD_BASE + `DDR_RSVD_SIZE);
-  localparam int CLK_PERIOD_NS=10, MAX_CYCLES=30000000;
+  localparam int CLK_PERIOD_NS=10, MAX_CYCLES=300000000;
 
-  // EfficientNet-like mode-1 prefix benchmark inspired by DCP-CNN Table VI (EfficientNet transition L=10).
-  // It is not exact EfficientNet-B0: depthwise/SE/skip ops are omitted because current RTL supports standard conv+ReLU+optional 2x2 pool.
-  // The goal is to stress the first 9 mode-1 layers: RGB input, all standard conv kernels use K=3, many OFM->IFM handoffs, partial C/F groups, and H/W tiling.
-  // L0: 96x96x3 -> conv 94x94x8 K=3 -> pool 47x47x8
-  // L1: 47x47x8 -> conv 45x45x8 K=3 -> no pool
-  // L2: 45x45x8 -> conv 43x43x10 K=3 -> pool 21x21x10
-  // L3: 21x21x10 -> conv 19x19x12 K=3 -> no pool
-  // L4: 19x19x12 -> conv 17x17x13 K=3 -> no pool
-  // L5: 17x17x13 -> conv 15x15x15 K=3 -> pool 7x7x15
-  // L6: 7x7x15 -> conv 5x5x16 K=3 -> no pool
-  // L7: 5x5x16 -> conv 3x3x16 K=3 -> no pool
-  // L8: 3x3x16 -> conv 1x1x11 K=3 -> no pool 1x1x11
+  // DCP-CNN Table VI EfficientNet-B0 mode-1 prefix stress test.
+  // Table VI gives EfficientNet transition L = 10 and mode-1 parallelism:
+  //   Pv^1~9 = [128, 128, 64, ..., 64, 32, ..., 16]
+  //   Pf^1~9 = [ 16,  16, 32, ..., 32, 64, ...,128]
+  //   (Pc, Pf) after transition = (32, 64)
+  //
+  // The RTL currently implements standard valid 3x3 conv + ReLU + optional 2x2 pooling,
+  // not full EfficientNet MBConv/depthwise/SE/skip/padding. Therefore this test keeps
+  // the DCP-CNN Table-VI input size/channel trend/parallelism, while emulating stride-2
+  // reductions with pool_en=1 where needed.
+  //
+  // L0: 224x224x3  -> conv 222x222x32 K=3 -> pool 111x111x32
+  // L1: 111x111x32 -> conv 109x109x16 K=3 -> no pool
+  // L2: 109x109x16 -> conv 107x107x24 K=3 -> pool 53x53x24
+  // L3: 53x53x24   -> conv 51x51x24  K=3 -> no pool
+  // L4: 51x51x24   -> conv 49x49x40  K=3 -> pool 24x24x40
+  // L5: 24x24x40   -> conv 22x22x40  K=3 -> no pool
+  // L6: 22x22x40   -> conv 20x20x80  K=3 -> pool 10x10x80
+  // L7: 10x10x80   -> conv 8x8x80    K=3 -> no pool
+  // L8: 8x8x80     -> conv 6x6x192   K=3 -> no pool
 
-  localparam int L0_H_IN=96, L0_W_IN=96, L0_C_IN=3, L0_F_OUT=8, L0_K=3, L0_POOL_EN=1;
+  localparam int L0_H_IN=224, L0_W_IN=224, L0_C_IN=3,  L0_F_OUT=32,  L0_K=3, L0_POOL_EN=1;
   localparam int L0_H_CONV_OUT=L0_H_IN-L0_K+1, L0_W_CONV_OUT=L0_W_IN-L0_K+1;
   localparam int L0_H_OUT=(L0_POOL_EN ? (L0_H_CONV_OUT/2) : L0_H_CONV_OUT);
   localparam int L0_W_OUT=(L0_POOL_EN ? (L0_W_CONV_OUT/2) : L0_W_CONV_OUT);
 
-  localparam int L1_H_IN=47, L1_W_IN=47, L1_C_IN=8, L1_F_OUT=8, L1_K=3, L1_POOL_EN=0;
+  localparam int L1_H_IN=L0_H_OUT, L1_W_IN=L0_W_OUT, L1_C_IN=L0_F_OUT, L1_F_OUT=16, L1_K=3, L1_POOL_EN=0;
   localparam int L1_H_CONV_OUT=L1_H_IN-L1_K+1, L1_W_CONV_OUT=L1_W_IN-L1_K+1;
   localparam int L1_H_OUT=(L1_POOL_EN ? (L1_H_CONV_OUT/2) : L1_H_CONV_OUT);
   localparam int L1_W_OUT=(L1_POOL_EN ? (L1_W_CONV_OUT/2) : L1_W_CONV_OUT);
 
-  localparam int L2_H_IN=45, L2_W_IN=45, L2_C_IN=8, L2_F_OUT=10, L2_K=3, L2_POOL_EN=1;
+  localparam int L2_H_IN=L1_H_OUT, L2_W_IN=L1_W_OUT, L2_C_IN=L1_F_OUT, L2_F_OUT=24, L2_K=3, L2_POOL_EN=1;
   localparam int L2_H_CONV_OUT=L2_H_IN-L2_K+1, L2_W_CONV_OUT=L2_W_IN-L2_K+1;
   localparam int L2_H_OUT=(L2_POOL_EN ? (L2_H_CONV_OUT/2) : L2_H_CONV_OUT);
   localparam int L2_W_OUT=(L2_POOL_EN ? (L2_W_CONV_OUT/2) : L2_W_CONV_OUT);
 
-  localparam int L3_H_IN=21, L3_W_IN=21, L3_C_IN=10, L3_F_OUT=12, L3_K=3, L3_POOL_EN=0;
+  localparam int L3_H_IN=L2_H_OUT, L3_W_IN=L2_W_OUT, L3_C_IN=L2_F_OUT, L3_F_OUT=24, L3_K=3, L3_POOL_EN=0;
   localparam int L3_H_CONV_OUT=L3_H_IN-L3_K+1, L3_W_CONV_OUT=L3_W_IN-L3_K+1;
   localparam int L3_H_OUT=(L3_POOL_EN ? (L3_H_CONV_OUT/2) : L3_H_CONV_OUT);
   localparam int L3_W_OUT=(L3_POOL_EN ? (L3_W_CONV_OUT/2) : L3_W_CONV_OUT);
 
-  localparam int L4_H_IN=19, L4_W_IN=19, L4_C_IN=12, L4_F_OUT=13, L4_K=3, L4_POOL_EN=0;
+  localparam int L4_H_IN=L3_H_OUT, L4_W_IN=L3_W_OUT, L4_C_IN=L3_F_OUT, L4_F_OUT=40, L4_K=3, L4_POOL_EN=1;
   localparam int L4_H_CONV_OUT=L4_H_IN-L4_K+1, L4_W_CONV_OUT=L4_W_IN-L4_K+1;
   localparam int L4_H_OUT=(L4_POOL_EN ? (L4_H_CONV_OUT/2) : L4_H_CONV_OUT);
   localparam int L4_W_OUT=(L4_POOL_EN ? (L4_W_CONV_OUT/2) : L4_W_CONV_OUT);
 
-  localparam int L5_H_IN=17, L5_W_IN=17, L5_C_IN=13, L5_F_OUT=15, L5_K=3, L5_POOL_EN=1;
+  localparam int L5_H_IN=L4_H_OUT, L5_W_IN=L4_W_OUT, L5_C_IN=L4_F_OUT, L5_F_OUT=40, L5_K=3, L5_POOL_EN=0;
   localparam int L5_H_CONV_OUT=L5_H_IN-L5_K+1, L5_W_CONV_OUT=L5_W_IN-L5_K+1;
   localparam int L5_H_OUT=(L5_POOL_EN ? (L5_H_CONV_OUT/2) : L5_H_CONV_OUT);
   localparam int L5_W_OUT=(L5_POOL_EN ? (L5_W_CONV_OUT/2) : L5_W_CONV_OUT);
 
-  localparam int L6_H_IN=7, L6_W_IN=7, L6_C_IN=15, L6_F_OUT=16, L6_K=3, L6_POOL_EN=0;
+  localparam int L6_H_IN=L5_H_OUT, L6_W_IN=L5_W_OUT, L6_C_IN=L5_F_OUT, L6_F_OUT=80, L6_K=3, L6_POOL_EN=1;
   localparam int L6_H_CONV_OUT=L6_H_IN-L6_K+1, L6_W_CONV_OUT=L6_W_IN-L6_K+1;
   localparam int L6_H_OUT=(L6_POOL_EN ? (L6_H_CONV_OUT/2) : L6_H_CONV_OUT);
   localparam int L6_W_OUT=(L6_POOL_EN ? (L6_W_CONV_OUT/2) : L6_W_CONV_OUT);
 
-  localparam int L7_H_IN=5, L7_W_IN=5, L7_C_IN=16, L7_F_OUT=16, L7_K=3, L7_POOL_EN=0;
+  localparam int L7_H_IN=L6_H_OUT, L7_W_IN=L6_W_OUT, L7_C_IN=L6_F_OUT, L7_F_OUT=80, L7_K=3, L7_POOL_EN=0;
   localparam int L7_H_CONV_OUT=L7_H_IN-L7_K+1, L7_W_CONV_OUT=L7_W_IN-L7_K+1;
   localparam int L7_H_OUT=(L7_POOL_EN ? (L7_H_CONV_OUT/2) : L7_H_CONV_OUT);
   localparam int L7_W_OUT=(L7_POOL_EN ? (L7_W_CONV_OUT/2) : L7_W_CONV_OUT);
 
-  localparam int L8_H_IN=3, L8_W_IN=3, L8_C_IN=16, L8_F_OUT=11, L8_K=3, L8_POOL_EN=0;
+  localparam int L8_H_IN=L7_H_OUT, L8_W_IN=L7_W_OUT, L8_C_IN=L7_F_OUT, L8_F_OUT=192, L8_K=3, L8_POOL_EN=0;
   localparam int L8_H_CONV_OUT=L8_H_IN-L8_K+1, L8_W_CONV_OUT=L8_W_IN-L8_K+1;
   localparam int L8_H_OUT=(L8_POOL_EN ? (L8_H_CONV_OUT/2) : L8_H_CONV_OUT);
   localparam int L8_W_OUT=(L8_POOL_EN ? (L8_W_CONV_OUT/2) : L8_W_CONV_OUT);
 
-  // Runtime mode-1 parallelism changes by network depth while keeping Pv*Pf = PTOTAL = 32.
-  // Early layers use higher pixel parallelism; later layers use higher filter parallelism,
-  // matching the expected trend that spatial size shrinks while filter/channel pressure grows.
-  localparam int L0_PV=8, L0_PF=4;
-  localparam int L1_PV=8, L1_PF=4;
-  localparam int L2_PV=8, L2_PF=4;
-  localparam int L3_PV=8, L3_PF=4;
-  localparam int L4_PV=4, L4_PF=8;
-  localparam int L5_PV=4, L5_PF=8;
-  localparam int L6_PV=4, L6_PF=8;
-  localparam int L7_PV=4, L7_PF=8;
-  localparam int L8_PV=4, L8_PF=8;
+  // Runtime mode-1 parallelism from DCP-CNN Table VI.
+  // The table compresses repeated entries with ellipses; this expansion keeps Pv*Pf=2048
+  // and follows the depth trend exactly: 128/16 -> 64/32 -> 32/64 -> 16/128.
+  localparam int L0_PV=128, L0_PF=16;
+  localparam int L1_PV=128, L1_PF=16;
+  localparam int L2_PV=64,  L2_PF=32;
+  localparam int L3_PV=64,  L3_PF=32;
+  localparam int L4_PV=64,  L4_PF=32;
+  localparam int L5_PV=32,  L5_PF=64;
+  localparam int L6_PV=32,  L6_PF=64;
+  localparam int L7_PV=32,  L7_PF=64;
+  localparam int L8_PV=16,  L8_PF=128;
 
   localparam int L0_IFM_WORDS_PER_ROW=(L0_W_IN+L0_PV-1)/L0_PV;
   localparam int L0_EXPECT_IFM_DDR_WRITES=L0_C_IN*L0_H_IN*L0_IFM_WORDS_PER_ROW;
@@ -200,42 +216,8 @@ module tb_cnn_top_9layer_m1_efficientnet_like_prefix_k3only_dyn_pvpf_front_pv8_b
   integer ofm_ifm_stream_start_count, ofm_ifm_stream_done_count;
   logic seen_m1_start_q;
 
-  logic signed [DATA_W-1:0] l0_ifm [0:L0_C_IN-1][0:L0_H_IN-1][0:L0_W_IN-1];
-  logic signed [DATA_W-1:0] l0_wgt [0:L0_F_OUT-1][0:L0_C_IN-1][0:L0_K-1][0:L0_K-1];
-  integer signed l0_relu [0:L0_F_OUT-1][0:L0_H_CONV_OUT-1][0:L0_W_CONV_OUT-1];
-  logic signed [DATA_W-1:0] l0_out [0:L0_F_OUT-1][0:L0_H_OUT-1][0:L0_W_OUT-1];
-
-  logic signed [DATA_W-1:0] l1_wgt [0:L1_F_OUT-1][0:L1_C_IN-1][0:L1_K-1][0:L1_K-1];
-  integer signed l1_relu [0:L1_F_OUT-1][0:L1_H_CONV_OUT-1][0:L1_W_CONV_OUT-1];
-  logic signed [DATA_W-1:0] l1_out [0:L1_F_OUT-1][0:L1_H_OUT-1][0:L1_W_OUT-1];
-
-  logic signed [DATA_W-1:0] l2_wgt [0:L2_F_OUT-1][0:L2_C_IN-1][0:L2_K-1][0:L2_K-1];
-  integer signed l2_relu [0:L2_F_OUT-1][0:L2_H_CONV_OUT-1][0:L2_W_CONV_OUT-1];
-  logic signed [DATA_W-1:0] l2_out [0:L2_F_OUT-1][0:L2_H_OUT-1][0:L2_W_OUT-1];
-
-  logic signed [DATA_W-1:0] l3_wgt [0:L3_F_OUT-1][0:L3_C_IN-1][0:L3_K-1][0:L3_K-1];
-  integer signed l3_relu [0:L3_F_OUT-1][0:L3_H_CONV_OUT-1][0:L3_W_CONV_OUT-1];
-  logic signed [DATA_W-1:0] l3_out [0:L3_F_OUT-1][0:L3_H_OUT-1][0:L3_W_OUT-1];
-
-  logic signed [DATA_W-1:0] l4_wgt [0:L4_F_OUT-1][0:L4_C_IN-1][0:L4_K-1][0:L4_K-1];
-  integer signed l4_relu [0:L4_F_OUT-1][0:L4_H_CONV_OUT-1][0:L4_W_CONV_OUT-1];
-  logic signed [DATA_W-1:0] l4_out [0:L4_F_OUT-1][0:L4_H_OUT-1][0:L4_W_OUT-1];
-
-  logic signed [DATA_W-1:0] l5_wgt [0:L5_F_OUT-1][0:L5_C_IN-1][0:L5_K-1][0:L5_K-1];
-  integer signed l5_relu [0:L5_F_OUT-1][0:L5_H_CONV_OUT-1][0:L5_W_CONV_OUT-1];
-  logic signed [DATA_W-1:0] l5_out [0:L5_F_OUT-1][0:L5_H_OUT-1][0:L5_W_OUT-1];
-
-  logic signed [DATA_W-1:0] l6_wgt [0:L6_F_OUT-1][0:L6_C_IN-1][0:L6_K-1][0:L6_K-1];
-  integer signed l6_relu [0:L6_F_OUT-1][0:L6_H_CONV_OUT-1][0:L6_W_CONV_OUT-1];
-  logic signed [DATA_W-1:0] l6_out [0:L6_F_OUT-1][0:L6_H_OUT-1][0:L6_W_OUT-1];
-
-  logic signed [DATA_W-1:0] l7_wgt [0:L7_F_OUT-1][0:L7_C_IN-1][0:L7_K-1][0:L7_K-1];
-  integer signed l7_relu [0:L7_F_OUT-1][0:L7_H_CONV_OUT-1][0:L7_W_CONV_OUT-1];
-  logic signed [DATA_W-1:0] l7_out [0:L7_F_OUT-1][0:L7_H_OUT-1][0:L7_W_OUT-1];
-
-  logic signed [DATA_W-1:0] l8_wgt [0:L8_F_OUT-1][0:L8_C_IN-1][0:L8_K-1][0:L8_K-1];
-  integer signed l8_relu [0:L8_F_OUT-1][0:L8_H_CONV_OUT-1][0:L8_W_CONV_OUT-1];
-  logic signed [DATA_W-1:0] l8_out [0:L8_F_OUT-1][0:L8_H_OUT-1][0:L8_W_OUT-1];
+  // Full-scale no-golden/deadlock test mode: do not allocate large golden feature-map arrays.
+  // IFM and weight data are generated procedurally when DDR is initialized.
 
 
   cnn_top #(
@@ -266,67 +248,9 @@ module tb_cnn_top_9layer_m1_efficientnet_like_prefix_k3only_dyn_pvpf_front_pv8_b
   initial clk=1'b0;
   always #(CLK_PERIOD_NS/2) clk=~clk;
   
-
-logic [31:0] dbg_l3_cnt;
-
-always_ff @(posedge clk) begin
-  if (!rst_n) begin
-    dbg_l3_cnt <= 32'd0;
-  end else if (dut.dbg_layer_idx == 3 && dut.busy && !dut.done && !dut.error) begin
-    dbg_l3_cnt <= dbg_l3_cnt + 1'b1;
-
-    if ((dbg_l3_cnt < 50) ||
-        (dbg_l3_cnt % 10000 == 0) ||
-        dut.u_control_unit_top.ofm_ifm_stream_start ||
-        dut.u_control_unit_top.ofm_ifm_stream_done ||
-        dut.u_control_unit_top.m1_free_valid ||
-        dut.u_control_unit_top.ofm_layer_write_done) begin
-
-      $display("DBG_L3 t=%0t cnt=%0d state=%0d layer=%0d m1_busy=%0b m1_done=%0b m1_step=%0b out_row=%0d out_col=%0d fgrp=%0d free=%0b free_slot=%0d free_row=%0d ofm2ifm_active=%0b init_ready=%0b in_dst=%0b runtime_pending=%0b runtime_hold=%0b next_row=%0d dst_h=%0d row=%0d col_blk=%0d ch_blk=%0d ncol=%0d nch=%0d start=%0b stream_busy_q=%0b ofm_busy=%0b stream_done=%0b ofm_wr_done=%0b ofm_pixels=%0d/%0d",
-  $time,
-  dbg_l3_cnt,
-  dut.u_control_unit_top.u_global_scheduler_fsm.state_q,
-  dut.dbg_layer_idx,
-
-  dut.u_mode1_compute_top.busy,
-  dut.u_mode1_compute_top.done,
-  dut.u_mode1_compute_top.ce_step_en_s,
-  dut.u_mode1_compute_top.out_row,
-  dut.u_mode1_compute_top.out_col,
-  dut.u_mode1_compute_top.f_group,
-
-  dut.u_control_unit_top.m1_free_valid,
-  dut.u_control_unit_top.m1_free_row_slot_l,
-  dut.u_control_unit_top.m1_free_row_g,
-
-  dut.u_control_unit_top.ofm2ifm_active_q,
-  dut.u_control_unit_top.ofm2ifm_initial_ready_q,
-  dut.u_control_unit_top.ofm2ifm_in_dst_layer_s,
-  dut.u_control_unit_top.ofm2ifm_runtime_pending_q,
-  dut.u_control_unit_top.ofm2ifm_runtime_hold_s,
-
-  dut.u_control_unit_top.ofm2ifm_next_row_q,
-  dut.u_control_unit_top.ofm2ifm_dst_h_eff_s,
-  dut.u_control_unit_top.ofm2ifm_row_q,
-  dut.u_control_unit_top.ofm2ifm_col_blk_q,
-  dut.u_control_unit_top.ofm2ifm_ch_blk_q,
-  dut.u_control_unit_top.ofm2ifm_num_col_blks_q,
-  dut.u_control_unit_top.ofm2ifm_num_ch_blks_q,
-
-  dut.u_control_unit_top.ofm_ifm_stream_start,
-  dut.u_control_unit_top.ofm2ifm_stream_busy_q,
-  dut.u_control_unit_top.ofm_ifm_stream_busy,
-  dut.u_control_unit_top.ofm_ifm_stream_done,
-
-  dut.u_control_unit_top.ofm_layer_write_done,
-  dut.u_ofm_buffer.layer_pixels_written,
-  dut.u_ofm_buffer.layer_num_pixels
-);
-    end
-  end else begin
-    dbg_l3_cnt <= 32'd0;
-  end
-end
+  // Removed stale one-shot DBG_STUCK_OFM2IFM block that was accidentally
+  // placed at module scope. A procedural debug block may be added later if
+  // needed, but the full-scale DCP EfficientNet test should run to completion.
 
 logic        dbg_l0_done_q;
 logic [31:0] dbg_post_l0_cnt;
@@ -408,15 +332,12 @@ end
 
 // ============================================================
 // DEBUG L0 -> L1 OFM->IFM handoff
-// Expected initial stream before entering L1:
-//   L1 IFM = 47x47x8
-//   HT = 4
-//   Pv_dest = 8
-//   Pf_dest = 4
-//   commands = 4 * ceil(47/8) * ceil(8/4) = 48
+// Expected initial stream before entering L1 is computed from:
+//   HT * ceil(L1_W_IN/L1_PV) * ceil(L1_C_IN/L1_PF)
+// For this Table-VI expansion: HT=4, L1_W=111, L1_C=32, Pv=128, Pf=16 => 8 commands.
 // ============================================================
 
-localparam int DBG_L01_EXP_INITIAL_STREAM = 48;
+localparam int DBG_L01_EXP_INITIAL_STREAM = HT * ((L1_W_IN+L1_PV-1)/L1_PV) * ((L1_C_IN+L1_PF-1)/L1_PF);
 
 integer dbg_l01_stream_start_count;
 integer dbg_l01_stream_done_count;
@@ -482,24 +403,14 @@ final begin
 end
 
 // ============================================================
-// DEBUG L0: dynamic Pv/Pf layer-0 stuck diagnosis
-// Target test:
-//   L0: 96x96x3 -> conv 94x94x8 K=3 pool_en=1 -> pool 47x47x8
-//   Pv=8, Pf=4, PTOTAL=32
-//
-// Expected L0 OFM write pulses:
-//   pooled H = 47
-//   pooled W = 47
-//   write col pack = Pv/2 = 4
-//   filter groups = ceil(8/4) = 2
-//   pulses = 47 * ceil(47/4) * 2 = 47 * 12 * 2 = 1128
-//
-// Expected L0 valid output elements:
-//   47 * 47 * 8 = 17672
+// DEBUG L0: dynamic Pv/Pf layer-0 stuck diagnosis.
+// Expected pulse/element counts are computed from the L0 parameters below,
+// because this full-scale Table-VI test uses 224x224x3 and Pv/Pf=128/16.
 // ============================================================
 
-localparam int DBG_L0_EXP_OFM_WRITE_PULSES = 1128;
-localparam int DBG_L0_EXP_VALID_ELEMS      = 17672;
+localparam int DBG_L0_SRC_PACK = (L0_POOL_EN ? (L0_PV/2) : 1);
+localparam int DBG_L0_EXP_OFM_WRITE_PULSES = L0_H_OUT * ((L0_W_OUT+DBG_L0_SRC_PACK-1)/DBG_L0_SRC_PACK) * ((L0_F_OUT+L0_PF-1)/L0_PF);
+localparam int DBG_L0_EXP_VALID_ELEMS      = L0_H_OUT * L0_W_OUT * L0_F_OUT;
 
 integer dbg_l0_cycle_count;
 integer dbg_l0_ifm_dma_write_count;
@@ -699,320 +610,41 @@ end
     end
   endfunction
 
-  task automatic build_golden;
-    integer c,r,x,f,ky,kx,pr,pc,dy,dx,sum,max_v;
+
+
+  function automatic logic signed [DATA_W-1:0] gen_l0_ifm(
+    input integer c,
+    input integer r,
+    input integer x
+  );
     begin
-      for (c=0;c<L0_C_IN;c=c+1)
-        for (r=0;r<L0_H_IN;r=r+1)
-          for (x=0;x<L0_W_IN;x=x+1)
-            l0_ifm[c][r][x] = $signed(((c*7 + r*3 + x*5 + (r*x)%11) % 7) - 3);
+      gen_l0_ifm = $signed(((c*7 + r*3 + x*5 + (r*x)%11) % 7) - 3);
+    end
+  endfunction
 
-      for (f=0;f<L0_F_OUT;f=f+1)
-        for (c=0;c<L0_C_IN;c=c+1)
-          for (ky=0;ky<L0_K;ky=ky+1)
-            for (kx=0;kx<L0_K;kx=kx+1)
-              l0_wgt[f][c][ky][kx] = $signed(((f*7 + c*3 + ky*5 + kx*11 + 1) % 3) - 1);
-
-      for (f=0;f<L0_F_OUT;f=f+1)
-        for (r=0;r<L0_H_CONV_OUT;r=r+1)
-          for (x=0;x<L0_W_CONV_OUT;x=x+1) begin
-            sum=0;
-            for (c=0;c<L0_C_IN;c=c+1)
-              for (ky=0;ky<L0_K;ky=ky+1)
-                for (kx=0;kx<L0_K;kx=kx+1)
-                  sum += $signed(l0_ifm[c][r+ky][x+kx]) * $signed(l0_wgt[f][c][ky][kx]);
-            l0_relu[f][r][x] = (sum > 0) ? sum : 0;
-          end
-
-      if (L0_POOL_EN) begin
-        for (f=0;f<L0_F_OUT;f=f+1)
-          for (pr=0;pr<L0_H_OUT;pr=pr+1)
-            for (pc=0;pc<L0_W_OUT;pc=pc+1) begin
-              max_v = l0_relu[f][2*pr][2*pc];
-              for (dy=0;dy<2;dy=dy+1)
-                for (dx=0;dx<2;dx=dx+1)
-                  if (l0_relu[f][2*pr+dy][2*pc+dx] > max_v) max_v = l0_relu[f][2*pr+dy][2*pc+dx];
-              l0_out[f][pr][pc] = sat_to_i8(max_v);
-            end
-      end else begin
-        for (f=0;f<L0_F_OUT;f=f+1)
-          for (r=0;r<L0_H_OUT;r=r+1)
-            for (x=0;x<L0_W_OUT;x=x+1)
-              l0_out[f][r][x] = sat_to_i8(l0_relu[f][r][x]);
-      end
-
-      for (f=0;f<L1_F_OUT;f=f+1)
-        for (c=0;c<L1_C_IN;c=c+1)
-          for (ky=0;ky<L1_K;ky=ky+1)
-            for (kx=0;kx<L1_K;kx=kx+1)
-              l1_wgt[f][c][ky][kx] = $signed(((f*9 + c*5 + ky*6 + kx*12 + 2) % 3) - 1);
-
-      for (f=0;f<L1_F_OUT;f=f+1)
-        for (r=0;r<L1_H_CONV_OUT;r=r+1)
-          for (x=0;x<L1_W_CONV_OUT;x=x+1) begin
-            sum=0;
-            for (c=0;c<L1_C_IN;c=c+1)
-              for (ky=0;ky<L1_K;ky=ky+1)
-                for (kx=0;kx<L1_K;kx=kx+1)
-                  sum += $signed(l0_out[c][r+ky][x+kx]) * $signed(l1_wgt[f][c][ky][kx]);
-            l1_relu[f][r][x] = (sum > 0) ? sum : 0;
-          end
-
-      if (L1_POOL_EN) begin
-        for (f=0;f<L1_F_OUT;f=f+1)
-          for (pr=0;pr<L1_H_OUT;pr=pr+1)
-            for (pc=0;pc<L1_W_OUT;pc=pc+1) begin
-              max_v = l1_relu[f][2*pr][2*pc];
-              for (dy=0;dy<2;dy=dy+1)
-                for (dx=0;dx<2;dx=dx+1)
-                  if (l1_relu[f][2*pr+dy][2*pc+dx] > max_v) max_v = l1_relu[f][2*pr+dy][2*pc+dx];
-              l1_out[f][pr][pc] = sat_to_i8(max_v);
-            end
-      end else begin
-        for (f=0;f<L1_F_OUT;f=f+1)
-          for (r=0;r<L1_H_OUT;r=r+1)
-            for (x=0;x<L1_W_OUT;x=x+1)
-              l1_out[f][r][x] = sat_to_i8(l1_relu[f][r][x]);
-      end
-
-      for (f=0;f<L2_F_OUT;f=f+1)
-        for (c=0;c<L2_C_IN;c=c+1)
-          for (ky=0;ky<L2_K;ky=ky+1)
-            for (kx=0;kx<L2_K;kx=kx+1)
-              l2_wgt[f][c][ky][kx] = $signed(((f*11 + c*7 + ky*7 + kx*13 + 3) % 3) - 1);
-
-      for (f=0;f<L2_F_OUT;f=f+1)
-        for (r=0;r<L2_H_CONV_OUT;r=r+1)
-          for (x=0;x<L2_W_CONV_OUT;x=x+1) begin
-            sum=0;
-            for (c=0;c<L2_C_IN;c=c+1)
-              for (ky=0;ky<L2_K;ky=ky+1)
-                for (kx=0;kx<L2_K;kx=kx+1)
-                  sum += $signed(l1_out[c][r+ky][x+kx]) * $signed(l2_wgt[f][c][ky][kx]);
-            l2_relu[f][r][x] = (sum > 0) ? sum : 0;
-          end
-
-      if (L2_POOL_EN) begin
-        for (f=0;f<L2_F_OUT;f=f+1)
-          for (pr=0;pr<L2_H_OUT;pr=pr+1)
-            for (pc=0;pc<L2_W_OUT;pc=pc+1) begin
-              max_v = l2_relu[f][2*pr][2*pc];
-              for (dy=0;dy<2;dy=dy+1)
-                for (dx=0;dx<2;dx=dx+1)
-                  if (l2_relu[f][2*pr+dy][2*pc+dx] > max_v) max_v = l2_relu[f][2*pr+dy][2*pc+dx];
-              l2_out[f][pr][pc] = sat_to_i8(max_v);
-            end
-      end else begin
-        for (f=0;f<L2_F_OUT;f=f+1)
-          for (r=0;r<L2_H_OUT;r=r+1)
-            for (x=0;x<L2_W_OUT;x=x+1)
-              l2_out[f][r][x] = sat_to_i8(l2_relu[f][r][x]);
-      end
-
-      for (f=0;f<L3_F_OUT;f=f+1)
-        for (c=0;c<L3_C_IN;c=c+1)
-          for (ky=0;ky<L3_K;ky=ky+1)
-            for (kx=0;kx<L3_K;kx=kx+1)
-              l3_wgt[f][c][ky][kx] = $signed(((f*13 + c*9 + ky*8 + kx*14 + 4) % 3) - 1);
-
-      for (f=0;f<L3_F_OUT;f=f+1)
-        for (r=0;r<L3_H_CONV_OUT;r=r+1)
-          for (x=0;x<L3_W_CONV_OUT;x=x+1) begin
-            sum=0;
-            for (c=0;c<L3_C_IN;c=c+1)
-              for (ky=0;ky<L3_K;ky=ky+1)
-                for (kx=0;kx<L3_K;kx=kx+1)
-                  sum += $signed(l2_out[c][r+ky][x+kx]) * $signed(l3_wgt[f][c][ky][kx]);
-            l3_relu[f][r][x] = (sum > 0) ? sum : 0;
-          end
-
-      if (L3_POOL_EN) begin
-        for (f=0;f<L3_F_OUT;f=f+1)
-          for (pr=0;pr<L3_H_OUT;pr=pr+1)
-            for (pc=0;pc<L3_W_OUT;pc=pc+1) begin
-              max_v = l3_relu[f][2*pr][2*pc];
-              for (dy=0;dy<2;dy=dy+1)
-                for (dx=0;dx<2;dx=dx+1)
-                  if (l3_relu[f][2*pr+dy][2*pc+dx] > max_v) max_v = l3_relu[f][2*pr+dy][2*pc+dx];
-              l3_out[f][pr][pc] = sat_to_i8(max_v);
-            end
-      end else begin
-        for (f=0;f<L3_F_OUT;f=f+1)
-          for (r=0;r<L3_H_OUT;r=r+1)
-            for (x=0;x<L3_W_OUT;x=x+1)
-              l3_out[f][r][x] = sat_to_i8(l3_relu[f][r][x]);
-      end
-
-      for (f=0;f<L4_F_OUT;f=f+1)
-        for (c=0;c<L4_C_IN;c=c+1)
-          for (ky=0;ky<L4_K;ky=ky+1)
-            for (kx=0;kx<L4_K;kx=kx+1)
-              l4_wgt[f][c][ky][kx] = $signed(((f*15 + c*11 + ky*9 + kx*15 + 5) % 3) - 1);
-
-      for (f=0;f<L4_F_OUT;f=f+1)
-        for (r=0;r<L4_H_CONV_OUT;r=r+1)
-          for (x=0;x<L4_W_CONV_OUT;x=x+1) begin
-            sum=0;
-            for (c=0;c<L4_C_IN;c=c+1)
-              for (ky=0;ky<L4_K;ky=ky+1)
-                for (kx=0;kx<L4_K;kx=kx+1)
-                  sum += $signed(l3_out[c][r+ky][x+kx]) * $signed(l4_wgt[f][c][ky][kx]);
-            l4_relu[f][r][x] = (sum > 0) ? sum : 0;
-          end
-
-      if (L4_POOL_EN) begin
-        for (f=0;f<L4_F_OUT;f=f+1)
-          for (pr=0;pr<L4_H_OUT;pr=pr+1)
-            for (pc=0;pc<L4_W_OUT;pc=pc+1) begin
-              max_v = l4_relu[f][2*pr][2*pc];
-              for (dy=0;dy<2;dy=dy+1)
-                for (dx=0;dx<2;dx=dx+1)
-                  if (l4_relu[f][2*pr+dy][2*pc+dx] > max_v) max_v = l4_relu[f][2*pr+dy][2*pc+dx];
-              l4_out[f][pr][pc] = sat_to_i8(max_v);
-            end
-      end else begin
-        for (f=0;f<L4_F_OUT;f=f+1)
-          for (r=0;r<L4_H_OUT;r=r+1)
-            for (x=0;x<L4_W_OUT;x=x+1)
-              l4_out[f][r][x] = sat_to_i8(l4_relu[f][r][x]);
-      end
-
-      for (f=0;f<L5_F_OUT;f=f+1)
-        for (c=0;c<L5_C_IN;c=c+1)
-          for (ky=0;ky<L5_K;ky=ky+1)
-            for (kx=0;kx<L5_K;kx=kx+1)
-              l5_wgt[f][c][ky][kx] = $signed(((f*17 + c*13 + ky*10 + kx*16 + 6) % 3) - 1);
-
-      for (f=0;f<L5_F_OUT;f=f+1)
-        for (r=0;r<L5_H_CONV_OUT;r=r+1)
-          for (x=0;x<L5_W_CONV_OUT;x=x+1) begin
-            sum=0;
-            for (c=0;c<L5_C_IN;c=c+1)
-              for (ky=0;ky<L5_K;ky=ky+1)
-                for (kx=0;kx<L5_K;kx=kx+1)
-                  sum += $signed(l4_out[c][r+ky][x+kx]) * $signed(l5_wgt[f][c][ky][kx]);
-            l5_relu[f][r][x] = (sum > 0) ? sum : 0;
-          end
-
-      if (L5_POOL_EN) begin
-        for (f=0;f<L5_F_OUT;f=f+1)
-          for (pr=0;pr<L5_H_OUT;pr=pr+1)
-            for (pc=0;pc<L5_W_OUT;pc=pc+1) begin
-              max_v = l5_relu[f][2*pr][2*pc];
-              for (dy=0;dy<2;dy=dy+1)
-                for (dx=0;dx<2;dx=dx+1)
-                  if (l5_relu[f][2*pr+dy][2*pc+dx] > max_v) max_v = l5_relu[f][2*pr+dy][2*pc+dx];
-              l5_out[f][pr][pc] = sat_to_i8(max_v);
-            end
-      end else begin
-        for (f=0;f<L5_F_OUT;f=f+1)
-          for (r=0;r<L5_H_OUT;r=r+1)
-            for (x=0;x<L5_W_OUT;x=x+1)
-              l5_out[f][r][x] = sat_to_i8(l5_relu[f][r][x]);
-      end
-
-      for (f=0;f<L6_F_OUT;f=f+1)
-        for (c=0;c<L6_C_IN;c=c+1)
-          for (ky=0;ky<L6_K;ky=ky+1)
-            for (kx=0;kx<L6_K;kx=kx+1)
-              l6_wgt[f][c][ky][kx] = $signed(((f*19 + c*15 + ky*11 + kx*17 + 7) % 3) - 1);
-
-      for (f=0;f<L6_F_OUT;f=f+1)
-        for (r=0;r<L6_H_CONV_OUT;r=r+1)
-          for (x=0;x<L6_W_CONV_OUT;x=x+1) begin
-            sum=0;
-            for (c=0;c<L6_C_IN;c=c+1)
-              for (ky=0;ky<L6_K;ky=ky+1)
-                for (kx=0;kx<L6_K;kx=kx+1)
-                  sum += $signed(l5_out[c][r+ky][x+kx]) * $signed(l6_wgt[f][c][ky][kx]);
-            l6_relu[f][r][x] = (sum > 0) ? sum : 0;
-          end
-
-      if (L6_POOL_EN) begin
-        for (f=0;f<L6_F_OUT;f=f+1)
-          for (pr=0;pr<L6_H_OUT;pr=pr+1)
-            for (pc=0;pc<L6_W_OUT;pc=pc+1) begin
-              max_v = l6_relu[f][2*pr][2*pc];
-              for (dy=0;dy<2;dy=dy+1)
-                for (dx=0;dx<2;dx=dx+1)
-                  if (l6_relu[f][2*pr+dy][2*pc+dx] > max_v) max_v = l6_relu[f][2*pr+dy][2*pc+dx];
-              l6_out[f][pr][pc] = sat_to_i8(max_v);
-            end
-      end else begin
-        for (f=0;f<L6_F_OUT;f=f+1)
-          for (r=0;r<L6_H_OUT;r=r+1)
-            for (x=0;x<L6_W_OUT;x=x+1)
-              l6_out[f][r][x] = sat_to_i8(l6_relu[f][r][x]);
-      end
-
-      for (f=0;f<L7_F_OUT;f=f+1)
-        for (c=0;c<L7_C_IN;c=c+1)
-          for (ky=0;ky<L7_K;ky=ky+1)
-            for (kx=0;kx<L7_K;kx=kx+1)
-              l7_wgt[f][c][ky][kx] = $signed(((f*21 + c*17 + ky*12 + kx*18 + 8) % 3) - 1);
-
-      for (f=0;f<L7_F_OUT;f=f+1)
-        for (r=0;r<L7_H_CONV_OUT;r=r+1)
-          for (x=0;x<L7_W_CONV_OUT;x=x+1) begin
-            sum=0;
-            for (c=0;c<L7_C_IN;c=c+1)
-              for (ky=0;ky<L7_K;ky=ky+1)
-                for (kx=0;kx<L7_K;kx=kx+1)
-                  sum += $signed(l6_out[c][r+ky][x+kx]) * $signed(l7_wgt[f][c][ky][kx]);
-            l7_relu[f][r][x] = (sum > 0) ? sum : 0;
-          end
-
-      if (L7_POOL_EN) begin
-        for (f=0;f<L7_F_OUT;f=f+1)
-          for (pr=0;pr<L7_H_OUT;pr=pr+1)
-            for (pc=0;pc<L7_W_OUT;pc=pc+1) begin
-              max_v = l7_relu[f][2*pr][2*pc];
-              for (dy=0;dy<2;dy=dy+1)
-                for (dx=0;dx<2;dx=dx+1)
-                  if (l7_relu[f][2*pr+dy][2*pc+dx] > max_v) max_v = l7_relu[f][2*pr+dy][2*pc+dx];
-              l7_out[f][pr][pc] = sat_to_i8(max_v);
-            end
-      end else begin
-        for (f=0;f<L7_F_OUT;f=f+1)
-          for (r=0;r<L7_H_OUT;r=r+1)
-            for (x=0;x<L7_W_OUT;x=x+1)
-              l7_out[f][r][x] = sat_to_i8(l7_relu[f][r][x]);
-      end
-
-      for (f=0;f<L8_F_OUT;f=f+1)
-        for (c=0;c<L8_C_IN;c=c+1)
-          for (ky=0;ky<L8_K;ky=ky+1)
-            for (kx=0;kx<L8_K;kx=kx+1)
-              l8_wgt[f][c][ky][kx] = $signed(((f*23 + c*19 + ky*13 + kx*19 + 9) % 3) - 1);
-
-      for (f=0;f<L8_F_OUT;f=f+1)
-        for (r=0;r<L8_H_CONV_OUT;r=r+1)
-          for (x=0;x<L8_W_CONV_OUT;x=x+1) begin
-            sum=0;
-            for (c=0;c<L8_C_IN;c=c+1)
-              for (ky=0;ky<L8_K;ky=ky+1)
-                for (kx=0;kx<L8_K;kx=kx+1)
-                  sum += $signed(l7_out[c][r+ky][x+kx]) * $signed(l8_wgt[f][c][ky][kx]);
-            l8_relu[f][r][x] = (sum > 0) ? sum : 0;
-          end
-
-      if (L8_POOL_EN) begin
-        for (f=0;f<L8_F_OUT;f=f+1)
-          for (pr=0;pr<L8_H_OUT;pr=pr+1)
-            for (pc=0;pc<L8_W_OUT;pc=pc+1) begin
-              max_v = l8_relu[f][2*pr][2*pc];
-              for (dy=0;dy<2;dy=dy+1)
-                for (dx=0;dx<2;dx=dx+1)
-                  if (l8_relu[f][2*pr+dy][2*pc+dx] > max_v) max_v = l8_relu[f][2*pr+dy][2*pc+dx];
-              l8_out[f][pr][pc] = sat_to_i8(max_v);
-            end
-      end else begin
-        for (f=0;f<L8_F_OUT;f=f+1)
-          for (r=0;r<L8_H_OUT;r=r+1)
-            for (x=0;x<L8_W_OUT;x=x+1)
-              l8_out[f][r][x] = sat_to_i8(l8_relu[f][r][x]);
-      end
-
+  function automatic logic signed [DATA_W-1:0] gen_wgt(
+    input integer layer,
+    input integer f,
+    input integer c,
+    input integer ky,
+    input integer kx
+  );
+    integer v;
+    begin
+      // Matches the deterministic formulas used by the original golden model:
+      // L0: f*7  + c*3  + ky*5  + kx*11 + 1
+      // L1: f*9  + c*5  + ky*6  + kx*12 + 2
+      // ...
+      // L8: f*23 + c*19 + ky*13 + kx*19 + 9
+      v = (f*(7 + 2*layer) + c*(3 + 2*layer) + ky*(5 + layer) + kx*(11 + layer) + (1 + layer));
+      gen_wgt = $signed((v % 3) - 1);
+    end
+  endfunction
+  task automatic build_golden;
+    begin
+      // No full golden model for this full-scale stress test.
+      // The goal is to exercise Mode-1 scheduling/refill/OFM row-stride logic without
+      // making XSim allocate and compute large golden tensors at time 0.
     end
   endtask
 
@@ -1035,7 +667,7 @@ end
             for (lane=0;lane<PV_MAX;lane=lane+1) begin
               abs_col = colg*L0_PV + lane;
               if ((lane<L0_PV) && (abs_col<L0_W_IN))
-                ddr_mem[addr][lane*DATA_W +: DATA_W] = l0_ifm[c][r][abs_col];
+                ddr_mem[addr][lane*DATA_W +: DATA_W] = gen_l0_ifm(c, r, abs_col);
             end
           end
     end
@@ -1064,7 +696,7 @@ end
               phys_word=logical_idx/L0_PV; subword_idx=logical_idx%L0_PV; base_lane=subword_idx*L0_PF;
               for (pf=0;pf<L0_PF;pf=pf+1) begin
                 f=fg*L0_PF+pf;
-                write_wgt_lane_to_ddr(L0_WGT_DDR_BASE, phys_word, base_lane+pf, (f<L0_F_OUT)?l0_wgt[f][c][ky][kx]:'0);
+                write_wgt_lane_to_ddr(L0_WGT_DDR_BASE, phys_word, base_lane+pf, (f<L0_F_OUT)?gen_wgt(0, f, c, ky, kx):'0);
               end
               logical_idx++;
             end
@@ -1083,7 +715,7 @@ end
               phys_word=logical_idx/L1_PV; subword_idx=logical_idx%L1_PV; base_lane=subword_idx*L1_PF;
               for (pf=0;pf<L1_PF;pf=pf+1) begin
                 f=fg*L1_PF+pf;
-                write_wgt_lane_to_ddr(L1_WGT_DDR_BASE, phys_word, base_lane+pf, (f<L1_F_OUT)?l1_wgt[f][c][ky][kx]:'0);
+                write_wgt_lane_to_ddr(L1_WGT_DDR_BASE, phys_word, base_lane+pf, (f<L1_F_OUT)?gen_wgt(1, f, c, ky, kx):'0);
               end
               logical_idx++;
             end
@@ -1102,7 +734,7 @@ end
               phys_word=logical_idx/L2_PV; subword_idx=logical_idx%L2_PV; base_lane=subword_idx*L2_PF;
               for (pf=0;pf<L2_PF;pf=pf+1) begin
                 f=fg*L2_PF+pf;
-                write_wgt_lane_to_ddr(L2_WGT_DDR_BASE, phys_word, base_lane+pf, (f<L2_F_OUT)?l2_wgt[f][c][ky][kx]:'0);
+                write_wgt_lane_to_ddr(L2_WGT_DDR_BASE, phys_word, base_lane+pf, (f<L2_F_OUT)?gen_wgt(2, f, c, ky, kx):'0);
               end
               logical_idx++;
             end
@@ -1121,7 +753,7 @@ end
               phys_word=logical_idx/L3_PV; subword_idx=logical_idx%L3_PV; base_lane=subword_idx*L3_PF;
               for (pf=0;pf<L3_PF;pf=pf+1) begin
                 f=fg*L3_PF+pf;
-                write_wgt_lane_to_ddr(L3_WGT_DDR_BASE, phys_word, base_lane+pf, (f<L3_F_OUT)?l3_wgt[f][c][ky][kx]:'0);
+                write_wgt_lane_to_ddr(L3_WGT_DDR_BASE, phys_word, base_lane+pf, (f<L3_F_OUT)?gen_wgt(3, f, c, ky, kx):'0);
               end
               logical_idx++;
             end
@@ -1140,7 +772,7 @@ end
               phys_word=logical_idx/L4_PV; subword_idx=logical_idx%L4_PV; base_lane=subword_idx*L4_PF;
               for (pf=0;pf<L4_PF;pf=pf+1) begin
                 f=fg*L4_PF+pf;
-                write_wgt_lane_to_ddr(L4_WGT_DDR_BASE, phys_word, base_lane+pf, (f<L4_F_OUT)?l4_wgt[f][c][ky][kx]:'0);
+                write_wgt_lane_to_ddr(L4_WGT_DDR_BASE, phys_word, base_lane+pf, (f<L4_F_OUT)?gen_wgt(4, f, c, ky, kx):'0);
               end
               logical_idx++;
             end
@@ -1159,7 +791,7 @@ end
               phys_word=logical_idx/L5_PV; subword_idx=logical_idx%L5_PV; base_lane=subword_idx*L5_PF;
               for (pf=0;pf<L5_PF;pf=pf+1) begin
                 f=fg*L5_PF+pf;
-                write_wgt_lane_to_ddr(L5_WGT_DDR_BASE, phys_word, base_lane+pf, (f<L5_F_OUT)?l5_wgt[f][c][ky][kx]:'0);
+                write_wgt_lane_to_ddr(L5_WGT_DDR_BASE, phys_word, base_lane+pf, (f<L5_F_OUT)?gen_wgt(5, f, c, ky, kx):'0);
               end
               logical_idx++;
             end
@@ -1178,7 +810,7 @@ end
               phys_word=logical_idx/L6_PV; subword_idx=logical_idx%L6_PV; base_lane=subword_idx*L6_PF;
               for (pf=0;pf<L6_PF;pf=pf+1) begin
                 f=fg*L6_PF+pf;
-                write_wgt_lane_to_ddr(L6_WGT_DDR_BASE, phys_word, base_lane+pf, (f<L6_F_OUT)?l6_wgt[f][c][ky][kx]:'0);
+                write_wgt_lane_to_ddr(L6_WGT_DDR_BASE, phys_word, base_lane+pf, (f<L6_F_OUT)?gen_wgt(6, f, c, ky, kx):'0);
               end
               logical_idx++;
             end
@@ -1197,7 +829,7 @@ end
               phys_word=logical_idx/L7_PV; subword_idx=logical_idx%L7_PV; base_lane=subword_idx*L7_PF;
               for (pf=0;pf<L7_PF;pf=pf+1) begin
                 f=fg*L7_PF+pf;
-                write_wgt_lane_to_ddr(L7_WGT_DDR_BASE, phys_word, base_lane+pf, (f<L7_F_OUT)?l7_wgt[f][c][ky][kx]:'0);
+                write_wgt_lane_to_ddr(L7_WGT_DDR_BASE, phys_word, base_lane+pf, (f<L7_F_OUT)?gen_wgt(7, f, c, ky, kx):'0);
               end
               logical_idx++;
             end
@@ -1216,7 +848,7 @@ end
               phys_word=logical_idx/L8_PV; subword_idx=logical_idx%L8_PV; base_lane=subword_idx*L8_PF;
               for (pf=0;pf<L8_PF;pf=pf+1) begin
                 f=fg*L8_PF+pf;
-                write_wgt_lane_to_ddr(L8_WGT_DDR_BASE, phys_word, base_lane+pf, (f<L8_F_OUT)?l8_wgt[f][c][ky][kx]:'0);
+                write_wgt_lane_to_ddr(L8_WGT_DDR_BASE, phys_word, base_lane+pf, (f<L8_F_OUT)?gen_wgt(8, f, c, ky, kx):'0);
               end
               logical_idx++;
             end
@@ -1237,7 +869,7 @@ end
       load_l6_weights_to_ddr();
       load_l7_weights_to_ddr();
       load_l8_weights_to_ddr();
-      $display("TB_INFO: 9-layer EfficientNet-like Mode1 prefix test, depth-trend dynamic Pv/Pf");
+      $display("TB_INFO: 9-layer DCP-CNN Table-VI EfficientNet-B0 Mode1 prefix full-scale deadlock/count stress test");
       $display("TB_INFO: L0 %0dx%0dx%0d -> conv %0dx%0dx%0d K=%0d pool_en=%0d -> out %0dx%0dx%0d", L0_H_IN,L0_W_IN,L0_C_IN,L0_H_CONV_OUT,L0_W_CONV_OUT,L0_F_OUT,L0_K,L0_POOL_EN,L0_H_OUT,L0_W_OUT,L0_F_OUT);
       $display("TB_INFO: L1 %0dx%0dx%0d -> conv %0dx%0dx%0d K=%0d pool_en=%0d -> out %0dx%0dx%0d", L1_H_IN,L1_W_IN,L1_C_IN,L1_H_CONV_OUT,L1_W_CONV_OUT,L1_F_OUT,L1_K,L1_POOL_EN,L1_H_OUT,L1_W_OUT,L1_F_OUT);
       $display("TB_INFO: L2 %0dx%0dx%0d -> conv %0dx%0dx%0d K=%0d pool_en=%0d -> out %0dx%0dx%0d", L2_H_IN,L2_W_IN,L2_C_IN,L2_H_CONV_OUT,L2_W_CONV_OUT,L2_F_OUT,L2_K,L2_POOL_EN,L2_H_OUT,L2_W_OUT,L2_F_OUT);
@@ -1247,9 +879,9 @@ end
       $display("TB_INFO: L6 %0dx%0dx%0d -> conv %0dx%0dx%0d K=%0d pool_en=%0d -> out %0dx%0dx%0d", L6_H_IN,L6_W_IN,L6_C_IN,L6_H_CONV_OUT,L6_W_CONV_OUT,L6_F_OUT,L6_K,L6_POOL_EN,L6_H_OUT,L6_W_OUT,L6_F_OUT);
       $display("TB_INFO: L7 %0dx%0dx%0d -> conv %0dx%0dx%0d K=%0d pool_en=%0d -> out %0dx%0dx%0d", L7_H_IN,L7_W_IN,L7_C_IN,L7_H_CONV_OUT,L7_W_CONV_OUT,L7_F_OUT,L7_K,L7_POOL_EN,L7_H_OUT,L7_W_OUT,L7_F_OUT);
       $display("TB_INFO: L8 %0dx%0dx%0d -> conv %0dx%0dx%0d K=%0d pool_en=%0d -> out %0dx%0dx%0d", L8_H_IN,L8_W_IN,L8_C_IN,L8_H_CONV_OUT,L8_W_CONV_OUT,L8_F_OUT,L8_K,L8_POOL_EN,L8_H_OUT,L8_W_OUT,L8_F_OUT);
-      $display("TB_INFO: benchmark intent: EfficientNet-like mode-1 prefix; all K=3; early Pv high, later Pf high, PTOTAL=32; no depthwise/SE/skip ops");
+      $display("TB_INFO: benchmark intent: DCP-CNN Table-VI EfficientNet mode-1 prefix; input 224x224x3; K=3 standard-conv surrogate for MBConv; PTOTAL=2048; no depthwise/SE/skip ops");
       $display("TB_INFO: stress params: H/W/C/F include non-divisible partial groups; HT=%0d C_MAX=%0d F_MAX=%0d", HT, C_MAX, F_MAX);
-      $display("TB_INFO: depth-trend Pv/Pf per layer: L0=%0d/%0d L1=%0d/%0d L2=%0d/%0d L3=%0d/%0d L4=%0d/%0d L5=%0d/%0d L6=%0d/%0d L7=%0d/%0d L8=%0d/%0d PTOTAL=%0d",
+      $display("TB_INFO: DCP Table-VI expanded Pv/Pf per layer: L0=%0d/%0d L1=%0d/%0d L2=%0d/%0d L3=%0d/%0d L4=%0d/%0d L5=%0d/%0d L6=%0d/%0d L7=%0d/%0d L8=%0d/%0d PTOTAL=%0d",
                L0_PV,L0_PF,L1_PV,L1_PF,L2_PV,L2_PF,L3_PV,L3_PF,L4_PV,L4_PF,L5_PV,L5_PF,L6_PV,L6_PF,L7_PV,L7_PF,L8_PV,L8_PF,PTOTAL);
       $display("TB_INFO: L0 weight bundles=%0d phys=%0d DDR words=%0d base=0x%05h", L0_M1_LOGICAL_BUNDLES, L0_M1_PHYS_WORDS, L0_M1_WGT_DDR_WORDS, L0_WGT_DDR_BASE);
       $display("TB_INFO: L1 weight bundles=%0d phys=%0d DDR words=%0d base=0x%05h", L1_M1_LOGICAL_BUNDLES, L1_M1_PHYS_WORDS, L1_M1_WGT_DDR_WORDS, L1_WGT_DDR_BASE);
@@ -1260,7 +892,7 @@ end
       $display("TB_INFO: L6 weight bundles=%0d phys=%0d DDR words=%0d base=0x%05h", L6_M1_LOGICAL_BUNDLES, L6_M1_PHYS_WORDS, L6_M1_WGT_DDR_WORDS, L6_WGT_DDR_BASE);
       $display("TB_INFO: L7 weight bundles=%0d phys=%0d DDR words=%0d base=0x%05h", L7_M1_LOGICAL_BUNDLES, L7_M1_PHYS_WORDS, L7_M1_WGT_DDR_WORDS, L7_WGT_DDR_BASE);
       $display("TB_INFO: L8 weight bundles=%0d phys=%0d DDR words=%0d base=0x%05h", L8_M1_LOGICAL_BUNDLES, L8_M1_PHYS_WORDS, L8_M1_WGT_DDR_WORDS, L8_WGT_DDR_BASE);
-      $display("TB_INFO: expected final OFM DDR words=%0d", EXP_OFM_WORDS);
+      $display("TB_INFO: expected final OFM DDR words=%0d (count-only, no golden tensor)", EXP_OFM_WORDS);
       $display("TB_INFO: expected DDR->IFM writes=%0d after-start=%0d", L0_EXPECT_IFM_DDR_WRITES, L0_EXPECT_IFM_DDR_WRITES_AFTER_START);
       $display("TB_INFO: expected OFM->IFM stream commands >= %0d", EXP_OFM2IFM_STREAMS);
     end
@@ -1381,11 +1013,9 @@ end
   endtask
 
   task automatic check_final_ofm;
-    integer lin,ch,rem,row,grp,col,fail_count,ofm_mismatch_count;
-    logic signed [DATA_W-1:0] got,exp;
+    integer fail_count;
     begin
       fail_count=0;
-      ofm_mismatch_count=0;
       if (ddr_ofm_write_count != EXP_OFM_WORDS) begin
         $display("TB_FAIL: OFM DDR write count mismatch. got=%0d expected=%0d", ddr_ofm_write_count, EXP_OFM_WORDS);
         fail_count++;
@@ -1411,27 +1041,10 @@ end
         fail_count++;
       end
 
-      for (lin=0;lin<EXP_OFM_WORDS;lin=lin+1) begin
-        ch=lin/(L8_H_OUT*FINAL_GROUPS);
-        rem=lin%(L8_H_OUT*FINAL_GROUPS);
-        row=rem/FINAL_GROUPS;
-        grp=rem%FINAL_GROUPS;
-        col=grp*FINAL_STORE_PACK;
-        got=ddr_mem[`DDR_OFM_BASE+lin][0 +: DATA_W];
-        exp=l8_out[ch][row][col];
-        if (got !== exp) begin
-          $display("TB_FAIL: final OFM mismatch lin=%0d ch=%0d row=%0d col=%0d got=%0d/0x%02h expected=%0d/0x%02h word=0x%08h",
-                   lin,ch,row,col,got,got,exp,exp,ddr_mem[`DDR_OFM_BASE+lin]);
-          ofm_mismatch_count++;
-        end
-      end
-      if ((fail_count==0) && (ofm_mismatch_count==0)) begin
-        $display("TB_PASS: exact final OFM matches golden for 9-layer EfficientNet-like mode1 prefix test");
+      if (fail_count==0) begin
+        $display("TB_PASS: full-scale Mode-1 DCP EfficientNet-B0 prefix completed without deadlock; count checks passed");
       end else begin
-        if (ofm_mismatch_count != 0)
-          $display("TB_FAIL: total final OFM mismatches = %0d", ofm_mismatch_count);
-        if (fail_count != 0)
-          $display("TB_FAIL: total non-value checker failures = %0d", fail_count);
+        $display("TB_FAIL: total count/deadlock checker failures = %0d", fail_count);
         dump_ofm_region();
         $finish;
       end
