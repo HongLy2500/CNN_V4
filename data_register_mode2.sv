@@ -7,7 +7,7 @@ module data_register_mode2 #(
   input  logic rst_n,
 
   // Runtime config
-  input  logic [15:0] K_cur,
+  input  logic [3:0] K_cur,
 
   // ---------------------------------------------
   // Write side from control unit

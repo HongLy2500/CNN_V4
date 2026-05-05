@@ -153,7 +153,7 @@ module compute_dispatcher
   // Keep this as a simulation-time guard only.
   always_ff @(posedge clk) begin
     if (rst_n && start_fire && (cur_mode == 1'b1)) begin
-      if (cur_cfg.pc_m2 != PC_MODE2[3:0]) begin
+      if (cur_cfg.pc_m2 != PC_MODE2) begin
         $error("compute_dispatcher: cur_cfg.pc_m2 (%0d) != PC_MODE2 parameter (%0d).", cur_cfg.pc_m2, PC_MODE2);
       end
     end

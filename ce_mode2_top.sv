@@ -17,9 +17,9 @@ module ce_mode2_top #(
   input  logic start,
   input  logic step_en,
 
-  input  logic [15:0] K_cur,
-  input  logic [15:0] C_cur,
-  input  logic [15:0] F_cur,
+  input  logic [3:0] K_cur,
+  input  logic [7:0] C_cur,
+  input  logic [7:0] F_cur,
   input  logic [15:0] Hout_cur,
   input  logic [15:0] Wout_cur,
 

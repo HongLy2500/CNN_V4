@@ -467,17 +467,17 @@ module local_dataflow_manager
   // Also make the GLOBAL-column contract explicit at the manager boundary.
   always_ff @(posedge clk) begin
     if (rst_n && (cur_mode == MODE2) && m2_start) begin
-      if (cur_cfg.pc_m2 != PC_MODE2[$bits(cur_cfg.pc_m2)-1:0]) begin
+      if (cur_cfg.pc_m2 != PC_MODE2) begin
         $error("local_dataflow_manager: cur_cfg.pc_m2 (%0d) != PC_MODE2 parameter (%0d).",
                cur_cfg.pc_m2, PC_MODE2);
       end
-      if (cur_cfg.pf_m2 != PF_MODE2[$bits(cur_cfg.pf_m2)-1:0]) begin
+      if (cur_cfg.pf_m2 != PF_MODE2) begin
         $error("local_dataflow_manager: cur_cfg.pf_m2 (%0d) != PF_MODE2 parameter (%0d).",
                cur_cfg.pf_m2, PF_MODE2);
       end
       // Free-token segment-base reconstruction uses the current fixed mode-2
       // contract where one Kx sweep can cross at most one PC-wide boundary.
-      if (cur_cfg.k > PC_MODE2[$bits(cur_cfg.k)-1:0]) begin
+      if (cur_cfg.k > PC_MODE2) begin
         $error("local_dataflow_manager: cur_cfg.k (%0d) > PC_MODE2 (%0d); mode-2 free-token segment-base reconstruction is ambiguous.",
                cur_cfg.k, PC_MODE2);
       end
