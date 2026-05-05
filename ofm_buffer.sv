@@ -949,7 +949,14 @@ module ofm_buffer #(
                         px2  = sat_m2(m2_wr_data[pf_idx*M2_IN_W +: M2_IN_W]);
 
                         if ((pf_idx < valid_pf) && (row < h_out_q) && (col < w_out_q) && (addr < DEPTH) && (lane < PV_MAX)) begin
-                            if (mem_tag[ch][addr] != layer_tag_q) begin
+                            // Use case-inequality here.  mem_tag is not explicitly
+                            // initialized for every RAM word; on the first write after reset
+                            // it can be X.  With !=, the condition evaluates to X and the
+                            // branch is skipped, leaving the tag/fill invalid even though
+                            // layer_pixels_written advances.  That makes DMA readback return
+                            // keep=0/data=0.  !== treats X/Z as a mismatch and initializes
+                            // the word correctly.
+                            if (mem_tag[ch][addr] !== layer_tag_q) begin
                                 mem_tag[ch][addr]  <= layer_tag_q;
                                 mem_data[ch][addr] <= '0;
                                 mem_fill[ch][addr] <= '0;

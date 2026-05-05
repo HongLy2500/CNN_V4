@@ -25,9 +25,9 @@ module addr_gen_ifm_m2 #(
   // This keeps the interface backward-compatible while removing the old
   // ambiguity where out_col was treated as local.
   // --------------------------------------------------
-  input  logic [15:0] K_cur,
-  input  logic [15:0] C_cur,
-  input  logic [15:0] F_cur,
+  input  logic [3:0] K_cur,
+  input  logic [7:0] C_cur,
+  input  logic [7:0] F_cur,
   input  logic [15:0] H_in,
   input  logic [15:0] W_in,
   input  logic [15:0] Hout_cur,

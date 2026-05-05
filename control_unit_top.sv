@@ -385,6 +385,15 @@ module control_unit_top
   logic [15:0]           cur_m1_ofm_h_for_sm_s;
   logic [15:0]           cur_m1_ofm_w_for_sm_s;
 
+  // True current-layer OFM size as stored in ofm_buffer for mode 2.
+  // mode2_compute_top always routes ReLU output through pooling_mode2, so
+  // pool_en=1 must also shrink the OFM geometry before ofm_buffer counts
+  // layer_write_done or final DDR store words.  Mode 1 expressions above are
+  // left unchanged.
+  logic                  cur_m2_pool_active_s;
+  logic [15:0]           cur_m2_final_h_out_s;
+  logic [15:0]           cur_m2_final_w_out_s;
+
   // Internal same-mode refill requests from managers; top-level ports remain as
   // visibility hooks only.
   logic                  m1_sm_req_valid_i, m1_sm_req_ready_i;
@@ -479,7 +488,9 @@ module control_unit_top
     stream_req_row_base_s = '0;
     stream_req_num_rows_s = (cur_cfg_s.mode == MODE1)
                             ? cur_m1_final_h_out_s[ROW_W-1:0]
-                            : cur_cfg_s.h_out[ROW_W-1:0];
+                            : ((cur_cfg_s.mode == MODE2)
+                               ? cur_m2_final_h_out_s[ROW_W-1:0]
+                               : cur_cfg_s.h_out[ROW_W-1:0]);
     stream_req_col_base_s = '0;
   end
 
@@ -781,15 +792,30 @@ module control_unit_top
                               ? ((cur_cfg_s.w_out > 16'd1) ? (cur_cfg_s.w_out >> 1) : 16'd1)
                               : cur_cfg_s.w_out;
 
+  // Mode-2 final OFM geometry also depends on pool_en.  This fixes the case
+  // where mode2_compute_top emits a pooled 1x1 OFM while ofm_buffer was still
+  // configured to expect the raw convolution Hout/Wout.
+  assign cur_m2_pool_active_s = (cur_cfg_s.mode == MODE2) && (cur_cfg_s.pool_en !== 1'b0);
+  assign cur_m2_final_h_out_s = cur_m2_pool_active_s
+                              ? ((cur_cfg_s.h_out > 16'd1) ? (cur_cfg_s.h_out >> 1) : 16'd1)
+                              : cur_cfg_s.h_out;
+  assign cur_m2_final_w_out_s = cur_m2_pool_active_s
+                              ? ((cur_cfg_s.w_out > 16'd1) ? (cur_cfg_s.w_out >> 1) : 16'd1)
+                              : cur_cfg_s.w_out;
+
   assign m1_pool_en       = cur_m1_pool_active_s;
   assign ofm_cfg_pool_en  = cur_m1_pool_active_s;
 
   assign ofm_cfg_h_out    = (cur_cfg_s.mode == MODE1)
                             ? cur_m1_final_h_out_s[$clog2(H_MAX+1)-1:0]
-                            : cur_cfg_s.h_out[$clog2(H_MAX+1)-1:0];
+                            : ((cur_cfg_s.mode == MODE2)
+                               ? cur_m2_final_h_out_s[$clog2(H_MAX+1)-1:0]
+                               : cur_cfg_s.h_out[$clog2(H_MAX+1)-1:0]);
   assign ofm_cfg_w_out    = (cur_cfg_s.mode == MODE1)
                             ? cur_m1_final_w_out_s[$clog2(W_MAX+1)-1:0]
-                            : cur_cfg_s.w_out[$clog2(W_MAX+1)-1:0];
+                            : ((cur_cfg_s.mode == MODE2)
+                               ? cur_m2_final_w_out_s[$clog2(W_MAX+1)-1:0]
+                               : cur_cfg_s.w_out[$clog2(W_MAX+1)-1:0]);
   assign cur_m1_ofm_h_for_sm_s = cur_m1_final_h_out_s;
   assign cur_m1_ofm_w_for_sm_s = cur_m1_final_w_out_s;
 
@@ -1252,7 +1278,7 @@ module control_unit_top
     .H_W(16), .COLG_W(16), .COLL_W(16), .CGRP_W(16)
   ) u_same_mode_refill_manager_m2 (
     .clk(clk), .rst_n(rst_n_sm_m2),
-    .cfg_cur_h_out(cur_cfg_s.h_out), .cfg_cur_w_out(cur_cfg_s.w_out), .cfg_cur_f_out(cur_cfg_s.f_out),
+    .cfg_cur_h_out(cur_m2_final_h_out_s), .cfg_cur_w_out(cur_m2_final_w_out_s), .cfg_cur_f_out(cur_cfg_s.f_out),
     .cfg_next_h_in(next_cfg_s.h_in), .cfg_next_w_in(next_cfg_s.w_in), .cfg_next_c_in(next_cfg_s.c_in),
     .cfg_next_pc(next_cfg_s.pc_m2), .cfg_next_pf(next_cfg_s.pf_m2),
     .free_valid(ldm_m2_free_valid_s && sm_m2_active),
