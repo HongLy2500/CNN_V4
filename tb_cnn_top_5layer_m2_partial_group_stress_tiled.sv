@@ -29,7 +29,7 @@ module tb_cnn_top_5layer_m2_partial_group_stress_tiled;
   localparam int PV_MAX = PTOTAL;       // DDR word = one physical PTOTAL word
   localparam int PF_MAX = 16;
 
-  localparam int C_MAX = 16;
+  localparam int C_MAX = 32;
   localparam int F_MAX = 16;
   localparam int H_MAX = 64;
   localparam int W_MAX = 32;
@@ -106,10 +106,18 @@ module tb_cnn_top_5layer_m2_partial_group_stress_tiled;
   localparam int L3_WGT_DDR_BASE=L2_WGT_DDR_BASE+L2_WGT_WORDS;
   localparam int L4_WGT_DDR_BASE=L3_WGT_DDR_BASE+L3_WGT_WORDS;
 
-  localparam int L1_STREAMS=L1_H_IN*L1_W_IN*L1_NUM_CGROUP;
-  localparam int L2_STREAMS=L2_H_IN*L2_W_IN*L2_NUM_CGROUP;
-  localparam int L3_STREAMS=L3_H_IN*L3_W_IN*L3_NUM_CGROUP;
-  localparam int L4_STREAMS=L4_H_IN*L4_W_IN*L4_NUM_CGROUP;
+  // Deterministic Mode2 OFM->IFM handoff streams one command per
+  // {row, horizontal PC segment, channel group}.  This replaces the legacy
+  // free/ready-token refill count, which used to be much larger.
+  localparam int L1_NUM_COLBLK=(L1_W_IN+PC-1)/PC;
+  localparam int L2_NUM_COLBLK=(L2_W_IN+PC-1)/PC;
+  localparam int L3_NUM_COLBLK=(L3_W_IN+PC-1)/PC;
+  localparam int L4_NUM_COLBLK=(L4_W_IN+PC-1)/PC;
+
+  localparam int L1_STREAMS=L1_H_IN*L1_NUM_COLBLK*L1_NUM_CGROUP;
+  localparam int L2_STREAMS=L2_H_IN*L2_NUM_COLBLK*L2_NUM_CGROUP;
+  localparam int L3_STREAMS=L3_H_IN*L3_NUM_COLBLK*L3_NUM_CGROUP;
+  localparam int L4_STREAMS=L4_H_IN*L4_NUM_COLBLK*L4_NUM_CGROUP;
   localparam int EXP_OFM2IFM_STREAMS=L1_STREAMS+L2_STREAMS+L3_STREAMS+L4_STREAMS;
 
   localparam int EXPECTED_OFM_DDR_WORDS=L4_F_OUT*L4_H_POOL_OUT*L4_W_POOL_OUT;
@@ -206,6 +214,147 @@ module tb_cnn_top_5layer_m2_partial_group_stress_tiled;
 
   initial clk = 1'b0;
   always #(CLK_PERIOD_NS/2) clk = ~clk;
+
+integer dbg_m2_mac_cnt;
+integer dbg_m2_dr_cnt;
+
+always_ff @(posedge clk or negedge rst_n) begin
+  if (!rst_n) begin
+    dbg_m2_mac_cnt <= 0;
+    dbg_m2_dr_cnt  <= 0;
+  end else begin
+    if (dbg_layer_idx == 0 && dut.u_mode2_compute_top.dr_write_en && dbg_m2_dr_cnt < 20) begin
+      dbg_m2_dr_cnt <= dbg_m2_dr_cnt + 1;
+      $display("DBG_M2_DR_WRITE t=%0t cycle=%0d row_idx=%0d data0=%0d data1=%0d data2=%0d data3=%0d data4=%0d data5=%0d",
+        $time, cycle_count,
+        dut.u_mode2_compute_top.dr_write_row_idx,
+        $signed(dut.u_mode2_compute_top.dr_write_data[0*DATA_W +: DATA_W]),
+        $signed(dut.u_mode2_compute_top.dr_write_data[1*DATA_W +: DATA_W]),
+        $signed(dut.u_mode2_compute_top.dr_write_data[2*DATA_W +: DATA_W]),
+        $signed(dut.u_mode2_compute_top.dr_write_data[3*DATA_W +: DATA_W]),
+        $signed(dut.u_mode2_compute_top.dr_write_data[4*DATA_W +: DATA_W]),
+        $signed(dut.u_mode2_compute_top.dr_write_data[5*DATA_W +: DATA_W])
+      );
+    end
+
+    if (dbg_layer_idx == 0 && dut.u_mode2_compute_top.mac_en && dbg_m2_mac_cnt < 20) begin
+      dbg_m2_mac_cnt <= dbg_m2_mac_cnt + 1;
+      $display("DBG_M2_MAC_IN t=%0t cycle=%0d out_row=%0d out_col=%0d fgrp=%0d cgrp=%0d ky=%0d kx=%0d data0=%0d data1=%0d data2=%0d data3=%0d w_pf0_pc0=%0d w_pf0_pc1=%0d w_pf0_pc2=%0d w_pf1_pc0=%0d w_pf1_pc1=%0d w_pf1_pc2=%0d",
+        $time, cycle_count,
+        dut.u_mode2_compute_top.out_row,
+        dut.u_mode2_compute_top.out_col,
+        dut.u_mode2_compute_top.f_group,
+        dut.u_mode2_compute_top.c_group,
+        dut.u_mode2_compute_top.ky,
+        dut.u_mode2_compute_top.kx,
+
+        $signed(dut.u_mode2_compute_top.ce_data_out_logic[0*DATA_W +: DATA_W]),
+        $signed(dut.u_mode2_compute_top.ce_data_out_logic[1*DATA_W +: DATA_W]),
+        $signed(dut.u_mode2_compute_top.ce_data_out_logic[2*DATA_W +: DATA_W]),
+        $signed(dut.u_mode2_compute_top.ce_data_out_logic[3*DATA_W +: DATA_W]),
+
+        $signed(dut.u_mode2_compute_top.ce_weight_out[(0*PC+0)*DATA_W +: DATA_W]),
+        $signed(dut.u_mode2_compute_top.ce_weight_out[(0*PC+1)*DATA_W +: DATA_W]),
+        $signed(dut.u_mode2_compute_top.ce_weight_out[(0*PC+2)*DATA_W +: DATA_W]),
+        $signed(dut.u_mode2_compute_top.ce_weight_out[(1*PC+0)*DATA_W +: DATA_W]),
+        $signed(dut.u_mode2_compute_top.ce_weight_out[(1*PC+1)*DATA_W +: DATA_W]),
+        $signed(dut.u_mode2_compute_top.ce_weight_out[(1*PC+2)*DATA_W +: DATA_W])
+      );
+    end
+
+    if (dbg_layer_idx == 0 && dut.u_mode2_compute_top.ce_mac_data_out_valid) begin
+      $display("DBG_M2_MAC_OUT_L0 t=%0t cycle=%0d row=%0d col=%0d fgrp=%0d mac0=%0d mac1=%0d mac2=%0d",
+        $time, cycle_count,
+        dut.u_mode2_compute_top.out_row,
+        dut.u_mode2_compute_top.out_col,
+        dut.u_mode2_compute_top.f_group,
+        $signed(dut.u_mode2_compute_top.ce_mac_data_out[0*PSUM_W +: PSUM_W]),
+        $signed(dut.u_mode2_compute_top.ce_mac_data_out[1*PSUM_W +: PSUM_W]),
+        $signed(dut.u_mode2_compute_top.ce_mac_data_out[2*PSUM_W +: PSUM_W])
+      );
+    end
+
+    if (dbg_layer_idx == 0 && dut.u_mode2_compute_top.relu_data_out_valid) begin
+      $display("DBG_M2_RELU_OUT_L0 t=%0t cycle=%0d relu0=%0d relu1=%0d relu2=%0d group_start=%0b fbase=%0d",
+        $time, cycle_count,
+        $signed(dut.u_mode2_compute_top.relu_data_out[0*PSUM_W +: PSUM_W]),
+        $signed(dut.u_mode2_compute_top.relu_data_out[1*PSUM_W +: PSUM_W]),
+        $signed(dut.u_mode2_compute_top.relu_data_out[2*PSUM_W +: PSUM_W]),
+        dut.u_mode2_compute_top.relu_group_start,
+        dut.u_mode2_compute_top.relu_f_base
+      );
+    end
+  end
+end
+
+always_ff @(posedge clk) begin
+  if (rst_n && dut.u_control_unit_top.control_error_s) begin
+    $display("DBG_CONTROL_ERROR t=%0t cycle=%0d layer=%0d mode=%0d local_error_s=%0b control_error_s=%0b m2_sm_error=%0b m2q_overflow=%0b m2_free_full=%0b m2_ready_full=%0b m2q_count=%0d m2_ready_tok_valid=%0b m2_ready_valid_vec=%b m2_sm_req_valid=%0b m2_sm_req_ready=%0b ldm_free_valid=%0b ofm_layer_done=%0b ofm_pixels=%0d/%0d",
+      $time,
+      cycle_count,
+      dbg_layer_idx,
+      dbg_mode,
+      dut.u_control_unit_top.local_error_s,
+      dut.u_control_unit_top.control_error_s,
+      dut.u_control_unit_top.m2_sm_error_s,
+      dut.u_control_unit_top.m2q_overflow_q,
+      dut.u_control_unit_top.m2_sm_free_full_s,
+      dut.u_control_unit_top.m2_sm_ready_full_s,
+      dut.u_control_unit_top.m2q_count_q,
+      dut.u_control_unit_top.m2_ready_tok_valid_s,
+      dut.u_control_unit_top.m2_sm_ready_valid,
+      dut.u_control_unit_top.m2_sm_req_valid_i,
+      dut.u_control_unit_top.m2_sm_req_ready_i,
+      dut.u_control_unit_top.ldm_m2_free_valid_s,
+      dut.u_control_unit_top.ofm_layer_write_done,
+      dut.u_ofm_buffer.layer_pixels_written,
+      dut.u_ofm_buffer.layer_num_pixels
+    );
+  end
+end
+
+  // Deep monitor for Mode-2 local IFM address-generator errors.
+  // Keep the $display format as one literal string; Vivado/XSim may reject
+  // adjacent string literal concatenation inside $display.
+  always_ff @(posedge clk) begin
+    if (rst_n && dut.u_control_unit_top.u_local_dataflow_manager.u_addr_gen_ifm_m2.error) begin
+      $display("DBG_M2_LOCAL_ERROR t=%0t cycle=%0d K=%0d C=%0d F=%0d H_in=%0d W_in=%0d Hout=%0d Wout=%0d num_cgrp=%0d num_fgrp=%0d block_row=%0d block_col=%0d issue_cgrp=%0d ky=%0d kx=%0d issue_any=%0b issue_first=%0b issue_succ=%0b addr_valid=%0b bank_base=%0d abs_row=%0d abs_col=%0d tile_base=%0d col_l=%0d out_row=%0d out_col=%0d f_group=%0d pass_start=%0b mac_en=%0b out_valid=%0b stream_active=%0b last_issue=%0b final_out_valid=%0b",
+        $time, cycle_count,
+        dut.u_control_unit_top.u_local_dataflow_manager.u_addr_gen_ifm_m2.K_cur,
+        dut.u_control_unit_top.u_local_dataflow_manager.u_addr_gen_ifm_m2.C_cur,
+        dut.u_control_unit_top.u_local_dataflow_manager.u_addr_gen_ifm_m2.F_cur,
+        dut.u_control_unit_top.u_local_dataflow_manager.u_addr_gen_ifm_m2.H_in,
+        dut.u_control_unit_top.u_local_dataflow_manager.u_addr_gen_ifm_m2.W_in,
+        dut.u_control_unit_top.u_local_dataflow_manager.u_addr_gen_ifm_m2.Hout_cur,
+        dut.u_control_unit_top.u_local_dataflow_manager.u_addr_gen_ifm_m2.Wout_cur,
+        dut.u_control_unit_top.u_local_dataflow_manager.u_addr_gen_ifm_m2.num_cgroup,
+        dut.u_control_unit_top.u_local_dataflow_manager.u_addr_gen_ifm_m2.num_fgroup,
+        dut.u_control_unit_top.u_local_dataflow_manager.u_addr_gen_ifm_m2.block_row_q,
+        dut.u_control_unit_top.u_local_dataflow_manager.u_addr_gen_ifm_m2.block_col_q,
+        dut.u_control_unit_top.u_local_dataflow_manager.u_addr_gen_ifm_m2.issue_cgroup_q,
+        dut.u_control_unit_top.u_local_dataflow_manager.u_addr_gen_ifm_m2.issue_ky_q,
+        dut.u_control_unit_top.u_local_dataflow_manager.u_addr_gen_ifm_m2.issue_kx_q,
+        dut.u_control_unit_top.u_local_dataflow_manager.u_addr_gen_ifm_m2.issue_any,
+        dut.u_control_unit_top.u_local_dataflow_manager.u_addr_gen_ifm_m2.issue_first,
+        dut.u_control_unit_top.u_local_dataflow_manager.u_addr_gen_ifm_m2.issue_succ,
+        dut.u_control_unit_top.u_local_dataflow_manager.u_addr_gen_ifm_m2.issue_addr_valid,
+        dut.u_control_unit_top.u_local_dataflow_manager.u_addr_gen_ifm_m2.issue_bank_base16,
+        dut.u_control_unit_top.u_local_dataflow_manager.u_addr_gen_ifm_m2.issue_abs_row16,
+        dut.u_control_unit_top.u_local_dataflow_manager.u_addr_gen_ifm_m2.issue_abs_col_g16,
+        dut.u_control_unit_top.u_local_dataflow_manager.u_addr_gen_ifm_m2.issue_tile_base_g16,
+        dut.u_control_unit_top.u_local_dataflow_manager.u_addr_gen_ifm_m2.issue_col_sel_l16,
+        dut.u_control_unit_top.u_local_dataflow_manager.u_addr_gen_ifm_m2.out_row,
+        dut.u_control_unit_top.u_local_dataflow_manager.u_addr_gen_ifm_m2.out_col,
+        dut.u_control_unit_top.u_local_dataflow_manager.u_addr_gen_ifm_m2.f_group,
+        dut.u_control_unit_top.u_local_dataflow_manager.u_addr_gen_ifm_m2.pass_start_pulse,
+        dut.u_control_unit_top.u_local_dataflow_manager.u_addr_gen_ifm_m2.mac_en,
+        dut.u_control_unit_top.u_local_dataflow_manager.u_addr_gen_ifm_m2.out_valid,
+        dut.u_control_unit_top.u_local_dataflow_manager.u_addr_gen_ifm_m2.stream_active_q,
+        dut.u_control_unit_top.u_local_dataflow_manager.u_addr_gen_ifm_m2.last_issue,
+        dut.u_control_unit_top.u_local_dataflow_manager.u_addr_gen_ifm_m2.final_out_valid
+      );
+    end
+  end
 
   // --------------------------------------------------------------------------
   // DDR model
@@ -508,7 +657,8 @@ module tb_cnn_top_5layer_m2_partial_group_stress_tiled;
         PC, PF, PTOTAL, L0_NUM_FGROUP, L1_NUM_FGROUP, L2_NUM_FGROUP, L3_NUM_FGROUP, L4_NUM_FGROUP);
       $display("TB_INFO: expected DDR->IFM reads=%0d", L0_C_IN*L0_H_IN);
       $display("TB_INFO: expected WGT reads=%0d", L0_WGT_WORDS+L1_WGT_WORDS+L2_WGT_WORDS+L3_WGT_WORDS+L4_WGT_WORDS);
-      $display("TB_INFO: expected OFM->IFM M2 stream commands >= %0d", EXP_OFM2IFM_STREAMS);
+      $display("TB_INFO: expected deterministic OFM->IFM M2 stream commands >= %0d", EXP_OFM2IFM_STREAMS);
+      $display("TB_INFO: stream breakdown L0->L1=%0d L1->L2=%0d L2->L3=%0d L3->L4=%0d", L1_STREAMS, L2_STREAMS, L3_STREAMS, L4_STREAMS);
       $display("TB_INFO: expected final OFM DDR words=%0d, each lane0 value=%0d", EXPECTED_OFM_DDR_WORDS, EXPECTED_FINAL_VALUE);
     end
   endtask
@@ -549,7 +699,7 @@ module tb_cnn_top_5layer_m2_partial_group_stress_tiled;
       $display("TB_ERROR_DECODE: bit0=dma_error bit1=ofm_error bit2=local_error bit3=transition_error");
       $display("DDR counts at stop: ifm_reads=%0d wgt_reads=%0d ofm_writes=%0d done_seen=%0b busy=%0b",
         ddr_ifm_read_count, ddr_wgt_read_count, ddr_ofm_write_count, done_seen, busy);
-      $display("Stream counts at stop: start=%0d done=%0d m2_req=%0d expected>=%0d",
+      $display("Stream counts at stop: start=%0d done=%0d legacy_m2_req=%0d expected_det>=%0d",
         ofm_ifm_stream_start_count, ofm_ifm_stream_done_count, m2_sm_refill_req_count, EXP_OFM2IFM_STREAMS);
       dump_ofm_region();
       $fatal(1, "TB_FAIL: DUT error before successful completion");
@@ -560,7 +710,7 @@ module tb_cnn_top_5layer_m2_partial_group_stress_tiled;
         cycle_count, busy, done, error, dbg_layer_idx, dbg_mode, dbg_error_vec);
       $display("DDR counts at timeout: ifm_reads=%0d wgt_reads=%0d ofm_writes=%0d",
         ddr_ifm_read_count, ddr_wgt_read_count, ddr_ofm_write_count);
-      $display("Stream counts at timeout: start=%0d done=%0d m2_req=%0d expected>=%0d",
+      $display("Stream counts at timeout: start=%0d done=%0d legacy_m2_req=%0d expected_det>=%0d",
         ofm_ifm_stream_start_count, ofm_ifm_stream_done_count, m2_sm_refill_req_count, EXP_OFM2IFM_STREAMS);
       dump_ofm_region();
       $fatal(1, "TB_FAIL: timeout");
@@ -575,8 +725,11 @@ module tb_cnn_top_5layer_m2_partial_group_stress_tiled;
       ddr_ifm_read_count, L0_C_IN*L0_H_IN,
       ddr_wgt_read_count, L0_WGT_WORDS+L1_WGT_WORDS+L2_WGT_WORDS+L3_WGT_WORDS+L4_WGT_WORDS,
       ddr_ofm_write_count, EXPECTED_OFM_DDR_WORDS);
-    $display("TB_INFO: OFM->IFM stream starts=%0d done=%0d expected>=%0d, m2_refill_req=%0d",
+    $display("TB_INFO: OFM->IFM stream starts=%0d done=%0d expected_det>=%0d, legacy_m2_refill_req=%0d",
       ofm_ifm_stream_start_count, ofm_ifm_stream_done_count, EXP_OFM2IFM_STREAMS, m2_sm_refill_req_count);
+    if (m2_sm_refill_req_count != 0) begin
+      $display("TB_WARN: legacy M2 refill request count is nonzero (%0d). Deterministic M2 handoff is expected to bypass legacy refill manager.", m2_sm_refill_req_count);
+    end
 
     if (ddr_ifm_read_count != (L0_C_IN*L0_H_IN)) begin
       $fatal(1, "TB_FAIL: unexpected IFM DDR read count");

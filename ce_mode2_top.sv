@@ -64,11 +64,18 @@ module ce_mode2_top #(
 );
 
   logic [15:0] f_base_cur;
+  logic [15:0] c_base_cur;
   logic        weight_write_en;
   logic [PF*PC*DATA_W-1:0] weight_write_data;
 
+  // Raw outputs from the internal registers. These may contain X/rubbish
+  // on inactive lanes in partial C/F groups, so they are masked before MAC.
+  logic [PC*DATA_W-1:0]       data_out_raw;
+  logic [PF*PC*DATA_W-1:0]    weight_out_raw;
+
   always_comb begin
     f_base_cur = f_group * PF;
+    c_base_cur = c_group * PC;
   end
 
   ce_controller_mode2 #(
@@ -115,11 +122,13 @@ module ce_mode2_top #(
     .clk          (clk),
     .rst_n        (rst_n),
     .K_cur        (K_cur),
+    .C_cur        (C_cur),
+    .c_group      (c_group),
     .write_en     (dr_write_en),
     .write_row_idx(dr_write_row_idx),
     .write_data   (dr_write_data),
     .read_row_idx (ky),
-    .data_out     (data_out_logic)
+    .data_out     (data_out_raw)
   );
 
   weight_read_ctrl_mode2 #(
@@ -163,8 +172,41 @@ module ce_mode2_top #(
     .rst_n     (rst_n),
     .write_en  (weight_write_en),
     .write_data(weight_write_data),
-    .weight_out(weight_out)
+    .weight_out(weight_out_raw)
   );
+
+
+
+  // ------------------------------------------------------------
+  // Final Mode-2 lane mask before the MAC array.
+  //
+  // Mode 2 reduces across all PC lanes. For partial C groups
+  // (for example C_cur=3, PC=32), inactive channel lanes must be
+  // zero, otherwise a single X on pc>=C_cur poisons the whole sum.
+  // Also mask partial F groups so inactive filters cannot consume
+  // stale/rubbish weights.
+  // ------------------------------------------------------------
+  always_comb begin
+    data_out_logic = '0;
+    weight_out     = '0;
+
+    for (int pc_i = 0; pc_i < PC; pc_i++) begin
+      if ((c_base_cur + pc_i) < C_cur) begin
+        data_out_logic[pc_i*DATA_W +: DATA_W]
+          = data_out_raw[pc_i*DATA_W +: DATA_W];
+      end
+    end
+
+    for (int pf_i = 0; pf_i < PF; pf_i++) begin
+      for (int pc_i = 0; pc_i < PC; pc_i++) begin
+        if (((c_base_cur + pc_i) < C_cur) &&
+            ((f_base_cur + pf_i) < F_cur)) begin
+          weight_out[(pf_i*PC + pc_i)*DATA_W +: DATA_W]
+            = weight_out_raw[(pf_i*PC + pc_i)*DATA_W +: DATA_W];
+        end
+      end
+    end
+  end
 
   mac_array_mode2 #(
     .DATA_W (DATA_W),
