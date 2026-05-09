@@ -14,6 +14,12 @@ module ce_controller_mode2 #(
   input  logic start,
   input  logic step_en,
 
+  // Operand readiness from ce_mode2_top.
+  // This is used only to prime the first tuple of a new output block.
+  // Once S_RUN starts, the existing Mode-2 prefetch pipeline advances
+  // with step_en/mac_en exactly as before.
+  input  logic tuple_ready,
+
   // =====================================================
   // Runtime config
   // =====================================================
@@ -107,6 +113,8 @@ module ce_controller_mode2 #(
   logic last_row;
   logic last_fgroup;
 
+  logic block_start_fire;
+
   // =====================================================
   // Derived runtime values
   // =====================================================
@@ -130,6 +138,8 @@ module ce_controller_mode2 #(
     last_row    = (out_row_g_r == Hout_cur - 1);
     last_fgroup = (f_group_r == num_fgroup - 1);
   end
+
+  assign block_start_fire = step_en && tuple_ready;
 
   // =====================================================
   // FSM state register
@@ -158,7 +168,11 @@ module ce_controller_mode2 #(
       end
 
       S_CLEAR: begin
-        next_state = S_RUN;
+        // Wait only for the first IFM/weight tuple of this output block.
+        // After entering S_RUN, the existing Mode-2 prefetch pipeline
+        // advances with mac_en/step_en as originally designed.
+        if (block_start_fire)
+          next_state = S_RUN;
       end
 
       S_RUN: begin
@@ -285,14 +299,18 @@ module ce_controller_mode2 #(
     // Kept for interface symmetry/debug. mac_array_mode2 clears internally.
     clear_psum = (state == S_CLEAR);
 
-    // Accumulate only in RUN cycles.
+    // Accumulate in RUN cycles as in the original Mode-2 pipeline.
+    // tuple_ready only gates the transition out of S_CLEAR.
     mac_en = (state == S_RUN) && step_en;
 
     // Separate flush cycle so the last MAC accumulation is not lost.
     out_valid = (state == S_FLUSH);
 
     // Start of accumulation for the current GLOBAL pixel block.
-    pass_start_pulse = (state == S_CLEAR);
+    // This must be a single pulse when leaving S_CLEAR; otherwise
+    // addr_gen_ifm_m2/weight_read_ctrl_mode2 can issue repeatedly
+    // while waiting for the first tuple.
+    pass_start_pulse = (state == S_CLEAR) && block_start_fire;
 
     // First GLOBAL pixel result of one filter-group.
     // Top-level should delay this to match relu_out_valid timing.

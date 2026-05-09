@@ -73,10 +73,20 @@ module ce_mode2_top #(
   logic [PC*DATA_W-1:0]       data_out_raw;
   logic [PF*PC*DATA_W-1:0]    weight_out_raw;
 
+  // Block-start operand readiness for Mode 2.
+  // The CE waits in S_CLEAR until the first IFM/weight tuple of the
+  // current output block is loaded. After entering S_RUN, the existing
+  // prefetch-ahead cadence driven by pass_start_pulse/mac_en is preserved.
+  logic ifm_tuple_ready_q;
+  logic wgt_tuple_ready_q;
+  logic tuple_ready_s;
+
   always_comb begin
     f_base_cur = f_group * PF;
     c_base_cur = c_group * PC;
   end
+
+  assign tuple_ready_s = ifm_tuple_ready_q && wgt_tuple_ready_q;
 
   ce_controller_mode2 #(
     .K_MAX    (K_MAX),
@@ -89,6 +99,7 @@ module ce_mode2_top #(
     .rst_n             (rst_n),
     .start             (start),
     .step_en           (step_en),
+    .tuple_ready       (tuple_ready_s),
     .K_cur             (K_cur),
     .C_cur             (C_cur),
     .F_cur             (F_cur),
@@ -175,7 +186,37 @@ module ce_mode2_top #(
     .weight_out(weight_out_raw)
   );
 
+  // ------------------------------------------------------------
+  // Tuple-ready tracking for Mode 2.
+  //
+  // start/out_valid begin a new output block and invalidate the old
+  // first-tuple readiness. The CE controller uses tuple_ready only to
+  // release S_CLEAR. Do NOT clear readiness on every mac_en; otherwise
+  // Mode 2 is converted into a per-MAC handshake and can stall on layers
+  // with multiple C/F groups. Register writes have priority over clears
+  // so same-cycle return at a block boundary is not lost.
+  // ------------------------------------------------------------
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      ifm_tuple_ready_q <= 1'b0;
+      wgt_tuple_ready_q <= 1'b0;
+    end
+    else begin
+      if (start || out_valid) begin
+        ifm_tuple_ready_q <= 1'b0;
+        wgt_tuple_ready_q <= 1'b0;
+      end
 
+      // Writes have priority over the block-boundary clears above.
+      if (dr_write_en) begin
+        ifm_tuple_ready_q <= 1'b1;
+      end
+
+      if (weight_write_en) begin
+        wgt_tuple_ready_q <= 1'b1;
+      end
+    end
+  end
 
   // ------------------------------------------------------------
   // Final Mode-2 lane mask before the MAC array.
