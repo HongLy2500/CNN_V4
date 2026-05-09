@@ -197,6 +197,11 @@ module ofm_buffer #(
     logic [$clog2(W_MAX+1)-1:0] w_out_q;
     logic [7:0]   f_out_q;
     logic [7:0]   pv_cur_q, pf_cur_q, pv_next_q, pf_next_q;
+    // Timing helper for mode-1 OFM write path.
+    // Decode cfg_pf_cur once at layer_start instead of using pf_cur_q in the
+    // high-fanout write/update logic for mem_data/mem_fill. Functionally this
+    // is equivalent to (pf_idx < pf_cur_q) for all PTOTAL-bounded write lanes.
+    (* max_fanout = 32 *) logic [PTOTAL-1:0] pf_cur_active_q;
     logic [15:0]  src_pack_q;      // mode1 source pack: pooled Pv if pool_en=1, 1 if no-pool bypass
     logic [15:0]  store_pack_q;    // pack used by stored words for this layer
     logic [15:0]  stored_groups_q; // valid compact groups per row; physical row pitch is OFM_ROW_STRIDE
@@ -427,6 +432,7 @@ module ofm_buffer #(
             f_out_q            <= '0;
             pv_cur_q           <= '0;
             pf_cur_q           <= '0;
+            pf_cur_active_q    <= '0;
             pv_next_q          <= '0;
             pf_next_q          <= '0;
             src_pack_q         <= 16'd1;
@@ -605,6 +611,9 @@ module ofm_buffer #(
                 f_out_q            <= cfg_f_out;
                 pv_cur_q           <= cfg_pv_cur;
                 pf_cur_q           <= cfg_pf_cur;
+                for (i_tok = 0; i_tok < PTOTAL; i_tok++) begin
+                    pf_cur_active_q[i_tok] <= (i_tok < cfg_pf_cur);
+                end
                 pv_next_q          <= cfg_pv_next;
                 pf_next_q          <= cfg_pf_next;
                 // Source packing for mode-1 writes depends on whether the layer used pooling.
@@ -810,11 +819,22 @@ module ofm_buffer #(
                 // avoiding overlapping nonblocking clears/sets.
                 // ------------------------------
                 if (!error_q && !src_mode_q && m1_wr_en) begin
+                    // Timing fix: compute the number of active filter lanes from
+                    // the registered active mask instead of driving the whole
+                    // write datapath directly from pf_cur_q. This preserves the
+                    // original min(f_out_q-m1_wr_filter_base, pf_cur_q) behavior
+                    // for the supported PTOTAL-bounded mode-1 write group.
+                    valid_pf_m1 = 0;
+                    for (slot = 0; slot < PTOTAL; slot++) begin
+                        if (pf_cur_active_q[slot] && ((m1_wr_filter_base + slot) < f_out_q))
+                            valid_pf_m1 = valid_pf_m1 + 1;
+                    end
+
                     for (pf_idx = 0; pf_idx < PTOTAL; pf_idx++) begin
                         ch  = m1_wr_filter_base + pf_idx;
                         row = m1_wr_row;
 
-                        if ((pf_idx < pf_cur_q) && (ch < f_out_q) && (row < h_out_q)) begin
+                        if (pf_cur_active_q[pf_idx] && (ch < f_out_q) && (row < h_out_q)) begin
                             // Decode m1_wr_count as a rectangular valid region:
                             // valid filters x valid spatial lanes. At the right
                             // edge, pooling still maps lanes with the fixed
@@ -822,11 +842,6 @@ module ofm_buffer #(
                             // 12..14 when src_pack_q=4 and valid_x_m1=3.
                             // Therefore m1_wr_count must NOT be interpreted as
                             // the first N contiguous source lanes.
-                            valid_pf_m1 = f_out_q - m1_wr_filter_base;
-                            if (valid_pf_m1 > pf_cur_q)
-                                valid_pf_m1 = pf_cur_q;
-                            if (valid_pf_m1 < 0)
-                                valid_pf_m1 = 0;
 
                             if (valid_pf_m1 > 0)
                                 valid_x_m1 = (m1_wr_count + valid_pf_m1 - 1) / valid_pf_m1;
