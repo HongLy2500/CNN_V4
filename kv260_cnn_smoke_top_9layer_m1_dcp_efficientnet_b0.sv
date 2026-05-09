@@ -2,31 +2,33 @@
 `include "cnn_ddr_defs.svh"
 
 // ============================================================================
- // KV260 board wrapper: 9-layer REDUCED Mode-1 smoke benchmark
- //
- // Purpose:
- // - Keep the 9-layer control/refill/DDR/writeback flow.
- // - Keep all layers in Mode 1.
- // - Use a KV260-deployable scale instead of the full 224x224 / PTOTAL=2048
- //   configuration that made IFM/OFM memories too large for synthesis.
- //
- // Reduced topology:
- //   L0: 144x144x3   -> conv 142x142x8,  K=3, pool -> 71x71x8
- //   L1: 71x71x8     -> conv 69x69x8,    K=3
- //   L2: 69x69x8     -> conv 67x67x8,    K=3, pool -> 33x33x8
- //   L3: 33x33x8     -> conv 31x31x8,    K=3
- //   L4: 31x31x8     -> conv 29x29x16,   K=3, pool -> 14x14x16
- //   L5: 14x14x16    -> conv 12x12x16,   K=3
- //   L6: 12x12x16    -> conv 10x10x16,   K=3, pool -> 5x5x16
- //   L7: 5x5x16      -> conv 3x3x16,     K=3
- //   L8: 3x3x16      -> conv 1x1x16,     K=3
- //
- // Parameters:
- //   PTOTAL=16, PV_MAX=4, PF_MAX=4, DDR_WORD_W=32.
- //
- // This wrapper does NOT auto-initialize DDR. Load IFM/weights and clear OFM
- // from XSCT/Linux before asserting run.
- // ============================================================================
+// KV260 board wrapper for:
+// tb_cnn_top_9layer_m1_dcp_efficientnet_b0_tablevi_fullscale_with_expected_compare.sv
+//
+// This wrapper keeps the same layer table/configuration intent as the 9-layer
+// full-scale Mode-1 DCP/EfficientNet-B0-prefix testbench:
+//
+//   L0: 224x224x3   -> conv 222x222x32,  K=3, pool -> 111x111x32
+//   L1: 111x111x32  -> conv 109x109x16,  K=3
+//   L2: 109x109x16  -> conv 107x107x24,  K=3, pool -> 53x53x24
+//   L3: 53x53x24    -> conv 51x51x24,    K=3
+//   L4: 51x51x24    -> conv 49x49x40,    K=3, pool -> 24x24x40
+//   L5: 24x24x40    -> conv 22x22x40,    K=3
+//   L6: 22x22x40    -> conv 20x20x80,    K=3, pool -> 10x10x80
+//   L7: 10x10x80    -> conv 8x8x80,      K=3
+//   L8: 8x8x80      -> conv 6x6x192,     K=3
+//
+// IMPORTANT:
+// - This wrapper does NOT auto-initialize DDR. Load IFM/weights and clear OFM
+//   from XSCT/Linux before asserting run.
+// - This wrapper is intentionally drop-in compatible with the existing KV260
+//   Block Design ports, but its default data width is much larger than the
+//   small smoke test:
+//      DDR_WORD_W = PV_MAX*DATA_W = 128*8 = 1024 bits.
+//   The current cnn_dma_to_axi_bridge_kv260 requires AXI_DATA_W == DDR_WORD_W.
+//   Therefore the BD/SmartConnect/PS port must accept this AXI width or be
+//   reworked with a proper width-converting bridge.
+// ============================================================================
 
 module kv260_cnn_smoke_top
   import cnn_layer_desc_pkg::*;
@@ -35,25 +37,25 @@ module kv260_cnn_smoke_top
   parameter int PSUM_W           = 32,
 
   // DCP-CNN Table VI Mode-1 prefix: Pv*Pf = 2048.
-  parameter int PTOTAL           = 16,
-  parameter int PV_MAX           = 4,
-  parameter int PF_MAX           = 4,
+  parameter int PTOTAL           = 2048,
+  parameter int PV_MAX           = 128,
+  parameter int PF_MAX           = 128,
 
   // Mode-2 parameters are kept for descriptor compatibility; this test is M1.
-  parameter int PC_MODE2         = 2,
-  parameter int PF_MODE2         = 2,
+  parameter int PC_MODE2         = 32,
+  parameter int PF_MODE2         = 64,
 
   // EfficientNet-B0 table-derived Mode-1 prefix scale.
-  parameter int C_MAX            = 16,
-  parameter int F_MAX            = 16,
-  parameter int W_MAX            = 144,
-  parameter int H_MAX            = 144,
+  parameter int C_MAX            = 192,
+  parameter int F_MAX            = 192,
+  parameter int W_MAX            = 224,
+  parameter int H_MAX            = 224,
   parameter int HT               = 4,
   parameter int K_MAX            = 3,
 
   // Match the testbench row-aligned OFM storage.
   parameter int OFM_ROW_STRIDE   = 16,
-  parameter int WGT_DEPTH        = 2048,
+  parameter int WGT_DEPTH        = 8192,
   parameter int OFM_BANK_DEPTH   = H_MAX * OFM_ROW_STRIDE,
   parameter int OFM_LINEAR_DEPTH = C_MAX * OFM_BANK_DEPTH,
   parameter int CFG_DEPTH        = 16,
@@ -156,65 +158,65 @@ module kv260_cnn_smoke_top
   localparam int CFG_AW = (CFG_DEPTH <= 1) ? 1 : $clog2(CFG_DEPTH);
 
   // --------------------------------------------------------------------------
-  // Reduced 9-layer geometry.
+  // Layer geometry copied from the full-scale 9-layer Mode-1 testbench.
   // h_out/w_out descriptor fields are conv-output dimensions; pooling is
   // described by pool_en/pool_k/pool_stride.
   // --------------------------------------------------------------------------
-  localparam int L0_H_IN=144, L0_W_IN=144, L0_C_IN=3,  L0_F_OUT=8,   L0_K=3, L0_POOL_EN=1;
+  localparam int L0_H_IN=224, L0_W_IN=224, L0_C_IN=3,  L0_F_OUT=32,  L0_K=3, L0_POOL_EN=1;
   localparam int L0_H_CONV_OUT=L0_H_IN-L0_K+1, L0_W_CONV_OUT=L0_W_IN-L0_K+1;
   localparam int L0_H_OUT=(L0_POOL_EN ? (L0_H_CONV_OUT/2) : L0_H_CONV_OUT);
   localparam int L0_W_OUT=(L0_POOL_EN ? (L0_W_CONV_OUT/2) : L0_W_CONV_OUT);
 
-  localparam int L1_H_IN=L0_H_OUT, L1_W_IN=L0_W_OUT, L1_C_IN=L0_F_OUT, L1_F_OUT=8, L1_K=3, L1_POOL_EN=0;
+  localparam int L1_H_IN=L0_H_OUT, L1_W_IN=L0_W_OUT, L1_C_IN=L0_F_OUT, L1_F_OUT=16, L1_K=3, L1_POOL_EN=0;
   localparam int L1_H_CONV_OUT=L1_H_IN-L1_K+1, L1_W_CONV_OUT=L1_W_IN-L1_K+1;
   localparam int L1_H_OUT=(L1_POOL_EN ? (L1_H_CONV_OUT/2) : L1_H_CONV_OUT);
   localparam int L1_W_OUT=(L1_POOL_EN ? (L1_W_CONV_OUT/2) : L1_W_CONV_OUT);
 
-  localparam int L2_H_IN=L1_H_OUT, L2_W_IN=L1_W_OUT, L2_C_IN=L1_F_OUT, L2_F_OUT=8, L2_K=3, L2_POOL_EN=1;
+  localparam int L2_H_IN=L1_H_OUT, L2_W_IN=L1_W_OUT, L2_C_IN=L1_F_OUT, L2_F_OUT=24, L2_K=3, L2_POOL_EN=1;
   localparam int L2_H_CONV_OUT=L2_H_IN-L2_K+1, L2_W_CONV_OUT=L2_W_IN-L2_K+1;
   localparam int L2_H_OUT=(L2_POOL_EN ? (L2_H_CONV_OUT/2) : L2_H_CONV_OUT);
   localparam int L2_W_OUT=(L2_POOL_EN ? (L2_W_CONV_OUT/2) : L2_W_CONV_OUT);
 
-  localparam int L3_H_IN=L2_H_OUT, L3_W_IN=L2_W_OUT, L3_C_IN=L2_F_OUT, L3_F_OUT=8, L3_K=3, L3_POOL_EN=0;
+  localparam int L3_H_IN=L2_H_OUT, L3_W_IN=L2_W_OUT, L3_C_IN=L2_F_OUT, L3_F_OUT=24, L3_K=3, L3_POOL_EN=0;
   localparam int L3_H_CONV_OUT=L3_H_IN-L3_K+1, L3_W_CONV_OUT=L3_W_IN-L3_K+1;
   localparam int L3_H_OUT=(L3_POOL_EN ? (L3_H_CONV_OUT/2) : L3_H_CONV_OUT);
   localparam int L3_W_OUT=(L3_POOL_EN ? (L3_W_CONV_OUT/2) : L3_W_CONV_OUT);
 
-  localparam int L4_H_IN=L3_H_OUT, L4_W_IN=L3_W_OUT, L4_C_IN=L3_F_OUT, L4_F_OUT=16, L4_K=3, L4_POOL_EN=1;
+  localparam int L4_H_IN=L3_H_OUT, L4_W_IN=L3_W_OUT, L4_C_IN=L3_F_OUT, L4_F_OUT=40, L4_K=3, L4_POOL_EN=1;
   localparam int L4_H_CONV_OUT=L4_H_IN-L4_K+1, L4_W_CONV_OUT=L4_W_IN-L4_K+1;
   localparam int L4_H_OUT=(L4_POOL_EN ? (L4_H_CONV_OUT/2) : L4_H_CONV_OUT);
   localparam int L4_W_OUT=(L4_POOL_EN ? (L4_W_CONV_OUT/2) : L4_W_CONV_OUT);
 
-  localparam int L5_H_IN=L4_H_OUT, L5_W_IN=L4_W_OUT, L5_C_IN=L4_F_OUT, L5_F_OUT=16, L5_K=3, L5_POOL_EN=0;
+  localparam int L5_H_IN=L4_H_OUT, L5_W_IN=L4_W_OUT, L5_C_IN=L4_F_OUT, L5_F_OUT=40, L5_K=3, L5_POOL_EN=0;
   localparam int L5_H_CONV_OUT=L5_H_IN-L5_K+1, L5_W_CONV_OUT=L5_W_IN-L5_K+1;
   localparam int L5_H_OUT=(L5_POOL_EN ? (L5_H_CONV_OUT/2) : L5_H_CONV_OUT);
   localparam int L5_W_OUT=(L5_POOL_EN ? (L5_W_CONV_OUT/2) : L5_W_CONV_OUT);
 
-  localparam int L6_H_IN=L5_H_OUT, L6_W_IN=L5_W_OUT, L6_C_IN=L5_F_OUT, L6_F_OUT=16, L6_K=3, L6_POOL_EN=1;
+  localparam int L6_H_IN=L5_H_OUT, L6_W_IN=L5_W_OUT, L6_C_IN=L5_F_OUT, L6_F_OUT=80, L6_K=3, L6_POOL_EN=1;
   localparam int L6_H_CONV_OUT=L6_H_IN-L6_K+1, L6_W_CONV_OUT=L6_W_IN-L6_K+1;
   localparam int L6_H_OUT=(L6_POOL_EN ? (L6_H_CONV_OUT/2) : L6_H_CONV_OUT);
   localparam int L6_W_OUT=(L6_POOL_EN ? (L6_W_CONV_OUT/2) : L6_W_CONV_OUT);
 
-  localparam int L7_H_IN=L6_H_OUT, L7_W_IN=L6_W_OUT, L7_C_IN=L6_F_OUT, L7_F_OUT=16, L7_K=3, L7_POOL_EN=0;
+  localparam int L7_H_IN=L6_H_OUT, L7_W_IN=L6_W_OUT, L7_C_IN=L6_F_OUT, L7_F_OUT=80, L7_K=3, L7_POOL_EN=0;
   localparam int L7_H_CONV_OUT=L7_H_IN-L7_K+1, L7_W_CONV_OUT=L7_W_IN-L7_K+1;
   localparam int L7_H_OUT=(L7_POOL_EN ? (L7_H_CONV_OUT/2) : L7_H_CONV_OUT);
   localparam int L7_W_OUT=(L7_POOL_EN ? (L7_W_CONV_OUT/2) : L7_W_CONV_OUT);
 
-  localparam int L8_H_IN=L7_H_OUT, L8_W_IN=L7_W_OUT, L8_C_IN=L7_F_OUT, L8_F_OUT=16, L8_K=3, L8_POOL_EN=0;
+  localparam int L8_H_IN=L7_H_OUT, L8_W_IN=L7_W_OUT, L8_C_IN=L7_F_OUT, L8_F_OUT=192, L8_K=3, L8_POOL_EN=0;
   localparam int L8_H_CONV_OUT=L8_H_IN-L8_K+1, L8_W_CONV_OUT=L8_W_IN-L8_K+1;
   localparam int L8_H_OUT=(L8_POOL_EN ? (L8_H_CONV_OUT/2) : L8_H_CONV_OUT);
   localparam int L8_W_OUT=(L8_POOL_EN ? (L8_W_CONV_OUT/2) : L8_W_CONV_OUT);
 
-  // Reduced Mode-1 Pv/Pf schedule.  All layers use Ptotal=Pv*Pf=16.
-  localparam int L0_PV=4, L0_PF=4;
-  localparam int L1_PV=4, L1_PF=4;
-  localparam int L2_PV=4, L2_PF=4;
-  localparam int L3_PV=4, L3_PF=4;
-  localparam int L4_PV=4, L4_PF=4;
-  localparam int L5_PV=4, L5_PF=4;
-  localparam int L6_PV=4, L6_PF=4;
-  localparam int L7_PV=4, L7_PF=4;
-  localparam int L8_PV=4, L8_PF=4;
+  // DCP Table-VI expanded Mode-1 Pv/Pf.
+  localparam int L0_PV=128, L0_PF=16;
+  localparam int L1_PV=128, L1_PF=16;
+  localparam int L2_PV=64,  L2_PF=32;
+  localparam int L3_PV=64,  L3_PF=32;
+  localparam int L4_PV=64,  L4_PF=32;
+  localparam int L5_PV=32,  L5_PF=64;
+  localparam int L6_PV=32,  L6_PF=64;
+  localparam int L7_PV=32,  L7_PF=64;
+  localparam int L8_PV=16,  L8_PF=128;
 
   // Weight DDR packing/bases copied from the testbench.
   localparam int WGT_SUBWORDS=(PTOTAL+PV_MAX-1)/PV_MAX;

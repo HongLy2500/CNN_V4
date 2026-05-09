@@ -10,9 +10,12 @@ module pooling_mode2 #(
 
   // --------------------------------------------------
   // Runtime config
+  // pool_en=1: 2x2 max-pooling, stride 2
+  // pool_en=0: bypass/no-pool, one input pixel -> one OFM write
   // --------------------------------------------------
   input  logic [15:0] W_cur,
   input  logic [15:0] H_cur,
+  input  logic        pool_en,
 
   // --------------------------------------------------
   // Input stream from ReLU mode 2
@@ -29,9 +32,9 @@ module pooling_mode2 #(
 
   // --------------------------------------------------
   // Output write interface to OFM buffer
-  // Each write stores PF pooled values of one pooled pixel.
-  // OUT_W may be smaller than DATA_W; pooled results are
-  // saturated to signed OUT_W range before being driven out.
+  // Each write stores PF pooled/no-pool values of one output pixel.
+  // OUT_W may be smaller than DATA_W; results are saturated to signed
+  // OUT_W range before being driven out.
   // --------------------------------------------------
   output logic                 ofm_wr_en,
   output logic [15:0]          ofm_wr_row,
@@ -42,6 +45,27 @@ module pooling_mode2 #(
 
   localparam int signed OUT_MAX = (1 <<< (OUT_W-1)) - 1;
   localparam int signed OUT_MIN = -(1 <<< (OUT_W-1));
+
+  // --------------------------------------------------
+  // Input staging
+  // --------------------------------------------------
+  // ReLU mode2 is registered. If this module consumes data_in directly in the
+  // same always_ff edge as data_in_valid, it can sample the previous data value
+  // while seeing the current valid pulse. That creates exactly the kind of
+  // first-pixel error seen in the 9-layer Mode2 test: the first no-pool output
+  // of a filter group is written as 0, while following pixels are correct.
+  //
+  // Therefore every input sample and its metadata are captured first, then the
+  // pooling/bypass state machine consumes the staged sample one cycle later.
+  // This adds one cycle of latency but keeps valid/data/coords/f_base aligned.
+  // --------------------------------------------------
+  logic                 in_valid_q;
+  logic [PF*DATA_W-1:0] in_data_q;
+  logic                 in_group_start_q;
+  logic [15:0]          in_f_base_q;
+  logic [15:0]          W_cur_q;
+  logic [15:0]          H_cur_q;
+  logic                 pool_en_q;
 
   // --------------------------------------------------
   // Two-row buffer:
@@ -79,21 +103,20 @@ module pooling_mode2 #(
   endfunction
 
   // --------------------------------------------------
-  // Unpack input lanes
+  // Unpack staged input lanes
   // --------------------------------------------------
   always_comb begin
     for (int pf = 0; pf < PF; pf++) begin
-      in_lane[pf] = signed'(data_in[pf*DATA_W +: DATA_W]);
+      in_lane[pf] = signed'(in_data_q[pf*DATA_W +: DATA_W]);
     end
   end
 
   // --------------------------------------------------
-  // Effective coordinates for the current incoming sample
-  // If a new filter-group starts, that current sample is
-  // treated as (row=0, col=0).
+  // Effective coordinates for the staged incoming sample
+  // If a new filter-group starts, that staged sample is treated as (row=0,col=0).
   // --------------------------------------------------
   always_comb begin
-    if (in_group_start) begin
+    if (in_group_start_q) begin
       eff_row = 16'd0;
       eff_col = 16'd0;
     end
@@ -107,23 +130,18 @@ module pooling_mode2 #(
   end
 
   // --------------------------------------------------
-  // Combinational 2x2 max-pooling, stride 2
+  // Combinational 2x2 max-pooling, stride 2.
+  // Uses the STAGED current sample.
   // Valid only when current sample closes a 2x2 window:
   //   eff_row is odd and eff_col is odd
-  //
-  // Window:
-  //   top-left     = previous row, col-1
-  //   top-right    = previous row, col
-  //   bottom-left  = current row,  col-1
-  //   bottom-right = current input
   // --------------------------------------------------
   always_comb begin
     for (int pf = 0; pf < PF; pf++) begin
       pool_lane[pf] = '0;
     end
 
-    if ((eff_row < H_cur) &&
-        (eff_col < W_cur) &&
+    if ((eff_row < H_cur_q) &&
+        (eff_col < W_cur_q) &&
         (eff_row < H_MAX) &&
         (eff_col < W_MAX) &&
         eff_row[0] &&
@@ -152,12 +170,22 @@ module pooling_mode2 #(
 
   // --------------------------------------------------
   // Sequential behavior
-  // - store incoming sample into current row buffer
+  // - consume one staged sample per cycle when in_valid_q=1
+  // - capture the raw input sample for consumption on the next cycle
+  // - store incoming sample into current row buffer only for pooling mode
   // - when a 2x2 window closes, emit pooled output to OFM
-  // - maintain raster counters for the current filter-group
+  // - in no-pool mode, emit every staged sample directly to OFM
   // --------------------------------------------------
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
+      in_valid_q       <= 1'b0;
+      in_data_q        <= '0;
+      in_group_start_q <= 1'b0;
+      in_f_base_q      <= '0;
+      W_cur_q          <= '0;
+      H_cur_q          <= '0;
+      pool_en_q        <= 1'b0;
+
       cur_row       <= '0;
       cur_col       <= '0;
       ofm_wr_en     <= 1'b0;
@@ -176,35 +204,59 @@ module pooling_mode2 #(
     else begin
       ofm_wr_en <= 1'b0;
 
-      if (data_in_valid) begin
-        // Store current sample into row buffer
-        for (int pf = 0; pf < PF; pf++) begin
-          if (eff_col < W_MAX)
-            row_buf[eff_buf_sel][pf][eff_col] <= in_lane[pf];
-        end
-
-        // Emit pooled output when a 2x2 window closes
-        if ((eff_row < H_cur) &&
-            (eff_col < W_cur) &&
-            (eff_row < H_MAX) &&
-            (eff_col < W_MAX) &&
-            eff_row[0] &&
-            eff_col[0]) begin
-          ofm_wr_en     <= 1'b1;
-          ofm_wr_row    <= eff_row >> 1;
-          ofm_wr_col    <= eff_col >> 1;
-          ofm_wr_f_base <= in_f_base;
-
+      // ------------------------------------------------
+      // Consume the previously staged sample.
+      // ------------------------------------------------
+      if (in_valid_q) begin
+        if (pool_en_q) begin
+          // Store current sample into row buffer only in pooling mode.
           for (int pf = 0; pf < PF; pf++) begin
-            ofm_wr_data[pf*OUT_W +: OUT_W] <= sat_to_out(pool_lane[pf]);
+            if (eff_col < W_MAX)
+              row_buf[eff_buf_sel][pf][eff_col] <= in_lane[pf];
+          end
+
+          // Emit pooled output when a 2x2 window closes.
+          if ((eff_row < H_cur_q) &&
+              (eff_col < W_cur_q) &&
+              (eff_row < H_MAX) &&
+              (eff_col < W_MAX) &&
+              eff_row[0] &&
+              eff_col[0]) begin
+            ofm_wr_en     <= 1'b1;
+            ofm_wr_row    <= eff_row >> 1;
+            ofm_wr_col    <= eff_col >> 1;
+            ofm_wr_f_base <= in_f_base_q;
+
+            for (int pf = 0; pf < PF; pf++) begin
+              ofm_wr_data[pf*OUT_W +: OUT_W] <= sat_to_out(pool_lane[pf]);
+            end
+          end
+        end
+        else begin
+          // No-pool/bypass path:
+          // one staged ReLU sample produces exactly one OFM write at the same
+          // global spatial coordinate. Do NOT divide row/col by 2 and do NOT
+          // wait for a 2x2 window.
+          if ((eff_row < H_cur_q) &&
+              (eff_col < W_cur_q) &&
+              (eff_row < H_MAX) &&
+              (eff_col < W_MAX)) begin
+            ofm_wr_en     <= 1'b1;
+            ofm_wr_row    <= eff_row;
+            ofm_wr_col    <= eff_col;
+            ofm_wr_f_base <= in_f_base_q;
+
+            for (int pf = 0; pf < PF; pf++) begin
+              ofm_wr_data[pf*OUT_W +: OUT_W] <= sat_to_out(in_lane[pf]);
+            end
           end
         end
 
-        // Advance raster counters for current filter-group
-        if (in_group_start) begin
-          if (W_cur == 16'd1) begin
+        // Advance raster counters for the staged filter-group sample.
+        if (in_group_start_q) begin
+          if (W_cur_q == 16'd1) begin
             cur_col <= '0;
-            if (H_cur == 16'd1)
+            if (H_cur_q == 16'd1)
               cur_row <= '0;
             else
               cur_row <= 16'd1;
@@ -215,9 +267,9 @@ module pooling_mode2 #(
           end
         end
         else begin
-          if (cur_col == (W_cur - 1)) begin
+          if (cur_col == (W_cur_q - 1)) begin
             cur_col <= '0;
-            if (cur_row == (H_cur - 1))
+            if (cur_row == (H_cur_q - 1))
               cur_row <= '0;
             else
               cur_row <= cur_row + 1'b1;
@@ -226,6 +278,20 @@ module pooling_mode2 #(
             cur_col <= cur_col + 1'b1;
           end
         end
+      end
+
+      // ------------------------------------------------
+      // Stage current raw input for consumption next cycle.
+      // Capture metadata only when the sample is valid.
+      // ------------------------------------------------
+      in_valid_q <= data_in_valid;
+      if (data_in_valid) begin
+        in_data_q        <= data_in;
+        in_group_start_q <= in_group_start;
+        in_f_base_q      <= in_f_base;
+        W_cur_q          <= W_cur;
+        H_cur_q          <= H_cur;
+        pool_en_q        <= pool_en;
       end
     end
   end

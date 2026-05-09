@@ -14,6 +14,7 @@ module mode2_compute_top #(
 
   input  logic start,
   input  logic step_en,
+  input  logic pool_en,
 
   input  logic [15:0] K_cur,
   input  logic [15:0] C_cur,
@@ -190,6 +191,7 @@ module mode2_compute_top #(
     .rst_n         (rst_n),
     .W_cur         (Wout_cur),
     .H_cur         (Hout_cur),
+    .pool_en       (pool_en),
     .data_in       (relu_data_out),
     .data_in_valid (relu_data_out_valid),
     .in_group_start(relu_group_start),
