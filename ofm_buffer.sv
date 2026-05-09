@@ -964,7 +964,7 @@ module ofm_buffer #(
                         px2  = sat_m2(m2_wr_data[pf_idx*M2_IN_W +: M2_IN_W]);
 
                         if ((pf_idx < valid_pf) && (row < h_out_q) && (col < w_out_q) && (addr < DEPTH) && (lane < PV_MAX)) begin
-                            if (mem_tag[ch][addr] != layer_tag_q) begin
+                            if (mem_tag[ch][addr] !== layer_tag_q) begin
                                 mem_tag[ch][addr]  <= layer_tag_q;
                                 mem_data[ch][addr] <= '0;
                                 mem_fill[ch][addr] <= '0;
