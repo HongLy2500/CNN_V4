@@ -17,9 +17,9 @@ module ce_controller_mode2 #(
   // =====================================================
   // Runtime config
   // =====================================================
-  input  logic [15:0] K_cur,
-  input  logic [15:0] C_cur,
-  input  logic [15:0] F_cur,
+  input  logic [3:0] K_cur,
+  input  logic [7:0] C_cur,
+  input  logic [7:0] F_cur,
   input  logic [15:0] Hout_cur,
   input  logic [15:0] Wout_cur,
 

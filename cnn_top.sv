@@ -794,6 +794,7 @@ module cnn_top
     .rst_n             (rst_n),
     .start             (m2_start_s),
     .step_en           (m2_step_en_s),
+    .pool_en           (ofm_cfg_pool_en_s),
     .K_cur             (m2_k_cur_s),
     .C_cur             (m2_c_cur_s),
     .F_cur             (m2_f_cur_s),

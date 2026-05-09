@@ -1,0 +1,240 @@
+{
+  "ddr_word_bits": 1024,
+  "word_bytes": 128,
+  "axi_ddr_base": "0x70000000",
+  "ifm": {
+    "rtl_word_base": "0x00000",
+    "physical_base": "0x70000000",
+    "direct_ddr_words": 1344,
+    "bytes": 172032,
+    "file": "ifm_l0.bin"
+  },
+  "weights": {
+    "rtl_word_base": "0x08000",
+    "physical_base": "0x70400000",
+    "direct_ddr_words": 3008,
+    "bytes": 385024,
+    "file": "weights_9layer.bin"
+  },
+  "ofm_clear": {
+    "rtl_word_base": "0x10000",
+    "physical_base": "0x70800000",
+    "direct_ddr_words": 6912,
+    "bytes": 884736,
+    "file": "ofm_zero.bin",
+    "full_region_clear": false
+  },
+  "expected_final_ofm_words": 6912,
+  "converted_expected_words": 6912,
+  "weight_bases": [
+    {
+      "layer": 0,
+      "rtl_word_base": "0x08000",
+      "relative_words_from_wgt_base": 0,
+      "num_fgroup": 2,
+      "logical_bundles": 54,
+      "phys_words": 1,
+      "ddr_words": 16
+    },
+    {
+      "layer": 1,
+      "rtl_word_base": "0x08010",
+      "relative_words_from_wgt_base": 16,
+      "num_fgroup": 1,
+      "logical_bundles": 288,
+      "phys_words": 3,
+      "ddr_words": 48
+    },
+    {
+      "layer": 2,
+      "rtl_word_base": "0x08040",
+      "relative_words_from_wgt_base": 64,
+      "num_fgroup": 1,
+      "logical_bundles": 144,
+      "phys_words": 3,
+      "ddr_words": 48
+    },
+    {
+      "layer": 3,
+      "rtl_word_base": "0x08070",
+      "relative_words_from_wgt_base": 112,
+      "num_fgroup": 1,
+      "logical_bundles": 216,
+      "phys_words": 4,
+      "ddr_words": 64
+    },
+    {
+      "layer": 4,
+      "rtl_word_base": "0x080B0",
+      "relative_words_from_wgt_base": 176,
+      "num_fgroup": 2,
+      "logical_bundles": 432,
+      "phys_words": 7,
+      "ddr_words": 112
+    },
+    {
+      "layer": 5,
+      "rtl_word_base": "0x08120",
+      "relative_words_from_wgt_base": 288,
+      "num_fgroup": 1,
+      "logical_bundles": 360,
+      "phys_words": 12,
+      "ddr_words": 192
+    },
+    {
+      "layer": 6,
+      "rtl_word_base": "0x081E0",
+      "relative_words_from_wgt_base": 480,
+      "num_fgroup": 2,
+      "logical_bundles": 720,
+      "phys_words": 23,
+      "ddr_words": 368
+    },
+    {
+      "layer": 7,
+      "rtl_word_base": "0x08350",
+      "relative_words_from_wgt_base": 848,
+      "num_fgroup": 2,
+      "logical_bundles": 1440,
+      "phys_words": 45,
+      "ddr_words": 720
+    },
+    {
+      "layer": 8,
+      "rtl_word_base": "0x08620",
+      "relative_words_from_wgt_base": 1568,
+      "num_fgroup": 2,
+      "logical_bundles": 1440,
+      "phys_words": 90,
+      "ddr_words": 1440
+    }
+  ],
+  "layers": [
+    {
+      "H_IN": 224,
+      "W_IN": 224,
+      "C_IN": 3,
+      "F_OUT": 32,
+      "K": 3,
+      "POOL_EN": 1,
+      "H_CONV_OUT": 222,
+      "W_CONV_OUT": 222,
+      "H_OUT": 111,
+      "W_OUT": 111,
+      "PV": 128,
+      "PF": 16
+    },
+    {
+      "H_IN": 111,
+      "W_IN": 111,
+      "C_IN": 32,
+      "F_OUT": 16,
+      "K": 3,
+      "POOL_EN": 0,
+      "H_CONV_OUT": 109,
+      "W_CONV_OUT": 109,
+      "H_OUT": 109,
+      "W_OUT": 109,
+      "PV": 128,
+      "PF": 16
+    },
+    {
+      "H_IN": 109,
+      "W_IN": 109,
+      "C_IN": 16,
+      "F_OUT": 24,
+      "K": 3,
+      "POOL_EN": 1,
+      "H_CONV_OUT": 107,
+      "W_CONV_OUT": 107,
+      "H_OUT": 53,
+      "W_OUT": 53,
+      "PV": 64,
+      "PF": 32
+    },
+    {
+      "H_IN": 53,
+      "W_IN": 53,
+      "C_IN": 24,
+      "F_OUT": 24,
+      "K": 3,
+      "POOL_EN": 0,
+      "H_CONV_OUT": 51,
+      "W_CONV_OUT": 51,
+      "H_OUT": 51,
+      "W_OUT": 51,
+      "PV": 64,
+      "PF": 32
+    },
+    {
+      "H_IN": 51,
+      "W_IN": 51,
+      "C_IN": 24,
+      "F_OUT": 40,
+      "K": 3,
+      "POOL_EN": 1,
+      "H_CONV_OUT": 49,
+      "W_CONV_OUT": 49,
+      "H_OUT": 24,
+      "W_OUT": 24,
+      "PV": 64,
+      "PF": 32
+    },
+    {
+      "H_IN": 24,
+      "W_IN": 24,
+      "C_IN": 40,
+      "F_OUT": 40,
+      "K": 3,
+      "POOL_EN": 0,
+      "H_CONV_OUT": 22,
+      "W_CONV_OUT": 22,
+      "H_OUT": 22,
+      "W_OUT": 22,
+      "PV": 32,
+      "PF": 64
+    },
+    {
+      "H_IN": 22,
+      "W_IN": 22,
+      "C_IN": 40,
+      "F_OUT": 80,
+      "K": 3,
+      "POOL_EN": 1,
+      "H_CONV_OUT": 20,
+      "W_CONV_OUT": 20,
+      "H_OUT": 10,
+      "W_OUT": 10,
+      "PV": 32,
+      "PF": 64
+    },
+    {
+      "H_IN": 10,
+      "W_IN": 10,
+      "C_IN": 80,
+      "F_OUT": 80,
+      "K": 3,
+      "POOL_EN": 0,
+      "H_CONV_OUT": 8,
+      "W_CONV_OUT": 8,
+      "H_OUT": 8,
+      "W_OUT": 8,
+      "PV": 32,
+      "PF": 64
+    },
+    {
+      "H_IN": 8,
+      "W_IN": 8,
+      "C_IN": 80,
+      "F_OUT": 192,
+      "K": 3,
+      "POOL_EN": 0,
+      "H_CONV_OUT": 6,
+      "W_CONV_OUT": 6,
+      "H_OUT": 6,
+      "W_OUT": 6,
+      "PV": 16,
+      "PF": 128
+    }
+  ]
+}

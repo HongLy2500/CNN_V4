@@ -103,6 +103,19 @@ module tb_cnn_top_1layer_m2_simple_pool_exact;
   logic dbg_weight_bank;
   logic [3:0] dbg_error_vec;
 
+<<<<<<< HEAD
+=======
+  // Latch terminal pulses. Some DUT status/error signals may pulse for a single
+  // cycle; the original wait(done || error) could miss the root cause after the
+  // following repeat cycles.
+  logic done_seen;
+  logic error_seen;
+  logic [3:0] first_error_vec;
+  logic [$clog2(CFG_DEPTH)-1:0] first_error_layer;
+  logic first_error_mode;
+  integer first_error_cycle;
+
+>>>>>>> 317823a7d36e828f8d53e1e91f60044c87b16f65
   // --------------------------------------------------------------------------
   // Simple DDR model
   // --------------------------------------------------------------------------
@@ -189,6 +202,80 @@ module tb_cnn_top_1layer_m2_simple_pool_exact;
   initial clk = 1'b0;
   always #(CLK_PERIOD_NS/2) clk = ~clk;
 
+<<<<<<< HEAD
+=======
+
+always_ff @(posedge clk) begin
+  if (rst_n && ddr_wr_en &&
+      (ddr_wr_addr >= `DDR_OFM_BASE) &&
+      (ddr_wr_addr < (`DDR_OFM_BASE + `DDR_OFM_SIZE))) begin
+    $display("DBG_DDR_OFM_WRITE t=%0t cycle=%0d addr=0x%0h data=0x%0h be=0x%0h",
+      $time,
+      cycle_count,
+      ddr_wr_addr,
+      ddr_wr_data,
+      ddr_wr_be
+    );
+  end
+end
+
+always_ff @(posedge clk) begin
+  if (rst_n && dut.u_mode2_compute_top.ofm_wr_en) begin
+    $display("DBG_M2_OFM_WR t=%0t cycle=%0d row=%0d col=%0d fbase=%0d data=0x%0h lane0=%0d lane1=%0d",
+      $time,
+      cycle_count,
+      dut.u_mode2_compute_top.ofm_wr_row,
+      dut.u_mode2_compute_top.ofm_wr_col,
+      dut.u_mode2_compute_top.ofm_wr_f_base,
+      dut.u_mode2_compute_top.ofm_wr_data,
+      $signed(dut.u_mode2_compute_top.ofm_wr_data[0*DATA_W +: DATA_W]),
+      $signed(dut.u_mode2_compute_top.ofm_wr_data[1*DATA_W +: DATA_W])
+    );
+  end
+end
+
+always_ff @(posedge clk) begin
+  if (rst_n && dut.u_mode2_compute_top.ce_mac_data_out_valid) begin
+    $display("DBG_M2_MAC_OUT t=%0t cycle=%0d out_row=%0d out_col=%0d fgrp=%0d mac0=%0d mac1=%0d",
+      $time,
+      cycle_count,
+      dut.u_mode2_compute_top.out_row,
+      dut.u_mode2_compute_top.out_col,
+      dut.u_mode2_compute_top.f_group,
+      $signed(dut.u_mode2_compute_top.ce_mac_data_out[0*PSUM_W +: PSUM_W]),
+      $signed(dut.u_mode2_compute_top.ce_mac_data_out[1*PSUM_W +: PSUM_W])
+    );
+  end
+end
+
+always_ff @(posedge clk) begin
+  if (rst_n && dut.u_mode2_compute_top.relu_data_out_valid) begin
+    $display("DBG_M2_RELU_OUT t=%0t cycle=%0d relu0=%0d relu1=%0d group_start=%0b fbase=%0d",
+      $time,
+      cycle_count,
+      $signed(dut.u_mode2_compute_top.relu_data_out[0*PSUM_W +: PSUM_W]),
+      $signed(dut.u_mode2_compute_top.relu_data_out[1*PSUM_W +: PSUM_W]),
+      dut.u_mode2_compute_top.relu_group_start,
+      dut.u_mode2_compute_top.relu_f_base
+    );
+  end
+end
+
+always_ff @(posedge clk) begin
+  if (rst_n && dut.u_ofm_buffer.ofm_dma_rd_valid) begin
+    $display("DBG_OFM_DMA_RD t=%0t cycle=%0d rd_en=%0b rd_addr=%0d data=0x%0h keep=0x%0h layer_words=%0d done=%0b",
+      $time,
+      cycle_count,
+      dut.u_ofm_buffer.ofm_dma_rd_en,
+      dut.u_ofm_buffer.ofm_dma_rd_addr,
+      dut.u_ofm_buffer.ofm_dma_rd_data,
+      dut.u_ofm_buffer.ofm_dma_rd_keep,
+      dut.u_ofm_buffer.layer_num_words,
+      dut.u_ofm_buffer.layer_write_done
+    );
+  end
+end
+>>>>>>> 317823a7d36e828f8d53e1e91f60044c87b16f65
   // --------------------------------------------------------------------------
   // Single-driver DDR model
   // --------------------------------------------------------------------------
@@ -248,6 +335,129 @@ module tb_cnn_top_1layer_m2_simple_pool_exact;
   end
 
   // --------------------------------------------------------------------------
+<<<<<<< HEAD
+=======
+  // Terminal-status latch / first-error monitor
+  // --------------------------------------------------------------------------
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      done_seen         <= 1'b0;
+      error_seen        <= 1'b0;
+      first_error_vec   <= '0;
+      first_error_layer <= '0;
+      first_error_mode  <= 1'b0;
+      first_error_cycle <= 0;
+    end else begin
+      if (done) begin
+        done_seen <= 1'b1;
+      end
+
+      if (error && !error_seen) begin
+        error_seen        <= 1'b1;
+        first_error_vec   <= dbg_error_vec;
+        first_error_layer <= dbg_layer_idx;
+        first_error_mode  <= dbg_mode;
+        first_error_cycle <= cycle_count;
+
+        $display("DBG_FIRST_ERROR t=%0t cycle=%0d dbg_error_vec=%04b layer=%0d mode=%0d busy=%0b done=%0b error=%0b",
+                 $time, cycle_count, dbg_error_vec, dbg_layer_idx, dbg_mode, busy, done, error);
+        $display("DBG_ERROR_MAP bit0=dma_error bit1=ofm_error bit2=local_error bit3=transition_error");
+      end
+    end
+  end
+
+  // Lightweight progress monitor. This uses only top-level DUT signals, so it
+  // is safe even if internal instance names change.
+  always_ff @(posedge clk) begin
+    if (rst_n && (start || done || error || ddr_wr_en || ddr_rd_req)) begin
+      if (error || done) begin
+        $display("DBG_TOP_STATUS t=%0t cycle=%0d start=%0b busy=%0b done=%0b error=%0b vec=%04b layer=%0d mode=%0d ifm_rd=%0d wgt_rd=%0d ofm_wr=%0d rd_req=%0b rd_addr=0x%0h wr_en=%0b wr_addr=0x%0h",
+                 $time, cycle_count, start, busy, done, error, dbg_error_vec, dbg_layer_idx, dbg_mode,
+                 ddr_ifm_read_count, ddr_wgt_read_count, ddr_ofm_write_count,
+                 ddr_rd_req, ddr_rd_addr, ddr_wr_en, ddr_wr_addr);
+      end
+    end
+  end
+
+
+
+  // Deep local-dataflow monitor for the current Mode-2 failure.
+  // This catches the exact addr_gen_ifm_m2 state when local_error is asserted.
+  // If your internal instance names differ, disable this block and capture the same signals in waveform.
+`ifndef TB_DISABLE_DEEP_M2_LOCAL_MONITOR
+  always_ff @(posedge clk) begin
+    if (rst_n && dut.u_control_unit_top.u_local_dataflow_manager.u_addr_gen_ifm_m2.error) begin
+      $display("DBG_M2_LOCAL_ERROR t=%0t cycle=%0d K=%0d C=%0d F=%0d H_in=%0d W_in=%0d Hout=%0d Wout=%0d num_cgrp=%0d num_fgrp=%0d block_row=%0d block_col=%0d issue_cgrp=%0d ky=%0d kx=%0d issue_any=%0b issue_first=%0b issue_succ=%0b addr_valid=%0b bank_base=%0d abs_row=%0d abs_col=%0d tile_base=%0d col_l=%0d out_row=%0d out_col=%0d f_group=%0d pass_start=%0b mac_en=%0b out_valid=%0b stream_active=%0b last_issue=%0b final_out_valid=%0b",
+        $time,
+        cycle_count,
+        dut.u_control_unit_top.u_local_dataflow_manager.u_addr_gen_ifm_m2.K_cur,
+        dut.u_control_unit_top.u_local_dataflow_manager.u_addr_gen_ifm_m2.C_cur,
+        dut.u_control_unit_top.u_local_dataflow_manager.u_addr_gen_ifm_m2.F_cur,
+        dut.u_control_unit_top.u_local_dataflow_manager.u_addr_gen_ifm_m2.H_in,
+        dut.u_control_unit_top.u_local_dataflow_manager.u_addr_gen_ifm_m2.W_in,
+        dut.u_control_unit_top.u_local_dataflow_manager.u_addr_gen_ifm_m2.Hout_cur,
+        dut.u_control_unit_top.u_local_dataflow_manager.u_addr_gen_ifm_m2.Wout_cur,
+        dut.u_control_unit_top.u_local_dataflow_manager.u_addr_gen_ifm_m2.num_cgroup,
+        dut.u_control_unit_top.u_local_dataflow_manager.u_addr_gen_ifm_m2.num_fgroup,
+        dut.u_control_unit_top.u_local_dataflow_manager.u_addr_gen_ifm_m2.block_row_q,
+        dut.u_control_unit_top.u_local_dataflow_manager.u_addr_gen_ifm_m2.block_col_q,
+        dut.u_control_unit_top.u_local_dataflow_manager.u_addr_gen_ifm_m2.issue_cgroup_q,
+        dut.u_control_unit_top.u_local_dataflow_manager.u_addr_gen_ifm_m2.issue_ky_q,
+        dut.u_control_unit_top.u_local_dataflow_manager.u_addr_gen_ifm_m2.issue_kx_q,
+        dut.u_control_unit_top.u_local_dataflow_manager.u_addr_gen_ifm_m2.issue_any,
+        dut.u_control_unit_top.u_local_dataflow_manager.u_addr_gen_ifm_m2.issue_first,
+        dut.u_control_unit_top.u_local_dataflow_manager.u_addr_gen_ifm_m2.issue_succ,
+        dut.u_control_unit_top.u_local_dataflow_manager.u_addr_gen_ifm_m2.issue_addr_valid,
+        dut.u_control_unit_top.u_local_dataflow_manager.u_addr_gen_ifm_m2.issue_bank_base16,
+        dut.u_control_unit_top.u_local_dataflow_manager.u_addr_gen_ifm_m2.issue_abs_row16,
+        dut.u_control_unit_top.u_local_dataflow_manager.u_addr_gen_ifm_m2.issue_abs_col_g16,
+        dut.u_control_unit_top.u_local_dataflow_manager.u_addr_gen_ifm_m2.issue_tile_base_g16,
+        dut.u_control_unit_top.u_local_dataflow_manager.u_addr_gen_ifm_m2.issue_col_sel_l16,
+        dut.u_control_unit_top.u_local_dataflow_manager.u_addr_gen_ifm_m2.out_row,
+        dut.u_control_unit_top.u_local_dataflow_manager.u_addr_gen_ifm_m2.out_col,
+        dut.u_control_unit_top.u_local_dataflow_manager.u_addr_gen_ifm_m2.f_group,
+        dut.u_control_unit_top.u_local_dataflow_manager.u_addr_gen_ifm_m2.pass_start_pulse,
+        dut.u_control_unit_top.u_local_dataflow_manager.u_addr_gen_ifm_m2.mac_en,
+        dut.u_control_unit_top.u_local_dataflow_manager.u_addr_gen_ifm_m2.out_valid,
+        dut.u_control_unit_top.u_local_dataflow_manager.u_addr_gen_ifm_m2.stream_active_q,
+        dut.u_control_unit_top.u_local_dataflow_manager.u_addr_gen_ifm_m2.last_issue,
+        dut.u_control_unit_top.u_local_dataflow_manager.u_addr_gen_ifm_m2.final_out_valid
+      );
+    end
+  end
+`endif
+
+  // Optional deep monitor. Enable only if these hierarchy names match your
+  // current cnn_top. It is disabled by default to keep the testbench portable.
+`ifdef TB_DEEP_M2_MONITOR
+  always_ff @(posedge clk) begin
+    if (rst_n && dut.u_ofm_buffer.error) begin
+      $display("DBG_OFM_ERROR t=%0t cycle=%0d src_mode=%0b next_mode=%0b h=%0d w=%0d f=%0d pv_cur=%0d pf_cur=%0d pv_next=%0d pf_next=%0d store_pack=%0d groups=%0d pixels=%0d/%0d layer_done=%0b m2_wr_en=%0b m2_row=%0d m2_col=%0d m2_fbase=%0d",
+        $time, cycle_count,
+        dut.u_ofm_buffer.src_mode_q,
+        dut.u_ofm_buffer.next_mode_q,
+        dut.u_ofm_buffer.h_out_q,
+        dut.u_ofm_buffer.w_out_q,
+        dut.u_ofm_buffer.f_out_q,
+        dut.u_ofm_buffer.pv_cur_q,
+        dut.u_ofm_buffer.pf_cur_q,
+        dut.u_ofm_buffer.pv_next_q,
+        dut.u_ofm_buffer.pf_next_q,
+        dut.u_ofm_buffer.store_pack_q,
+        dut.u_ofm_buffer.stored_groups_q,
+        dut.u_ofm_buffer.layer_pixels_written,
+        dut.u_ofm_buffer.layer_num_pixels,
+        dut.u_ofm_buffer.layer_write_done,
+        dut.u_ofm_buffer.m2_wr_en,
+        dut.u_ofm_buffer.m2_wr_row,
+        dut.u_ofm_buffer.m2_wr_col,
+        dut.u_ofm_buffer.m2_wr_f_base);
+    end
+  end
+`endif
+
+  // --------------------------------------------------------------------------
+>>>>>>> 317823a7d36e828f8d53e1e91f60044c87b16f65
   // Helpers
   // --------------------------------------------------------------------------
   function automatic logic [DDR_WORD_W-1:0] pack_pc_ones_word;
@@ -421,6 +631,7 @@ module tb_cnn_top_1layer_m2_simple_pool_exact;
     repeat (5) @(posedge clk);
     pulse_start();
 
+<<<<<<< HEAD
     wait (done || error || (cycle_count > MAX_CYCLES));
     repeat (5) @(posedge clk);
 
@@ -431,6 +642,19 @@ module tb_cnn_top_1layer_m2_simple_pool_exact;
                ddr_ifm_read_count, ddr_wgt_read_count, ddr_ofm_write_count);
       dump_ofm_region();
       $finish;
+=======
+    wait (done_seen || error_seen || (cycle_count > MAX_CYCLES));
+    repeat (2) @(posedge clk);
+
+    if (error_seen) begin
+      $display("TB_FAIL: DUT asserted error. first_error_vec=%04b layer=%0d mode=%0d first_error_cycle=%0d",
+               first_error_vec, first_error_layer, first_error_mode, first_error_cycle);
+      $display("TB_ERROR_DECODE: bit0=dma_error bit1=ofm_error bit2=local_error bit3=transition_error");
+      $display("DDR counts at stop: ifm_reads=%0d wgt_reads=%0d ofm_writes=%0d done_seen=%0b busy=%0b",
+               ddr_ifm_read_count, ddr_wgt_read_count, ddr_ofm_write_count, done_seen, busy);
+      dump_ofm_region();
+      $fatal(1, "TB_FAIL: DUT error before successful completion");
+>>>>>>> 317823a7d36e828f8d53e1e91f60044c87b16f65
     end
 
     if (cycle_count > MAX_CYCLES) begin
@@ -442,6 +666,13 @@ module tb_cnn_top_1layer_m2_simple_pool_exact;
       $finish;
     end
 
+<<<<<<< HEAD
+=======
+    if (!done_seen) begin
+      $fatal(1, "TB_FAIL: stopped without done_seen");
+    end
+
+>>>>>>> 317823a7d36e828f8d53e1e91f60044c87b16f65
     $display("TB_INFO: Mode2 done after %0d cycles", cycle_count);
     $display("TB_INFO: DDR counts: ifm_reads=%0d expected=%0d, wgt_reads=%0d expected=%0d, ofm_writes=%0d expected=%0d",
              ddr_ifm_read_count, IFM_C*IFM_H,

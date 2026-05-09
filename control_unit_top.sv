@@ -258,6 +258,25 @@ module control_unit_top
   end
   assign start_pulse = start && !start_q;
 
+  // Use the OFM layer-done rising edge only for the new Mode-2
+  // deterministic handoff arming.  ofm_layer_write_done is a level
+  // signal and can remain high for the just-finished previous layer
+  // after scheduler advance; using the level directly can incorrectly
+  // arm the next M2->M2 handoff before the destination layer has
+  // produced any OFM.  Keep Mode 1 logic unchanged.
+  logic ofm_layer_write_done_q;
+  logic ofm_layer_write_done_pulse_s;
+
+  assign ofm_layer_write_done_pulse_s = ofm_layer_write_done && !ofm_layer_write_done_q;
+
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      ofm_layer_write_done_q <= 1'b0;
+    end else begin
+      ofm_layer_write_done_q <= ofm_layer_write_done;
+    end
+  end
+
   logic              cur_valid_s, next_valid_s;
   logic [CFG_AW-1:0] cur_layer_idx_s;
   layer_desc_t       cur_cfg_s, next_cfg_s;
@@ -337,6 +356,23 @@ module control_unit_top
   logic [7:0]       ofm2ifm_dst_layer_id_q;
   logic             ofm2ifm_in_dst_layer_s;
 
+  // Same-mode M2 OFM->IFM deterministic handoff.
+  // This mirrors the stabilized M1 path: do not consume free/ready tokens
+  // from the legacy M2 refill manager while the source layer is still
+  // computing.  Instead, after the current OFM is complete, stream the full
+  // next-layer IFM image from OFM into IFM in row/column/channel-group order.
+  logic             sm_m2_mgr_active_s;
+  logic             m2_ofm2ifm_active_q;
+  logic             m2_ofm2ifm_ready_q;
+  logic             m2_ofm2ifm_stream_busy_q;
+  logic             m2_ofm2ifm_stream_start_s;
+  logic [ROW_W-1:0] m2_ofm2ifm_row_q;
+  logic [15:0]      m2_ofm2ifm_col_blk_q;
+  logic [15:0]      m2_ofm2ifm_cgrp_q;
+  logic [ROW_W-1:0] m2_ofm2ifm_num_rows_q;
+  logic [15:0]      m2_ofm2ifm_num_col_blks_q;
+  logic [15:0]      m2_ofm2ifm_num_cgrps_q;
+
   logic [ROW_W-1:0] stream_req_row_base_s;
   logic [ROW_W-1:0] stream_req_num_rows_s;
   logic [COL_W-1:0] stream_req_col_base_s;
@@ -385,6 +421,13 @@ module control_unit_top
   logic [15:0]           cur_m1_ofm_h_for_sm_s;
   logic [15:0]           cur_m1_ofm_w_for_sm_s;
 
+  // True current-layer OFM size as stored in ofm_buffer for mode 2.
+  // Mode 2 compute emits convolution H/W, then pooling_mode2 may halve them
+  // before writing OFM, so ofm_buffer/refill must see the final pooled size.
+  logic                  cur_m2_pool_active_s;
+  logic [15:0]           cur_m2_final_h_out_s;
+  logic [15:0]           cur_m2_final_w_out_s;
+
   // Internal same-mode refill requests from managers; top-level ports remain as
   // visibility hooks only.
   logic                  m1_sm_req_valid_i, m1_sm_req_ready_i;
@@ -421,8 +464,13 @@ module control_unit_top
   // row_slot X and incomplete handoff.
   assign sm_m1_tiled_active_s = sm_m1_active;
   assign sm_m1_mgr_active_s   = 1'b0;
+  // Disable the legacy M2 free/ready-token manager on the main path.  Its
+  // free tokens are produced in the current-layer coordinate space but it
+  // validates them against next-layer geometry, which causes false/out-of-range
+  // failures for large M2->M2 chains.  Use the deterministic M2 handoff below.
+  assign sm_m2_mgr_active_s   = 1'b0;
   assign rst_n_sm_m1        = rst_n && sm_m1_mgr_active_s;
-  assign rst_n_sm_m2        = rst_n && sm_m2_active;
+  assign rst_n_sm_m2        = rst_n && sm_m2_mgr_active_s;
 
   // --------------------------------------------------------------------------
   // Ready-token serializer queues for OFM-side vector tokens
@@ -479,7 +527,7 @@ module control_unit_top
     stream_req_row_base_s = '0;
     stream_req_num_rows_s = (cur_cfg_s.mode == MODE1)
                             ? cur_m1_final_h_out_s[ROW_W-1:0]
-                            : cur_cfg_s.h_out[ROW_W-1:0];
+                            : cur_m2_final_h_out_s[ROW_W-1:0];
     stream_req_col_base_s = '0;
   end
 
@@ -768,6 +816,102 @@ module control_unit_top
     end
   end
 
+
+  // --------------------------------------------------------------------------
+  // Same-mode M2 OFM->IFM deterministic handoff
+  // --------------------------------------------------------------------------
+  // For M2->M2, stream the whole completed current OFM into the next IFM before
+  // scheduler advances.  This intentionally avoids the legacy M2 free/ready
+  // token matcher, whose free tokens are generated in current-layer coordinates
+  // and can be out of range for the next layer.
+  always_comb begin
+    m2_ofm2ifm_stream_start_s = 1'b0;
+
+    if (m2_ofm2ifm_active_q && !m2_ofm2ifm_ready_q &&
+        !m2_ofm2ifm_stream_busy_q &&
+        !transition_busy_s && !trans_ifm_stream_start_s &&
+        !ofm2ifm_stream_start_s && !ofm_ifm_stream_busy) begin
+      m2_ofm2ifm_stream_start_s = 1'b1;
+    end
+  end
+
+  always_ff @(posedge clk or negedge rst_n) begin : PROC_OFM2IFM_M2_DET_REFILL
+    logic [15:0] next_m2_col_blks_v;
+    logic [15:0] next_m2_cgrps_v;
+
+    if (!rst_n) begin
+      m2_ofm2ifm_active_q          <= 1'b0;
+      m2_ofm2ifm_ready_q           <= 1'b0;
+      m2_ofm2ifm_stream_busy_q     <= 1'b0;
+      m2_ofm2ifm_row_q             <= '0;
+      m2_ofm2ifm_col_blk_q         <= '0;
+      m2_ofm2ifm_cgrp_q            <= '0;
+      m2_ofm2ifm_num_rows_q        <= '0;
+      m2_ofm2ifm_num_col_blks_q    <= '0;
+      m2_ofm2ifm_num_cgrps_q       <= '0;
+    end
+    else begin
+      if (abort || advance_layer_s) begin
+        m2_ofm2ifm_active_q          <= 1'b0;
+        m2_ofm2ifm_ready_q           <= 1'b0;
+        m2_ofm2ifm_stream_busy_q     <= 1'b0;
+        m2_ofm2ifm_row_q             <= '0;
+        m2_ofm2ifm_col_blk_q         <= '0;
+        m2_ofm2ifm_cgrp_q            <= '0;
+        m2_ofm2ifm_num_rows_q        <= '0;
+        m2_ofm2ifm_num_col_blks_q    <= '0;
+        m2_ofm2ifm_num_cgrps_q       <= '0;
+      end
+      else begin
+        next_m2_col_blks_v = (next_cfg_s.w_in == 0) ? 16'd1 :
+                             ((next_cfg_s.w_in + 16'(PC_MODE2) - 16'd1) / 16'(PC_MODE2));
+        next_m2_cgrps_v    = (next_cfg_s.c_in == 0) ? 16'd1 :
+                             ((next_cfg_s.c_in + 16'(PC_MODE2) - 16'd1) / 16'(PC_MODE2));
+
+        if (!m2_ofm2ifm_active_q && sm_m2_active && ofm_layer_write_done_pulse_s) begin
+          m2_ofm2ifm_active_q       <= 1'b1;
+          m2_ofm2ifm_ready_q        <= 1'b0;
+          m2_ofm2ifm_stream_busy_q  <= 1'b0;
+          m2_ofm2ifm_row_q          <= '0;
+          m2_ofm2ifm_col_blk_q      <= '0;
+          m2_ofm2ifm_cgrp_q         <= '0;
+          m2_ofm2ifm_num_rows_q     <= (next_cfg_s.h_in == 0) ? ROW_W'(1) : next_cfg_s.h_in[ROW_W-1:0];
+          m2_ofm2ifm_num_col_blks_q <= (next_m2_col_blks_v == 0) ? 16'd1 : next_m2_col_blks_v;
+          m2_ofm2ifm_num_cgrps_q    <= (next_m2_cgrps_v    == 0) ? 16'd1 : next_m2_cgrps_v;
+        end
+
+        if (m2_ofm2ifm_stream_start_s) begin
+          m2_ofm2ifm_stream_busy_q <= 1'b1;
+        end
+
+        if (m2_ofm2ifm_stream_busy_q && ofm_ifm_stream_done) begin
+          m2_ofm2ifm_stream_busy_q <= 1'b0;
+
+          if ((m2_ofm2ifm_cgrp_q + 16'd1) < m2_ofm2ifm_num_cgrps_q) begin
+            m2_ofm2ifm_cgrp_q <= m2_ofm2ifm_cgrp_q + 16'd1;
+          end
+          else begin
+            m2_ofm2ifm_cgrp_q <= '0;
+
+            if ((m2_ofm2ifm_col_blk_q + 16'd1) < m2_ofm2ifm_num_col_blks_q) begin
+              m2_ofm2ifm_col_blk_q <= m2_ofm2ifm_col_blk_q + 16'd1;
+            end
+            else begin
+              m2_ofm2ifm_col_blk_q <= '0;
+
+              if ((m2_ofm2ifm_row_q + ROW_W'(1)) < m2_ofm2ifm_num_rows_q) begin
+                m2_ofm2ifm_row_q <= m2_ofm2ifm_row_q + ROW_W'(1);
+              end
+              else begin
+                m2_ofm2ifm_ready_q <= 1'b1;
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+
   assign ofm_layer_start  = kick_compute_s;
   assign ofm_cfg_src_mode = (cur_cfg_s.mode == MODE2);
 
@@ -781,15 +925,25 @@ module control_unit_top
                               ? ((cur_cfg_s.w_out > 16'd1) ? (cur_cfg_s.w_out >> 1) : 16'd1)
                               : cur_cfg_s.w_out;
 
+  assign cur_m2_pool_active_s = (cur_cfg_s.mode == MODE2) && (cur_cfg_s.pool_en !== 1'b0);
+  assign cur_m2_final_h_out_s = cur_m2_pool_active_s
+                              ? ((cur_cfg_s.h_out > 16'd1) ? (cur_cfg_s.h_out >> 1) : 16'd1)
+                              : cur_cfg_s.h_out;
+  assign cur_m2_final_w_out_s = cur_m2_pool_active_s
+                              ? ((cur_cfg_s.w_out > 16'd1) ? (cur_cfg_s.w_out >> 1) : 16'd1)
+                              : cur_cfg_s.w_out;
+
   assign m1_pool_en       = cur_m1_pool_active_s;
+  // cfg_pool_en is only used by the M1 packing path inside ofm_buffer.
+  // Preserve the existing M1 behavior and keep it deasserted for M2.
   assign ofm_cfg_pool_en  = cur_m1_pool_active_s;
 
   assign ofm_cfg_h_out    = (cur_cfg_s.mode == MODE1)
                             ? cur_m1_final_h_out_s[$clog2(H_MAX+1)-1:0]
-                            : cur_cfg_s.h_out[$clog2(H_MAX+1)-1:0];
+                            : cur_m2_final_h_out_s[$clog2(H_MAX+1)-1:0];
   assign ofm_cfg_w_out    = (cur_cfg_s.mode == MODE1)
                             ? cur_m1_final_w_out_s[$clog2(W_MAX+1)-1:0]
-                            : cur_cfg_s.w_out[$clog2(W_MAX+1)-1:0];
+                            : cur_m2_final_w_out_s[$clog2(W_MAX+1)-1:0];
   assign cur_m1_ofm_h_for_sm_s = cur_m1_final_h_out_s;
   assign cur_m1_ofm_w_for_sm_s = cur_m1_final_w_out_s;
 
@@ -893,7 +1047,7 @@ module control_unit_top
 
       wr_idx = m2q_count_q - (m2_ready_tok_valid_s ? 1 : 0);
       for (int i = 0; i < PF_MODE2; i++) begin
-        if (sm_m2_active && m2_sm_ready_valid[i]) begin
+        if (sm_m2_mgr_active_s && sm_m2_active && m2_sm_ready_valid[i]) begin
           if (wr_idx < SM_M2_RDY_Q_DEPTH) begin
             m2q_mem[wr_idx].row_g  <= m2_sm_ready_row_g[i];
             // ofm_buffer exports the GLOBAL column base of the ready PC-wide
@@ -912,7 +1066,7 @@ module control_unit_top
     end
   end
 
-  assign m2_ready_tok_valid_s = sm_m2_active && (m2q_count_q != 0) && !m2_sm_ready_full_s;
+  assign m2_ready_tok_valid_s = sm_m2_mgr_active_s && sm_m2_active && (m2q_count_q != 0) && !m2_sm_ready_full_s;
   assign m2_ready_tok_row_g_s = m2q_mem[0].row_g;
   assign m2_ready_tok_col_g_s = m2q_mem[0].col_g;
   assign m2_ready_tok_cgrp_g_s= m2q_mem[0].cgrp_g;
@@ -1037,7 +1191,7 @@ module control_unit_top
         sm_stream_m1_row_slot_l_s = m1_sm_row_slot_l_i[BUF_ROW_W-1:0];
         sm_stream_m1_ch_blk_g_s   = m1_sm_ch_blk_g_i;
       end
-      else if (sm_m2_active && m2_sm_req_valid_i) begin
+      else if (sm_m2_mgr_active_s && sm_m2_active && m2_sm_req_valid_i) begin
         sm_stream_start_s         = 1'b1;
         sm_stream_row_base_s      = m2_sm_row_g_i[ROW_W-1:0];
         sm_stream_num_rows_s      = ROW_W'(1);
@@ -1053,7 +1207,7 @@ module control_unit_top
                               (m1_sm_row_slot_l_i == sm_exec_m1_row_slot_l_q) &&
                               (m1_sm_row_g_i      == sm_exec_row_g_q)));
 
-  assign m2_sm_req_ready_i = sm_m2_active && (
+  assign m2_sm_req_ready_i = sm_m2_mgr_active_s && sm_m2_active && (
                              (sm_stream_start_s && !m1_sm_req_valid_i && m2_sm_req_valid_i) ||
                              (sm_exec_active_q && sm_exec_mode_q &&
                               (m2_sm_row_g_i == sm_exec_row_g_q) &&
@@ -1076,7 +1230,7 @@ module control_unit_top
           sm_exec_row_g_q         <= m1_sm_row_g_i;
           sm_exec_col_base_g_q    <= (m1_sm_col_blk_g_i * ((next_cfg_s.pv_m1 == 0) ? 16'd1 : next_cfg_s.pv_m1));
         end
-        else if (sm_stream_start_s && !m1_sm_req_valid_i && m2_sm_req_valid_i && sm_m2_active) begin
+        else if (sm_stream_start_s && !m1_sm_req_valid_i && m2_sm_req_valid_i && sm_m2_mgr_active_s && sm_m2_active) begin
           sm_exec_active_q        <= 1'b1;
           sm_exec_mode_q          <= 1'b1;
           sm_exec_m1_row_slot_l_q <= '0;
@@ -1098,7 +1252,7 @@ module control_unit_top
   assign m1_sm_refill_col_blk_g   = m1_sm_col_blk_g_i;
   assign m1_sm_refill_ch_blk_g    = m1_sm_ch_blk_g_i;
 
-  assign m2_sm_refill_req_valid   = m2_sm_req_valid_i;
+  assign m2_sm_refill_req_valid   = sm_m2_mgr_active_s && m2_sm_req_valid_i;
   assign m2_sm_refill_row_g       = m2_sm_row_g_i;
   assign m2_sm_refill_col_g       = m2_sm_col_g_i;
   assign m2_sm_refill_col_l       = m2_sm_col_l_i;
@@ -1252,15 +1406,15 @@ module control_unit_top
     .H_W(16), .COLG_W(16), .COLL_W(16), .CGRP_W(16)
   ) u_same_mode_refill_manager_m2 (
     .clk(clk), .rst_n(rst_n_sm_m2),
-    .cfg_cur_h_out(cur_cfg_s.h_out), .cfg_cur_w_out(cur_cfg_s.w_out), .cfg_cur_f_out(cur_cfg_s.f_out),
+    .cfg_cur_h_out(cur_m2_final_h_out_s), .cfg_cur_w_out(cur_m2_final_w_out_s), .cfg_cur_f_out(cur_cfg_s.f_out),
     .cfg_next_h_in(next_cfg_s.h_in), .cfg_next_w_in(next_cfg_s.w_in), .cfg_next_c_in(next_cfg_s.c_in),
     .cfg_next_pc(next_cfg_s.pc_m2), .cfg_next_pf(next_cfg_s.pf_m2),
-    .free_valid(ldm_m2_free_valid_s && sm_m2_active),
+    .free_valid(sm_m2_mgr_active_s && ldm_m2_free_valid_s && sm_m2_active),
     .free_row_g(ldm_m2_free_row_g_s),
     .free_col_g(ldm_m2_free_col_g_s),
     .free_col_l(ldm_m2_free_col_l_s),
     .free_cgrp_g(ldm_m2_free_cgrp_g_s),
-    .ready_valid(m2_ready_tok_valid_s),
+    .ready_valid(sm_m2_mgr_active_s && m2_ready_tok_valid_s),
     .ready_row_g(m2_ready_tok_row_g_s),
     .ready_col_g(m2_ready_tok_col_g_s),
     .ready_cgrp_g(m2_ready_tok_cgrp_g_s),
@@ -1284,17 +1438,18 @@ module control_unit_top
   assign sm_m2_drain_idle_s = !m2_sm_busy_s &&
                               (m2q_count_q == '0);
 
-  assign same_mode_legacy_drain_done_s = (sm_m1_mgr_active_s || sm_m2_active) &&
+  assign same_mode_legacy_drain_done_s = (sm_m1_mgr_active_s || (sm_m2_mgr_active_s && sm_m2_active)) &&
                                   ofm_layer_write_done &&
                                   !sm_exec_active_q &&
                                   !sm_stream_start_s &&
                                   !ofm_ifm_stream_busy &&
                                   ((sm_m1_mgr_active_s && sm_m1_drain_idle_s) ||
-                                   (sm_m2_active && sm_m2_drain_idle_s));
+                                   (sm_m2_mgr_active_s && sm_m2_active && sm_m2_drain_idle_s));
 
   assign same_mode_drain_done_s = sm_m1_active ?
                                   same_mode_initial_tile_ready_s :
-                                  same_mode_legacy_drain_done_s;
+                                  (sm_m2_active ? (m2_ofm2ifm_active_q && m2_ofm2ifm_ready_q)
+                                                : same_mode_legacy_drain_done_s);
 
   assign sched_next_path_done_s = ((next_valid_s && (cur_cfg_s.mode == MODE1) && (next_cfg_s.mode == MODE2)) ? transition_done_s :
                                    ((sm_m1_active || sm_m2_active) ? same_mode_drain_done_s : 1'b0));
@@ -1322,25 +1477,32 @@ module control_unit_top
   // internally controlled same-mode refill transactions.
   assign ofm_ifm_stream_start = trans_ifm_stream_start_s |
                                   ofm2ifm_stream_start_s |
+                                  m2_ofm2ifm_stream_start_s |
                                   sm_stream_start_s;
   assign ofm_ifm_stream_row_base = trans_ifm_stream_start_s ? trans_ifm_stream_row_base_s :
-                                   (ofm2ifm_stream_start_s ? ofm2ifm_row_q : sm_stream_row_base_s);
+                                   (ofm2ifm_stream_start_s ? ofm2ifm_row_q :
+                                   (m2_ofm2ifm_stream_start_s ? m2_ofm2ifm_row_q : sm_stream_row_base_s));
   assign ofm_ifm_stream_num_rows = trans_ifm_stream_start_s ? trans_ifm_stream_num_rows_s :
-                                   (ofm2ifm_stream_start_s ? ROW_W'(1) : sm_stream_num_rows_s);
+                                   ((ofm2ifm_stream_start_s || m2_ofm2ifm_stream_start_s) ? ROW_W'(1) : sm_stream_num_rows_s);
   assign ofm_ifm_stream_col_base = trans_ifm_stream_start_s ? trans_ifm_stream_col_base_s :
                                    (ofm2ifm_stream_start_s ?
                                     (ofm2ifm_col_blk_q[COL_W-1:0] * ofm2ifm_pv_q[COL_W-1:0]) :
-                                    sm_stream_col_base_s);
+                                   (m2_ofm2ifm_stream_start_s ?
+                                    (m2_ofm2ifm_col_blk_q[COL_W-1:0] * COL_W'(PC_MODE2)) :
+                                    sm_stream_col_base_s));
   assign ofm_ifm_stream_m1_row_slot_l = trans_ifm_stream_start_s ? '0 :
-                                        (ofm2ifm_stream_start_s ? ofm2ifm_row_slot_q : sm_stream_m1_row_slot_l_s);
+                                        (ofm2ifm_stream_start_s ? ofm2ifm_row_slot_q : '0);
   assign ofm_ifm_stream_m1_ch_blk_g   = trans_ifm_stream_start_s ? '0 :
                                         (ofm2ifm_stream_start_s ? ofm2ifm_ch_blk_q : sm_stream_m1_ch_blk_g_s);
-  assign ofm_ifm_stream_m2_cgrp_g     = trans_ifm_stream_start_s ? '0 : sm_stream_m2_cgrp_g_s;
+  assign ofm_ifm_stream_m2_cgrp_g     = trans_ifm_stream_start_s ? '0 :
+                                        (m2_ofm2ifm_stream_start_s ? m2_ofm2ifm_cgrp_q : sm_stream_m2_cgrp_g_s);
 
-  assign control_error_s = m1_sm_error_s | m2_sm_error_s |
-                           m1q_overflow_q | m2q_overflow_q | m1f_overflow_q |
+  assign control_error_s = m1_sm_error_s |
+                           m1q_overflow_q | m1f_overflow_q |
                            m1_sm_free_full_s | m1_sm_ready_full_s |
-                           m2_sm_free_full_s | m2_sm_ready_full_s;
+                           (sm_m2_mgr_active_s ?
+                            (m2_sm_error_s | m2q_overflow_q |
+                             m2_sm_free_full_s | m2_sm_ready_full_s) : 1'b0);
 
   assign any_error_s = phase_error_s | local_error_s | transition_error_s | ofm_error | control_error_s;
 
