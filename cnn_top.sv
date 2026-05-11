@@ -253,6 +253,11 @@ module cnn_top
 
   logic                        m2_start_s, m2_step_en_s;
   logic [15:0]                 m2_k_cur_s, m2_c_cur_s, m2_f_cur_s, m2_hout_cur_s, m2_wout_cur_s;
+  // Mode-2 tile window from control.  One Mode-2 compute start covers only
+  // the resident horizontal tile [base, base+count), not the whole Wout.
+  // Mode 1 does not use these signals.
+  logic [15:0]                 m2_tile_col_base_g_s;
+  logic [15:0]                 m2_tile_col_count_s;
   logic                        m2_weight_bank_sel_s, m2_weight_bank_ready_s;
   logic                        m2_dr_write_en_s;
   logic [$clog2(K_MAX)-1:0]    m2_dr_write_row_idx_s;
@@ -469,6 +474,8 @@ module cnn_top
     .m2_f_cur               (m2_f_cur_s),
     .m2_hout_cur            (m2_hout_cur_s),
     .m2_wout_cur            (m2_wout_cur_s),
+    .m2_tile_col_base_g     (m2_tile_col_base_g_s),
+    .m2_tile_col_count      (m2_tile_col_count_s),
     .m2_weight_bank_sel     (m2_weight_bank_sel_s),
     .m2_weight_bank_ready   (m2_weight_bank_ready_s),
     .m2_dr_write_en         (m2_dr_write_en_s),
@@ -800,6 +807,8 @@ module cnn_top
     .F_cur             (m2_f_cur_s),
     .Hout_cur          (m2_hout_cur_s),
     .Wout_cur          (m2_wout_cur_s),
+    .tile_col_base_g   (m2_tile_col_base_g_s),
+    .tile_col_count    (m2_tile_col_count_s),
     .dr_write_en       (m2_dr_write_en_s),
     .dr_write_row_idx  (m2_dr_write_row_idx_s),
     .dr_write_data     (m2_dr_write_data_s),

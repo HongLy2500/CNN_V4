@@ -263,6 +263,94 @@ module tb_cnn_top_9layer_m2_dcp_efficientnet_b0_tablevi_w32_with_expected_compar
   initial clk = 1'b0;
   always #(CLK_PERIOD_NS/2) clk = ~clk;
 
+integer dbg_l0_m2_cnt;
+
+always_ff @(posedge clk or negedge rst_n) begin
+  if (!rst_n) begin
+    dbg_l0_m2_cnt <= 0;
+  end
+  else begin
+    if ((dbg_layer_idx == 0) &&
+        dut.u_mode2_compute_top.u_ce_mode2_top.mac_en &&
+        (dbg_l0_m2_cnt < 40)) begin
+
+      dbg_l0_m2_cnt <= dbg_l0_m2_cnt + 1;
+
+      $display("DBG_L0_M2_MAC_IN t=%0t cycle=%0d row=%0d col=%0d cgrp=%0d data0=%0d data1=%0d data2=%0d data3=%0d w0=%0d w1=%0d w2=%0d",
+        $time,
+        cycle_count,
+        dut.u_mode2_compute_top.u_ce_mode2_top.dbg_out_row,
+        dut.u_mode2_compute_top.u_ce_mode2_top.dbg_out_col,
+        dut.u_mode2_compute_top.u_ce_mode2_top.dbg_c_group,
+        $signed(dut.u_mode2_compute_top.u_ce_mode2_top.data_in[0*DATA_W +: DATA_W]),
+        $signed(dut.u_mode2_compute_top.u_ce_mode2_top.data_in[1*DATA_W +: DATA_W]),
+        $signed(dut.u_mode2_compute_top.u_ce_mode2_top.data_in[2*DATA_W +: DATA_W]),
+        $signed(dut.u_mode2_compute_top.u_ce_mode2_top.data_in[3*DATA_W +: DATA_W]),
+        $signed(dut.u_mode2_compute_top.u_ce_mode2_top.weight_in[0*DATA_W +: DATA_W]),
+        $signed(dut.u_mode2_compute_top.u_ce_mode2_top.weight_in[1*DATA_W +: DATA_W]),
+        $signed(dut.u_mode2_compute_top.u_ce_mode2_top.weight_in[2*DATA_W +: DATA_W])
+      );
+    end
+  end
+end
+
+logic dbg_ifm_dumped;
+
+always_ff @(posedge clk or negedge rst_n) begin
+  if (!rst_n) begin
+    dbg_ifm_dumped <= 1'b0;
+  end
+  else begin
+    if (!dbg_ifm_dumped && (ddr_ifm_read_count == EXPECTED_IFM_DDR_READS)) begin
+      dbg_ifm_dumped <= 1'b1;
+
+      $display("DBG_IFM_M2_MEM_AFTER_PRELOAD mem[col0][row0_cgrp0] lane0=%0d lane1=%0d lane2=%0d lane3=%0d",
+        $signed(dut.u_ifm_buffer.mem[0][0][0*DATA_W +: DATA_W]),
+        $signed(dut.u_ifm_buffer.mem[0][0][1*DATA_W +: DATA_W]),
+        $signed(dut.u_ifm_buffer.mem[0][0][2*DATA_W +: DATA_W]),
+        $signed(dut.u_ifm_buffer.mem[0][0][3*DATA_W +: DATA_W])
+      );
+
+      $display("DBG_IFM_M2_MEM_AFTER_PRELOAD col1 lane0=%0d lane1=%0d lane2=%0d lane3=%0d",
+        $signed(dut.u_ifm_buffer.mem[1][0][0*DATA_W +: DATA_W]),
+        $signed(dut.u_ifm_buffer.mem[1][0][1*DATA_W +: DATA_W]),
+        $signed(dut.u_ifm_buffer.mem[1][0][2*DATA_W +: DATA_W]),
+        $signed(dut.u_ifm_buffer.mem[1][0][3*DATA_W +: DATA_W])
+      );
+    end
+  end
+end
+
+integer dbg_m2_stream_data_cnt;
+
+always_ff @(posedge clk or negedge rst_n) begin
+  if (!rst_n) begin
+    dbg_m2_stream_data_cnt <= 0;
+  end
+  else begin
+    if ((dbg_layer_idx == 0) &&
+        dut.u_ofm_buffer.ifm_ofm_wr_en &&
+        dut.u_ofm_buffer.ifm_ofm_wr_ready &&
+        (dbg_m2_stream_data_cnt < 80)) begin
+
+      dbg_m2_stream_data_cnt <= dbg_m2_stream_data_cnt + 1;
+
+      $display("DBG_L0_TO_L1_STREAM_DATA t=%0t cycle=%0d bank_col_l=%0d row=%0d cgrp=%0d data0=%0d data1=%0d data2=%0d data31=%0d keep=%h",
+        $time,
+        cycle_count,
+        dut.u_ofm_buffer.ifm_ofm_wr_bank,
+        dut.u_ofm_buffer.ifm_ofm_wr_row_idx,
+        dut.u_ofm_buffer.ifm_ofm_wr_col_idx,
+        $signed(dut.u_ofm_buffer.ifm_ofm_wr_data[0*DATA_W +: DATA_W]),
+        $signed(dut.u_ofm_buffer.ifm_ofm_wr_data[1*DATA_W +: DATA_W]),
+        $signed(dut.u_ofm_buffer.ifm_ofm_wr_data[2*DATA_W +: DATA_W]),
+        $signed(dut.u_ofm_buffer.ifm_ofm_wr_data[31*DATA_W +: DATA_W]),
+        dut.u_ofm_buffer.ifm_ofm_wr_keep[31:0]
+      );
+    end
+  end
+end
+
 integer dbg_l8_wr_cnt;
 
 always_ff @(posedge clk or negedge rst_n) begin
@@ -306,91 +394,6 @@ always_ff @(posedge clk or negedge rst_n) begin
         $signed(dut.u_ofm_buffer.m2_wr_data[1*DATA_W +: DATA_W]),
         $signed(dut.u_ofm_buffer.m2_wr_data[2*DATA_W +: DATA_W]),
         $signed(dut.u_ofm_buffer.m2_wr_data[63*DATA_W +: DATA_W])
-      );
-    end
-  end
-end
-
-
-// --------------------------------------------------------------------------
-// Mode-2 data-content debug monitors.
-// These use signal names declared in cnn_top/mode2_compute_top.
-// Do not reference non-existent internals under u_ce_mode2_top.
-// --------------------------------------------------------------------------
-integer dbg_m2_dr_cnt;
-integer dbg_m2_mac_cnt;
-integer dbg_m2_stream_cnt;
-
-always_ff @(posedge clk or negedge rst_n) begin
-  if (!rst_n) begin
-    dbg_m2_dr_cnt <= 0;
-  end else begin
-    if ((dbg_layer_idx <= 1) && dut.m2_dr_write_en_s && (dbg_m2_dr_cnt < 80)) begin
-      dbg_m2_dr_cnt <= dbg_m2_dr_cnt + 1;
-      $display("DBG_M2_DR_IN t=%0t cycle=%0d layer=%0d row_idx=%0d data0=%0d data1=%0d data2=%0d data3=%0d data31=%0d",
-        $time,
-        cycle_count,
-        dbg_layer_idx,
-        dut.m2_dr_write_row_idx_s,
-        $signed(dut.m2_dr_write_data_s[0*DATA_W +: DATA_W]),
-        $signed(dut.m2_dr_write_data_s[1*DATA_W +: DATA_W]),
-        $signed(dut.m2_dr_write_data_s[2*DATA_W +: DATA_W]),
-        $signed(dut.m2_dr_write_data_s[3*DATA_W +: DATA_W]),
-        $signed(dut.m2_dr_write_data_s[31*DATA_W +: DATA_W])
-      );
-    end
-  end
-end
-
-always_ff @(posedge clk or negedge rst_n) begin
-  if (!rst_n) begin
-    dbg_m2_mac_cnt <= 0;
-  end else begin
-    if ((dbg_layer_idx <= 1) && dut.m2_mac_en_s && (dbg_m2_mac_cnt < 80)) begin
-      dbg_m2_mac_cnt <= dbg_m2_mac_cnt + 1;
-      $display("DBG_M2_MAC_IN_SAFE t=%0t cycle=%0d layer=%0d row=%0d col=%0d fgrp=%0d cgrp=%0d ky=%0d kx=%0d data0=%0d data1=%0d data2=%0d data3=%0d w_pf0_pc0=%0d w_pf0_pc1=%0d w_pf0_pc2=%0d w_pf1_pc0=%0d",
-        $time,
-        cycle_count,
-        dbg_layer_idx,
-        dut.m2_out_row_s,
-        dut.m2_out_col_s,
-        dut.m2_f_group_s,
-        dut.m2_c_group_s,
-        dut.m2_ky_s,
-        dut.m2_kx_s,
-        $signed(dut.m2_ce_data_out_logic_s[0*DATA_W +: DATA_W]),
-        $signed(dut.m2_ce_data_out_logic_s[1*DATA_W +: DATA_W]),
-        $signed(dut.m2_ce_data_out_logic_s[2*DATA_W +: DATA_W]),
-        $signed(dut.m2_ce_data_out_logic_s[3*DATA_W +: DATA_W]),
-        $signed(dut.m2_ce_weight_out_s[(0*PC + 0)*DATA_W +: DATA_W]),
-        $signed(dut.m2_ce_weight_out_s[(0*PC + 1)*DATA_W +: DATA_W]),
-        $signed(dut.m2_ce_weight_out_s[(0*PC + 2)*DATA_W +: DATA_W]),
-        $signed(dut.m2_ce_weight_out_s[(1*PC + 0)*DATA_W +: DATA_W])
-      );
-    end
-  end
-end
-
-always_ff @(posedge clk or negedge rst_n) begin
-  if (!rst_n) begin
-    dbg_m2_stream_cnt <= 0;
-  end else begin
-    if ((dbg_layer_idx <= 1) &&
-        dut.ifm_ofm_wr_en_s && dut.ifm_ofm_wr_ready_s &&
-        (dbg_m2_stream_cnt < 80)) begin
-      dbg_m2_stream_cnt <= dbg_m2_stream_cnt + 1;
-      $display("DBG_M2_OFM2IFM_DATA t=%0t cycle=%0d layer=%0d bank_col_l=%0d row=%0d cgrp=%0d data0=%0d data1=%0d data2=%0d data31=%0d keep=%h",
-        $time,
-        cycle_count,
-        dbg_layer_idx,
-        dut.ifm_ofm_wr_bank_s,
-        dut.ifm_ofm_wr_row_idx_s,
-        dut.ifm_ofm_wr_col_idx_s,
-        $signed(dut.ifm_ofm_wr_data_s[0*DATA_W +: DATA_W]),
-        $signed(dut.ifm_ofm_wr_data_s[1*DATA_W +: DATA_W]),
-        $signed(dut.ifm_ofm_wr_data_s[2*DATA_W +: DATA_W]),
-        $signed(dut.ifm_ofm_wr_data_s[31*DATA_W +: DATA_W]),
-        dut.ifm_ofm_wr_keep_s[31:0]
       );
     end
   end

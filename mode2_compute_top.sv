@@ -6,6 +6,9 @@ module mode2_compute_top #(
   parameter int PF        = 4,
   parameter int HOUT_MAX  = 224,
   parameter int WOUT_MAX  = 224,
+  // Maximum filter count visible to pooling_mode2 row buffers.
+  // Keep this >= largest F_cur used by Mode 2 benchmarks.
+  parameter int F_MAX     = 256,
   parameter int WB_LANES  = PF*PC,
   parameter int WB_ADDR_W = 12
 )(
@@ -21,6 +24,14 @@ module mode2_compute_top #(
   input  logic [7:0] F_cur,
   input  logic [15:0] Hout_cur,
   input  logic [15:0] Wout_cur,
+
+  // --------------------------------------------------------------------------
+  // Mode-2 resident-tile window. One start of the CE computes one horizontal
+  // tile only. The CE still exports GLOBAL out_col coordinates:
+  //   out_col = tile_col_base_g + local_col
+  // --------------------------------------------------------------------------
+  input  logic [15:0] tile_col_base_g,
+  input  logic [15:0] tile_col_count,
 
   input  logic                     dr_write_en,
   input  logic [$clog2(K_MAX)-1:0] dr_write_row_idx,
@@ -49,7 +60,8 @@ module mode2_compute_top #(
   // Explicit contract outputs
   // These make the global/local split visible without breaking the old ports.
   // - out_row_g / out_col_g are GLOBAL OFM coordinates from controller.
-  // - No local tile coordinate is generated here; downstream logic must derive:
+  // - tile_col_base_g/tile_col_count define the resident horizontal tile.
+  // - Downstream logic derives local tile column as:
   //       out_col_l = out_col_g - tile_col_base_g
   // --------------------------------------------------------------------------
   output logic [15:0]              out_row_g,
@@ -94,6 +106,13 @@ module mode2_compute_top #(
   logic [15:0] ce_out_row_g;
   logic [15:0] ce_out_col_g;
 
+  // Coordinates/metadata aligned with relu_data_out_valid.
+  // relu_mode2 registers the MAC output, so these are delayed together with
+  // relu_f_base and relu_group_start before entering pooling_mode2.
+  logic [15:0] relu_row_g;
+  logic [15:0] relu_col_g;
+  logic [15:0] relu_tile_col_base_g;
+
   ce_mode2_top #(
     .DATA_W   (DATA_W),
     .PSUM_W   (PSUM_W),
@@ -114,6 +133,8 @@ module mode2_compute_top #(
     .F_cur             (F_cur),
     .Hout_cur          (Hout_cur),
     .Wout_cur          (Wout_cur),
+    .tile_col_base_g   (tile_col_base_g),
+    .tile_col_count    (tile_col_count),
     .dr_write_en       (dr_write_en),
     .dr_write_row_idx  (dr_write_row_idx),
     .dr_write_data     (dr_write_data),
@@ -170,13 +191,20 @@ module mode2_compute_top #(
 
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-      relu_group_start <= 1'b0;
-      relu_f_base      <= '0;
+      relu_group_start    <= 1'b0;
+      relu_f_base         <= '0;
+      relu_row_g          <= '0;
+      relu_col_g          <= '0;
+      relu_tile_col_base_g <= '0;
     end
     else begin
       relu_group_start <= ce_mac_group_start;
-      if (ce_mac_data_out_valid)
-        relu_f_base <= ce_mac_f_base;
+      if (ce_mac_data_out_valid) begin
+        relu_f_base          <= ce_mac_f_base;
+        relu_row_g           <= ce_out_row_g;
+        relu_col_g           <= ce_out_col_g;
+        relu_tile_col_base_g <= tile_col_base_g;
+      end
     end
   end
 
@@ -185,13 +213,17 @@ module mode2_compute_top #(
     .OUT_W  (DATA_W),
     .PF     (PF),
     .W_MAX  (WOUT_MAX),
-    .H_MAX  (HOUT_MAX)
+    .H_MAX  (HOUT_MAX),
+    .F_MAX  (F_MAX)
   ) u_pooling_mode2 (
     .clk           (clk),
     .rst_n         (rst_n),
     .W_cur         (Wout_cur),
     .H_cur         (Hout_cur),
     .pool_en       (pool_en),
+    .in_row_g      (relu_row_g),
+    .in_col_g      (relu_col_g),
+    .tile_col_base_g(relu_tile_col_base_g),
     .data_in       (relu_data_out),
     .data_in_valid (relu_data_out_valid),
     .in_group_start(relu_group_start),
@@ -206,5 +238,68 @@ module mode2_compute_top #(
   // By contract, pooling/ofm write coordinates are GLOBAL OFM coordinates.
   assign ofm_wr_row_g = ofm_wr_row;
   assign ofm_wr_col_g = ofm_wr_col;
+
+
+function automatic logic dbg_m2_col_focus(input logic [15:0] c);
+  begin
+    dbg_m2_col_focus =
+      (c < 16'd40) ||
+      ((c >= 16'd60) && (c <= 16'd68));
+  end
+endfunction
+
+logic [31:0] dbg_m2_coord_evt_q;
+
+always_ff @(posedge clk or negedge rst_n) begin
+  if (!rst_n) begin
+    dbg_m2_coord_evt_q <= 32'd0;
+  end
+  else begin
+    if ((ce_mac_data_out_valid &&
+         (ce_out_row_g < 16'd4) &&
+         (ce_mac_f_base == 16'd0) &&
+         dbg_m2_col_focus(ce_out_col_g)) ||
+
+        (relu_data_out_valid &&
+         (relu_row_g < 16'd4) &&
+         (relu_f_base == 16'd0) &&
+         dbg_m2_col_focus(relu_col_g)) ||
+
+        (ofm_wr_en &&
+         (ofm_wr_row < 16'd4) &&
+         (ofm_wr_f_base == 16'd0) &&
+         (ofm_wr_col < 16'd48))) begin
+
+      dbg_m2_coord_evt_q <= dbg_m2_coord_evt_q + 32'd1;
+
+      $display("DBG_M2_COORD_PIPE t=%0t evt=%0d pool=%0b tile_base=%0d tile_count=%0d ce_v=%0b ce_row=%0d ce_col=%0d ce_fbase=%0d ce_data0=%0d relu_v=%0b relu_row=%0d relu_col=%0d relu_fbase=%0d relu_data0=%0d pool_wr=%0b wr_row=%0d wr_col=%0d wr_fbase=%0d wr_data0=%0d",
+        $time,
+        dbg_m2_coord_evt_q,
+        pool_en,
+        tile_col_base_g,
+        tile_col_count,
+
+        ce_mac_data_out_valid,
+        ce_out_row_g,
+        ce_out_col_g,
+        ce_mac_f_base,
+        $signed(ce_mac_data_out[0*PSUM_W +: PSUM_W]),
+
+        relu_data_out_valid,
+        relu_row_g,
+        relu_col_g,
+        relu_f_base,
+        $signed(relu_data_out[0*PSUM_W +: PSUM_W]),
+
+        ofm_wr_en,
+        ofm_wr_row,
+        ofm_wr_col,
+        ofm_wr_f_base,
+        $signed(ofm_wr_data[0*DATA_W +: DATA_W])
+      );
+    end
+  end
+end
+
 
 endmodule

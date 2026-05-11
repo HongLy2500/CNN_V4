@@ -1,31 +1,40 @@
 `timescale 1ns/1ps
 `include "cnn_ddr_defs.svh"
 
-module tb_cnn_top_9layer_m2_dcp_efficientnet_b0_tablevi_w32_with_expected_compare;
+module tb_cnn_top_9layer_m2_dcp_efficientnet_b0_tablevi_fullsize_k1_expected_compare;
   import cnn_layer_desc_pkg::*;
 
   // --------------------------------------------------------------------------
-  // 9-layer Mode-2 DCP/EfficientNet-B0 Table-VI-style test with expected compare.
+  // 9-layer Mode-2 DCP/EfficientNet-B0 Table-VI-style full-size test.
   //
-  // Why W0=32 instead of 224:
-  //   This is still the scaled W32 regression, but the Mode-2 IFM DDR layout
-  //   now follows the corrected WT=PC contract rather than the old W_in<=PC
-  //   shortcut. Each first-layer IFM DDR word stores PC channel lanes at one
-  //   {tile_x,row,cgrp,col_l}. It keeps the 9-layer channel trend and
-  //   Table-VI Mode-2 parallelism point: Pc=32, Pf=64.
+  // Purpose:
+  //   This is the full spatial-size companion to the W32 Mode-2 regression.
+  //   It uses the same 9-layer EfficientNet-B0-style channel trend and the
+  //   same Mode-2 DCP-CNN point Pc=32, Pf=64, but restores the first-layer
+  //   input size to 224x224x3 like the full-size Mode-1 EfficientNet test.
+  //
+  // Important scope note:
+  //   K is intentionally kept at 1 for all layers. This test validates the
+  //   corrected Mode-2 WT=PC IFM layout and multi-horizontal-tile handling
+  //   for W=224 without mixing in K>1 cross-tile/halo behavior. A later K=3
+  //   test should be added after the Mode-2 halo/window-crossing contract is
+  //   implemented and verified.
   //
   // Data model:
-  //   IFM = 1, all weights = 1. Expected final OFM is checked exactly.
-  //   With K=1, the values are:
-  //     L0: 1 * C0(3)  = 3
-  //     L1: 3 * C1(32) = 96
-  //     L2 onward saturates to signed 8-bit max = 127
+  //   First-layer IFM is tile-coded, not uniform:
+  //     IFM[row][tile_x*PC + col_l][valid channel] = tile_x + 1.
+  //   All weights are 1. Expected final OFM is still checked exactly.
+  //   With K=1 and ReLU/signed-8 saturation, L2 onward saturates to 127,
+  //   while an additional L0->L1 stream checker verifies that different
+  //   horizontal tiles are actually consumed, not silently aliased to tile 0.
   //
   // This stresses:
-  //   - Mode-2 first-layer DDR->IFM preload
+  //   - Mode-2 first-layer DDR->IFM preload over 7 horizontal tiles
+  //   - W=224 with WT=PC=32, i.e. ceil(224/32)=7 col tiles
   //   - Mode2->Mode2 deterministic OFM->IFM handoff over 8 transitions
   //   - partial C groups, especially C=3,16,24,40,80 with PC=32
   //   - partial F groups for F=16,24,40,80,192 with PF=64
+  //   - L0->L1 stream data differs by horizontal tile
   //   - final DDR OFM compare
   // --------------------------------------------------------------------------
 
@@ -45,13 +54,17 @@ module tb_cnn_top_9layer_m2_dcp_efficientnet_b0_tablevi_w32_with_expected_compar
 
   localparam int C_MAX = 192;
   localparam int F_MAX = 192;
-  localparam int W_MAX = 32;
-  localparam int H_MAX = 64;
+  localparam int W_MAX = 224;
+  localparam int H_MAX = 224;
   localparam int HT = 4;
   localparam int K_MAX = 3;
 
   localparam int WGT_DEPTH = 512;
-  localparam int OFM_ROW_STRIDE = W_MAX;
+  // OFM storage in this all-Mode2 K1 test packs spatial columns in PC-wide words.
+  // Do not use W_MAX as the physical row stride here: W_MAX=224 would make
+  // DEPTH=224*224 per bank and can crash XSim with huge unpacked arrays.
+  // The required physical groups per row are ceil(W_MAX/PC)=7.
+  localparam int OFM_ROW_STRIDE = (W_MAX + PC - 1) / PC;
   localparam int OFM_BANK_DEPTH = H_MAX * OFM_ROW_STRIDE;
   localparam int OFM_LINEAR_DEPTH = C_MAX * OFM_BANK_DEPTH;
   localparam int CFG_DEPTH = 16;
@@ -62,12 +75,12 @@ module tb_cnn_top_9layer_m2_dcp_efficientnet_b0_tablevi_w32_with_expected_compar
   localparam int WGT_SUBWORDS = (PTOTAL + PV_MAX - 1) / PV_MAX;
   localparam int MEM_DEPTH = (`DDR_RSVD_BASE + `DDR_RSVD_SIZE);
   localparam int CLK_PERIOD_NS = 10;
-  localparam int MAX_CYCLES = 20000000;
+  localparam int MAX_CYCLES = 50000000;
 
   // 9-layer EfficientNet-B0 channel trend used in the Mode-1 Table-VI test.
-  // K is set to 1 here so the scaled W32 regression can exercise all 9
-  // layers without mixing in K>1 cross-tile/halo behavior yet.
-  localparam int L0_H_IN=64, L0_W_IN=32, L0_C_IN=3,  L0_F_OUT=32,  L0_K=1, L0_POOL_EN=1;
+  // K is set to 1 here so the full-size W224 regression can validate
+  // multi-tile Mode-2 storage without mixing in K>1 halo behavior yet.
+  localparam int L0_H_IN=224, L0_W_IN=224, L0_C_IN=3, L0_F_OUT=32, L0_K=1, L0_POOL_EN=1;
   localparam int L0_H_CONV_OUT=L0_H_IN-L0_K+1, L0_W_CONV_OUT=L0_W_IN-L0_K+1;
   localparam int L0_H_OUT=(L0_POOL_EN ? (L0_H_CONV_OUT/2) : L0_H_CONV_OUT);
   localparam int L0_W_OUT=(L0_POOL_EN ? (L0_W_CONV_OUT/2) : L0_W_CONV_OUT);
@@ -186,9 +199,9 @@ module tb_cnn_top_9layer_m2_dcp_efficientnet_b0_tablevi_w32_with_expected_compar
   localparam int EXPECTED_OFM_DDR_WORDS = L8_F_OUT * L8_H_OUT * L8_STORED_GROUPS;
 
   // Derived from this testbench, not assumed:
-  //   init_mem() writes IFM=1 and all layer weights=1.
-  //   K=1 for every layer.
-  //   L0 = 3, L1 = 96, and L2 onward saturates to signed 8-bit max 127.
+  //   init_mem() writes first-layer IFM with tile pattern tile_x+1 and all
+  //   layer weights=1. K=1 for every layer.
+  //   L0/L1 stream values vary by tile, and L2 onward saturates to 127.
   localparam int EXPECTED_FINAL_VALUE = 127;
 
   logic clk, rst_n, start, abort;
@@ -228,6 +241,8 @@ module tb_cnn_top_9layer_m2_dcp_efficientnet_b0_tablevi_w32_with_expected_compar
   integer ofm_ifm_stream_start_count;
   integer ofm_ifm_stream_done_count;
   integer m2_sm_refill_req_count;
+  integer l0_stream_checked_count;
+  integer l0_stream_mismatch_count;
   integer i, b;
 
   logic done_seen;
@@ -263,139 +278,6 @@ module tb_cnn_top_9layer_m2_dcp_efficientnet_b0_tablevi_w32_with_expected_compar
   initial clk = 1'b0;
   always #(CLK_PERIOD_NS/2) clk = ~clk;
 
-integer dbg_l8_wr_cnt;
-
-always_ff @(posedge clk or negedge rst_n) begin
-  if (!rst_n) begin
-    dbg_l8_wr_cnt <= 0;
-  end else begin
-    if (dbg_layer_idx == 8 && dut.u_mode2_compute_top.ofm_wr_en && dbg_l8_wr_cnt < 80) begin
-      dbg_l8_wr_cnt <= dbg_l8_wr_cnt + 1;
-
-      $display("DBG_L8_M2_OFM_IN t=%0t cycle=%0d row=%0d col=%0d fbase=%0d data0=%0d data1=%0d data2=%0d data63=%0d",
-        $time,
-        cycle_count,
-        dut.u_mode2_compute_top.ofm_wr_row,
-        dut.u_mode2_compute_top.ofm_wr_col,
-        dut.u_mode2_compute_top.ofm_wr_f_base,
-        $signed(dut.u_mode2_compute_top.ofm_wr_data[0*DATA_W +: DATA_W]),
-        $signed(dut.u_mode2_compute_top.ofm_wr_data[1*DATA_W +: DATA_W]),
-        $signed(dut.u_mode2_compute_top.ofm_wr_data[2*DATA_W +: DATA_W]),
-        $signed(dut.u_mode2_compute_top.ofm_wr_data[63*DATA_W +: DATA_W])
-      );
-    end
-  end
-end
-
-integer dbg_l8_ofm_buf_cnt;
-
-always_ff @(posedge clk or negedge rst_n) begin
-  if (!rst_n) begin
-    dbg_l8_ofm_buf_cnt <= 0;
-  end else begin
-    if (dbg_layer_idx == 8 && dut.u_ofm_buffer.m2_wr_en && dbg_l8_ofm_buf_cnt < 80) begin
-      dbg_l8_ofm_buf_cnt <= dbg_l8_ofm_buf_cnt + 1;
-
-      $display("DBG_L8_OFM_BUF_IN t=%0t cycle=%0d row=%0d col=%0d fbase=%0d data0=%0d data1=%0d data2=%0d data63=%0d",
-        $time,
-        cycle_count,
-        dut.u_ofm_buffer.m2_wr_row,
-        dut.u_ofm_buffer.m2_wr_col,
-        dut.u_ofm_buffer.m2_wr_f_base,
-        $signed(dut.u_ofm_buffer.m2_wr_data[0*DATA_W +: DATA_W]),
-        $signed(dut.u_ofm_buffer.m2_wr_data[1*DATA_W +: DATA_W]),
-        $signed(dut.u_ofm_buffer.m2_wr_data[2*DATA_W +: DATA_W]),
-        $signed(dut.u_ofm_buffer.m2_wr_data[63*DATA_W +: DATA_W])
-      );
-    end
-  end
-end
-
-
-// --------------------------------------------------------------------------
-// Mode-2 data-content debug monitors.
-// These use signal names declared in cnn_top/mode2_compute_top.
-// Do not reference non-existent internals under u_ce_mode2_top.
-// --------------------------------------------------------------------------
-integer dbg_m2_dr_cnt;
-integer dbg_m2_mac_cnt;
-integer dbg_m2_stream_cnt;
-
-always_ff @(posedge clk or negedge rst_n) begin
-  if (!rst_n) begin
-    dbg_m2_dr_cnt <= 0;
-  end else begin
-    if ((dbg_layer_idx <= 1) && dut.m2_dr_write_en_s && (dbg_m2_dr_cnt < 80)) begin
-      dbg_m2_dr_cnt <= dbg_m2_dr_cnt + 1;
-      $display("DBG_M2_DR_IN t=%0t cycle=%0d layer=%0d row_idx=%0d data0=%0d data1=%0d data2=%0d data3=%0d data31=%0d",
-        $time,
-        cycle_count,
-        dbg_layer_idx,
-        dut.m2_dr_write_row_idx_s,
-        $signed(dut.m2_dr_write_data_s[0*DATA_W +: DATA_W]),
-        $signed(dut.m2_dr_write_data_s[1*DATA_W +: DATA_W]),
-        $signed(dut.m2_dr_write_data_s[2*DATA_W +: DATA_W]),
-        $signed(dut.m2_dr_write_data_s[3*DATA_W +: DATA_W]),
-        $signed(dut.m2_dr_write_data_s[31*DATA_W +: DATA_W])
-      );
-    end
-  end
-end
-
-always_ff @(posedge clk or negedge rst_n) begin
-  if (!rst_n) begin
-    dbg_m2_mac_cnt <= 0;
-  end else begin
-    if ((dbg_layer_idx <= 1) && dut.m2_mac_en_s && (dbg_m2_mac_cnt < 80)) begin
-      dbg_m2_mac_cnt <= dbg_m2_mac_cnt + 1;
-      $display("DBG_M2_MAC_IN_SAFE t=%0t cycle=%0d layer=%0d row=%0d col=%0d fgrp=%0d cgrp=%0d ky=%0d kx=%0d data0=%0d data1=%0d data2=%0d data3=%0d w_pf0_pc0=%0d w_pf0_pc1=%0d w_pf0_pc2=%0d w_pf1_pc0=%0d",
-        $time,
-        cycle_count,
-        dbg_layer_idx,
-        dut.m2_out_row_s,
-        dut.m2_out_col_s,
-        dut.m2_f_group_s,
-        dut.m2_c_group_s,
-        dut.m2_ky_s,
-        dut.m2_kx_s,
-        $signed(dut.m2_ce_data_out_logic_s[0*DATA_W +: DATA_W]),
-        $signed(dut.m2_ce_data_out_logic_s[1*DATA_W +: DATA_W]),
-        $signed(dut.m2_ce_data_out_logic_s[2*DATA_W +: DATA_W]),
-        $signed(dut.m2_ce_data_out_logic_s[3*DATA_W +: DATA_W]),
-        $signed(dut.m2_ce_weight_out_s[(0*PC + 0)*DATA_W +: DATA_W]),
-        $signed(dut.m2_ce_weight_out_s[(0*PC + 1)*DATA_W +: DATA_W]),
-        $signed(dut.m2_ce_weight_out_s[(0*PC + 2)*DATA_W +: DATA_W]),
-        $signed(dut.m2_ce_weight_out_s[(1*PC + 0)*DATA_W +: DATA_W])
-      );
-    end
-  end
-end
-
-always_ff @(posedge clk or negedge rst_n) begin
-  if (!rst_n) begin
-    dbg_m2_stream_cnt <= 0;
-  end else begin
-    if ((dbg_layer_idx <= 1) &&
-        dut.ifm_ofm_wr_en_s && dut.ifm_ofm_wr_ready_s &&
-        (dbg_m2_stream_cnt < 80)) begin
-      dbg_m2_stream_cnt <= dbg_m2_stream_cnt + 1;
-      $display("DBG_M2_OFM2IFM_DATA t=%0t cycle=%0d layer=%0d bank_col_l=%0d row=%0d cgrp=%0d data0=%0d data1=%0d data2=%0d data31=%0d keep=%h",
-        $time,
-        cycle_count,
-        dbg_layer_idx,
-        dut.ifm_ofm_wr_bank_s,
-        dut.ifm_ofm_wr_row_idx_s,
-        dut.ifm_ofm_wr_col_idx_s,
-        $signed(dut.ifm_ofm_wr_data_s[0*DATA_W +: DATA_W]),
-        $signed(dut.ifm_ofm_wr_data_s[1*DATA_W +: DATA_W]),
-        $signed(dut.ifm_ofm_wr_data_s[2*DATA_W +: DATA_W]),
-        $signed(dut.ifm_ofm_wr_data_s[31*DATA_W +: DATA_W]),
-        dut.ifm_ofm_wr_keep_s[31:0]
-      );
-    end
-  end
-end
-
   always_ff @(posedge clk) begin
     if (!rst_n) begin
       ddr_rd_valid <= 1'b0;
@@ -409,6 +291,8 @@ end
       ofm_ifm_stream_start_count <= 0;
       ofm_ifm_stream_done_count <= 0;
       m2_sm_refill_req_count <= 0;
+      l0_stream_checked_count <= 0;
+      l0_stream_mismatch_count <= 0;
       done_seen <= 1'b0;
       error_seen <= 1'b0;
       first_error_vec <= '0;
@@ -465,8 +349,45 @@ end
 
   always_ff @(posedge clk) begin
     if (rst_n) begin
-      if (dut.ofm_ifm_stream_start_s || dut.ofm_ifm_stream_done_s || done || error || ((cycle_count % 20000) == 0)) begin
+      if (done || error || ((cycle_count % 50000) == 0)) begin
         $display("DBG_TOP_STATUS t=%0t cycle=%0d busy=%0b done=%0b error=%0b vec=%04b layer=%0d mode=%0d ifm_rd=%0d wgt_rd=%0d ofm_wr=%0d stream_start=%0d stream_done=%0d legacy_m2_req=%0d", $time, cycle_count, busy, done, error, dbg_error_vec, dbg_layer_idx, dbg_mode, ddr_ifm_read_count, ddr_wgt_read_count, ddr_ofm_write_count, ofm_ifm_stream_start_count, ofm_ifm_stream_done_count, m2_sm_refill_req_count);
+      end
+    end
+  end
+
+  always_ff @(posedge clk) begin
+    if (rst_n) begin
+      if (dut.ifm_ofm_wr_en_s && dut.ifm_ofm_wr_ready_s && (dbg_layer_idx == 0)) begin
+        int global_col;
+        logic [DATA_W-1:0] exp_l0;
+        global_col = int'(dut.ofm_ifm_stream_col_base_s) + int'(dut.ifm_ofm_wr_bank_s);
+        exp_l0 = expected_l0_stream_value(global_col);
+
+        l0_stream_checked_count <= l0_stream_checked_count + 1;
+
+        if ((global_col >= L1_W_IN) ||
+            (dut.ifm_ofm_wr_col_idx_s != 0) ||
+            (dut.ifm_ofm_wr_data_s[0*DATA_W +: DATA_W] !== exp_l0) ||
+            (dut.ifm_ofm_wr_data_s[1*DATA_W +: DATA_W] !== exp_l0) ||
+            (dut.ifm_ofm_wr_data_s[31*DATA_W +: DATA_W] !== exp_l0)) begin
+          l0_stream_mismatch_count <= l0_stream_mismatch_count + 1;
+          if (l0_stream_mismatch_count < 16) begin
+            $display("TB_MISMATCH_L0_M2_STREAM t=%0t cycle=%0d row=%0d col_base=%0d bank_col_l=%0d global_col=%0d cgrp=%0d got0=%0d got1=%0d got31=%0d exp=%0d keep=%h",
+              $time,
+              cycle_count,
+              dut.ifm_ofm_wr_row_idx_s,
+              dut.ofm_ifm_stream_col_base_s,
+              dut.ifm_ofm_wr_bank_s,
+              global_col,
+              dut.ifm_ofm_wr_col_idx_s,
+              $signed(dut.ifm_ofm_wr_data_s[0*DATA_W +: DATA_W]),
+              $signed(dut.ifm_ofm_wr_data_s[1*DATA_W +: DATA_W]),
+              $signed(dut.ifm_ofm_wr_data_s[31*DATA_W +: DATA_W]),
+              $signed(exp_l0),
+              dut.ifm_ofm_wr_keep_s[31:0]
+            );
+          end
+        end
       end
     end
   end
@@ -479,6 +400,43 @@ end
         word[lane*DATA_W +: DATA_W] = 8'sd1;
       end
       return word;
+    end
+  endfunction
+
+  function automatic logic [DDR_WORD_W-1:0] pack_m2_ifm_tile_word;
+    input int tile_x;
+    input int cgrp;
+    input int col_l;
+    logic [DDR_WORD_W-1:0] word;
+    int ch;
+    logic [DATA_W-1:0] val;
+    begin
+      word = '0;
+      val = tile_x + 1;
+      for (int lane = 0; lane < DDR_LANES; lane++) begin
+        ch = cgrp * PC + lane;
+        if ((lane < PC) && (ch < L0_C_IN) && ((tile_x * PC + col_l) < L0_W_IN)) begin
+          word[lane*DATA_W +: DATA_W] = val;
+        end
+      end
+      return word;
+    end
+  endfunction
+
+  function automatic logic [DATA_W-1:0] expected_l0_stream_value;
+    input int out_col;
+    int src_input_col;
+    int src_tile;
+    int val_i;
+    begin
+      // L0 uses K=1 and pool_stride=2. Pool output column out_col consumes
+      // input columns {2*out_col, 2*out_col+1}. PC-aligned tiles make both
+      // columns belong to the same tile for this W224/PC32 regression.
+      src_input_col = out_col * 2;
+      src_tile = src_input_col / PC;
+      val_i = (src_tile + 1) * L0_C_IN;
+      if (val_i > 127) val_i = 127;
+      return val_i;
     end
   endfunction
 
@@ -527,14 +485,16 @@ end
 
       // Corrected Mode-2 first-layer IFM DDR layout:
       //   [tile_x][row][cgrp][col_l], lanes = PC channels.
-      // This W32 regression has one tile_x, but the loops are written in the
-      // full corrected order so the expected IFM read count is 2048, not 192.
+      // This full-size W224 regression has 7 tile_x blocks when PC=32.
+      // Each valid IFM lane is tile-coded as tile_x+1 so the test can catch
+      // accidental reuse of tile 0 when computing columns from later tiles.
+      // Expected first-layer IFM reads = 7 * 224 * ceil(3/32) * 32 = 50176.
       word_idx = 0;
       for (int tile_x = 0; tile_x < L0_COLBLKS; tile_x = tile_x + 1) begin
         for (row = 0; row < L0_H_IN; row = row + 1) begin
           for (int cgrp = 0; cgrp < L0_NUM_CGROUP; cgrp = cgrp + 1) begin
             for (int col_l = 0; col_l < PC; col_l = col_l + 1) begin
-              ddr_mem[`DDR_IFM_BASE + word_idx] = pack_ddr_ones_word();
+              ddr_mem[`DDR_IFM_BASE + word_idx] = pack_m2_ifm_tile_word(tile_x, cgrp, col_l);
               word_idx = word_idx + 1;
             end
           end
@@ -666,23 +626,23 @@ end
         exp_word = expected_final_word(j);
         if (ddr_mem[`DDR_OFM_BASE + j] !== exp_word) begin
           if (mismatch < 40) begin
-            $display("TB_MISMATCH_M2_9L word=%0d got=0x%0h exp=0x%0h", j, ddr_mem[`DDR_OFM_BASE + j], exp_word);
+            $display("TB_MISMATCH_M2_9L_FULLSIZE_K1 word=%0d got=0x%0h exp=0x%0h", j, ddr_mem[`DDR_OFM_BASE + j], exp_word);
           end
           mismatch = mismatch + 1;
         end
       end
       if (mismatch != 0) begin
         dump_ofm_region();
-        $fatal(1, "TB_FAIL: 9-layer Mode2 final OFM mismatch count=%0d", mismatch);
+        $fatal(1, "TB_FAIL: 9-layer Mode2 full-size K1 final OFM mismatch count=%0d", mismatch);
       end
     end
   endtask
 
   task automatic print_banner;
     begin
-      $display("TB_INFO: 9-layer Mode2 DCP/EfficientNet-B0 Table-VI-style W32 expected-compare test");
-      $display("TB_INFO: scaled W32 Mode2 regression; IFM DDR layout uses corrected WT=PC contract");
-      $display("TB_INFO: this test uses input %0dx%0dx%0d; full-size 224-wide test requires later tile/halo coverage", L0_H_IN, L0_W_IN, L0_C_IN);
+      $display("TB_INFO: 9-layer Mode2 DCP/EfficientNet-B0 Table-VI-style full-size K1 expected-compare test");
+      $display("TB_INFO: full-size W224 Mode2 multi-tile regression; IFM tile pattern checks true tile scheduling");
+      $display("TB_INFO: this test uses input %0dx%0dx%0d; K=1 isolates multi-tile WT=PC from K>1 halo behavior", L0_H_IN, L0_W_IN, L0_C_IN);
       $display("TB_INFO: Mode2 PC=%0d PF=%0d PTOTAL=%0d PV_MAX=%0d WGT_SUBWORDS=%0d", PC, PF, PTOTAL, PV_MAX, WGT_SUBWORDS);
       $display("TB_INFO: channel trend: 3 -> 32 -> 16 -> 24 -> 24 -> 40 -> 40 -> 80 -> 80 -> 192");
       $display("TB_INFO: L0 %0dx%0dx%0d -> conv %0dx%0dx%0d K=%0d -> %s %0dx%0dx%0d", L0_H_IN, L0_W_IN, L0_C_IN, L0_H_CONV_OUT, L0_W_CONV_OUT, L0_F_OUT, L0_K, (L0_POOL_EN ? "pool" : "nopool"), L0_H_OUT, L0_W_OUT, L0_F_OUT);
@@ -699,6 +659,7 @@ end
       $display("TB_INFO: expected deterministic OFM->IFM Mode2 stream commands >= %0d", EXP_OFM2IFM_STREAMS);
       $display("TB_INFO: expected final OFM logical elements=%0d", EXPECTED_FINAL_ELEMENTS);
       $display("TB_INFO: expected final OFM DDR words=%0d using Mode2 layout F*H*ceil(W/PC) = %0d*%0d*ceil(%0d/%0d)", EXPECTED_OFM_DDR_WORDS, L8_F_OUT, L8_H_OUT, L8_W_OUT, PC);
+      $display("TB_INFO: expected L0->L1 tile-pattern stream words=%0d", L1_H_IN*L1_COLBLKS*L1_NUM_CGROUP*PC);
       $display("TB_INFO: expected final value per valid element=%0d", EXPECTED_FINAL_VALUE);
     end
   endtask
@@ -750,8 +711,11 @@ end
     $display("TB_INFO: 9-layer Mode2 done after %0d cycles", cycle_count);
     $display("TB_INFO: DDR counts: ifm_reads=%0d expected=%0d, wgt_reads=%0d expected=%0d, ofm_writes=%0d expected=%0d", ddr_ifm_read_count, EXPECTED_IFM_DDR_READS, ddr_wgt_read_count, EXPECTED_WGT_DDR_READS, ddr_ofm_write_count, EXPECTED_OFM_DDR_WORDS);
     $display("TB_INFO: OFM->IFM stream starts=%0d done=%0d expected>=%0d, legacy_m2_refill_req=%0d", ofm_ifm_stream_start_count, ofm_ifm_stream_done_count, EXP_OFM2IFM_STREAMS, m2_sm_refill_req_count);
+    $display("TB_INFO: L0 stream tile-pattern checks=%0d mismatch=%0d", l0_stream_checked_count, l0_stream_mismatch_count);
 
     if (ddr_ifm_read_count != EXPECTED_IFM_DDR_READS) $fatal(1, "TB_FAIL: unexpected IFM DDR read count");
+    if (l0_stream_checked_count != (L1_H_IN*L1_COLBLKS*L1_NUM_CGROUP*PC)) $fatal(1, "TB_FAIL: unexpected L0->L1 stream data word count");
+    if (l0_stream_mismatch_count != 0) $fatal(1, "TB_FAIL: L0->L1 stream tile-pattern mismatch count=%0d", l0_stream_mismatch_count);
     if (ddr_wgt_read_count != EXPECTED_WGT_DDR_READS) $fatal(1, "TB_FAIL: unexpected WGT DDR read count");
     if (ddr_ofm_write_count != EXPECTED_OFM_DDR_WORDS) begin
       dump_ofm_region();
@@ -761,7 +725,7 @@ end
     if (m2_sm_refill_req_count != 0) $display("TB_WARN: legacy M2 refill request count is nonzero: %0d", m2_sm_refill_req_count);
 
     check_final_ofm();
-    $display("TB_PASS: 9-layer Mode2 DCP/EfficientNet-B0 Table-VI-style W32 expected-compare passed. final_value=%0d elements=%0d ddr_words=%0d", EXPECTED_FINAL_VALUE, EXPECTED_FINAL_ELEMENTS, EXPECTED_OFM_DDR_WORDS);
+    $display("TB_PASS: 9-layer Mode2 full-size K1 multi-tile pattern expected-compare passed. final_value=%0d elements=%0d ddr_words=%0d", EXPECTED_FINAL_VALUE, EXPECTED_FINAL_ELEMENTS, EXPECTED_OFM_DDR_WORDS);
     $finish;
   end
 endmodule

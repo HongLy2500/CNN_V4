@@ -61,6 +61,15 @@ module weight_read_ctrl_mode2 #(
   logic issue_succ;
   logic [31:0] flat_addr32;
 
+  // Metadata for the weight-buffer read request that is expected to return
+  // with wb_rd_valid.  In the current system the weight-buffer read response is
+  // registered, so these registers align wb_rd_data with the f/c group that
+  // generated the request.  This is needed to mask invalid lanes in the final
+  // partial C/PF groups without adding any logic to weight_register_mode2.
+  logic [15:0] req_fgroup_s, req_cgroup_s;
+  logic [15:0] resp_fgroup_q, resp_cgroup_q;
+  logic [PF*PC*DATA_W-1:0] weight_write_data_masked;
+
   always_comb begin
     if (PF != 0)
       num_fgroup = (F_cur + PF - 1) / PF;
@@ -119,16 +128,22 @@ module weight_read_ctrl_mode2 #(
     wb_rd_buf_sel = wb_bank_sel;
     wb_rd_addr    = '0;
     flat_addr32   = 32'd0;
+    req_fgroup_s  = 16'd0;
+    req_cgroup_s  = 16'd0;
 
     if (issue_first) begin
-      flat_addr32 = ((((next_sweep_fgroup * num_cgroup) + 16'd0) * K_cur) + 16'd0) * K_cur + 16'd0;
+      req_fgroup_s = start ? 16'd0 : next_sweep_fgroup;
+      req_cgroup_s = 16'd0;
+      flat_addr32  = ((((req_fgroup_s * num_cgroup) + req_cgroup_s) * K_cur) + 16'd0) * K_cur + 16'd0;
       if (start)
         flat_addr32 = 32'd0;
       wb_rd_en   = 1'b1;
       wb_rd_addr = flat_addr32[WB_ADDR_W-1:0];
     end
     else if (issue_succ) begin
-      flat_addr32 = ((((succ_fgroup * num_cgroup) + succ_cgroup) * K_cur) + succ_ky) * K_cur + succ_kx;
+      req_fgroup_s = succ_fgroup;
+      req_cgroup_s = succ_cgroup;
+      flat_addr32  = ((((req_fgroup_s * num_cgroup) + req_cgroup_s) * K_cur) + succ_ky) * K_cur + succ_kx;
       wb_rd_en   = 1'b1;
       wb_rd_addr = flat_addr32[WB_ADDR_W-1:0];
     end
@@ -140,13 +155,16 @@ module weight_read_ctrl_mode2 #(
       issue_cgroup_r <= 16'd0;
       issue_ky_r     <= '0;
       issue_kx_r     <= '0;
+      resp_fgroup_q  <= 16'd0;
+      resp_cgroup_q  <= 16'd0;
     end
     else if (wb_rd_en) begin
+      // Capture the request metadata for the corresponding wb_rd_valid data.
+      resp_fgroup_q <= req_fgroup_s;
+      resp_cgroup_q <= req_cgroup_s;
+
       if (issue_first) begin
-        if (start)
-          issue_fgroup_r <= 16'd0;
-        else
-          issue_fgroup_r <= next_sweep_fgroup;
+        issue_fgroup_r <= req_fgroup_s;
         issue_cgroup_r <= 16'd0;
         issue_ky_r     <= '0;
         issue_kx_r     <= '0;
@@ -160,7 +178,21 @@ module weight_read_ctrl_mode2 #(
     end
   end
 
+  always_comb begin
+    weight_write_data_masked = '0;
+
+    for (int pf_i = 0; pf_i < PF; pf_i++) begin
+      for (int pc_i = 0; pc_i < PC; pc_i++) begin
+        if (((resp_fgroup_q * PF + pf_i) < F_cur) &&
+            ((resp_cgroup_q * PC + pc_i) < C_cur)) begin
+          weight_write_data_masked[(pf_i*PC + pc_i)*DATA_W +: DATA_W] =
+              wb_rd_data[(pf_i*PC + pc_i)*DATA_W +: DATA_W];
+        end
+      end
+    end
+  end
+
   assign weight_write_en   = wb_rd_valid;
-  assign weight_write_data = wb_rd_data[PF*PC*DATA_W-1:0];
+  assign weight_write_data = weight_write_data_masked;
 
 endmodule

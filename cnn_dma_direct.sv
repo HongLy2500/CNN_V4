@@ -49,8 +49,11 @@ module cnn_dma_direct #(
     //   buf_row_base is logical row base in current HT window
     //
     // mode2:
-    //   DDR layout per command = [channel][row]
-    //   one command loads one horizontal tile of width WT=PC
+    //   One command loads rows from one resident horizontal tile (WT=PC).
+    //   DDR layout per command = [row][cgrp][col_l].
+    //   One DDR word carries PC channel lanes for one (row, cgrp, col_l).
+    //   The command base is expected to already include the selected
+    //   horizontal tile offset.
     //==================================================
     input  logic                        ifm_cmd_start,
     input  logic [DDR_ADDR_W-1:0]       ifm_cmd_ddr_base,
@@ -148,6 +151,12 @@ module cnn_dma_direct #(
     // Without a PV_MIN parameter, W_MAX is the safe upper bound.
     localparam int IFM_COLS_MAX = (W_MAX <= 1) ? 1 : W_MAX;
     localparam int IFM_COL_W    = (IFM_COLS_MAX <= 1) ? 1 : $clog2(IFM_COLS_MAX);
+
+    // Mode 2 IFM layout after the WT=PC fix:
+    //   ifm_bank_q     = cgrp during IFM preload sequencing
+    //   ifm_col_iter_q = col_l inside the resident W tile [0..PC-1]
+    //   DDR word       = PC channel lanes for (row, cgrp, col_l)
+    localparam int M2_CGRP_MAX = (C_MAX + PC - 1) / PC;
     localparam int WGT_SUBWORDS = (WGT_WORD_W + DDR_WORD_W - 1) / DDR_WORD_W;
     localparam int WGT_PACK_CNT_W = (WGT_SUBWORDS <= 1) ? 1 : $clog2(WGT_SUBWORDS + 1);
 
@@ -201,6 +210,9 @@ module cnn_dma_direct #(
 
     logic [PV_MAX-1:0] keep_mask_v;
     logic [31:0] mode1_groups_v;
+    logic [31:0] mode2_cgroups_v;
+    logic [31:0] mode2_cgrp_base_ch_v;
+    logic [31:0] mode2_rem_ch_v;
     logic [31:0] full_words_v;
     logic [31:0] rem_pixels_v;
     logic [31:0] curr_valid_lanes_v;
@@ -246,6 +258,19 @@ module cnn_dma_direct #(
     end
 
     always_comb begin
+        if (cfg_c_in == 0)
+            mode2_cgroups_v = 0;
+        else
+            mode2_cgroups_v = (cfg_c_in + PC - 1) / PC;
+
+        mode2_cgrp_base_ch_v = ifm_bank_q * PC;
+        if (mode2_cgrp_base_ch_v >= cfg_c_in)
+            mode2_rem_ch_v = 0;
+        else
+            mode2_rem_ch_v = cfg_c_in - mode2_cgrp_base_ch_v;
+    end
+
+    always_comb begin
         ifm_ddr_offset_v = 32'd0;
 
         if (!cfg_mode) begin
@@ -254,7 +279,9 @@ module cnn_dma_direct #(
                                ifm_col_iter_q;
         end
         else begin
-            // Keep the existing linear behavior for mode 2.
+            // Mode 2 command base already points at the selected WT=PC
+            // horizontal tile. The stream order is [row][cgrp][col_l],
+            // so a simple linear index is correct inside the command.
             ifm_ddr_offset_v = ddr_linear_idx_q;
         end
 
@@ -284,7 +311,9 @@ module cnn_dma_direct #(
                 curr_valid_lanes_v = (rem_pixels_v == 0) ? cfg_pv_cur : rem_pixels_v;
         end
         else begin
-            curr_valid_lanes_v = (cfg_w_in < PC) ? cfg_w_in : PC;
+            // Mode 2 word lanes are channel lanes inside the current cgrp,
+            // not pixel columns. Tail handling is therefore based on C, not W.
+            curr_valid_lanes_v = (mode2_rem_ch_v < PC) ? mode2_rem_ch_v : PC;
         end
 
         for (int k = 0; k < PV_MAX; k++) begin
@@ -299,7 +328,10 @@ module cnn_dma_direct #(
         if (!cfg_mode)
             ifm_total_words_in = cfg_c_in * ifm_cmd_num_rows * mode1_groups_v;
         else
-            ifm_total_words_in = cfg_c_in * ifm_cmd_num_rows;
+            // Mode 2 command layout is [row][cgrp][col_l].
+            // Each word contains PC channel lanes. The command base must
+            // already include the selected horizontal tile offset.
+            ifm_total_words_in = ifm_cmd_num_rows * mode2_cgroups_v * PC;
 
         wgt_total_words_in = wgt_cmd_num_words * WGT_SUBWORDS;
         ofm_total_words_in = ofm_cmd_num_words;
@@ -336,8 +368,15 @@ module cnn_dma_direct #(
         else begin
             ifm_cmd_shape_ok =
                 (ifm_cmd_num_rows != 0) &&
+                (cfg_w_in != 0) &&
+                (cfg_w_in <= W_MAX) &&
                 (cfg_c_in != 0) &&
-                ((cfg_w_in >= 1) && (cfg_w_in <= PC)) &&
+                (cfg_c_in <= C_MAX) &&
+                (PC != 0) &&
+                (PC <= PV_MAX) &&
+                (PC <= C_MAX) &&
+                (mode2_cgroups_v != 0) &&
+                (mode2_cgroups_v <= M2_CGRP_MAX) &&
                 ((ifm_cmd_buf_row_base + ifm_cmd_num_rows) <= H_MAX);
         end
 
@@ -404,11 +443,28 @@ module cnn_dma_direct #(
         ddr_wr_be          = '0;
 
         ifm_dma_wr_en      = 1'b0;
-        ifm_dma_wr_bank    = ifm_bank_q[$clog2(C_MAX)-1:0];
         ifm_dma_wr_row_idx = ifm_buf_row_base_q + ifm_row_iter_q[$clog2(H_MAX)-1:0];
-        ifm_dma_wr_col_idx = ifm_col_iter_q[IFM_COL_W-1:0];
         ifm_dma_wr_data    = rd_data_hold_q;
         ifm_dma_wr_keep    = keep_mask_v;
+
+        if (!cfg_mode) begin
+            // Mode 1 unchanged: bank=channel, col_idx=Pv group.
+            ifm_dma_wr_bank    = ifm_bank_q[$clog2(C_MAX)-1:0];
+            ifm_dma_wr_col_idx = ifm_col_iter_q[IFM_COL_W-1:0];
+        end
+        else begin
+            // Mode 2 fixed contract with ifm_buffer:
+            //   bank    = col_l inside resident WT=PC tile
+            //   col_idx = cgrp
+            //   lanes   = PC channel lanes
+            //
+            // Do not use a fixed-width part-select from ifm_col_iter_q here.
+            // In many configs C_MAX is wider than IFM_COL_W, and an out-of-range
+            // part-select makes the upper bits of ifm_dma_wr_bank become X in
+            // simulation. A plain assignment zero-extends/truncates safely.
+            ifm_dma_wr_bank    = ifm_col_iter_q;
+            ifm_dma_wr_col_idx = ifm_bank_q;
+        end
 
         wgt_dma_wr_en       = 1'b0;
         wgt_dma_wr_buf_sel  = wgt_buf_sel_q;
@@ -526,21 +582,28 @@ module cnn_dma_direct #(
                         end
                     end
                     else begin
-                        ifm_dma_wr_col_idx = '0;
-
-                        if (ifm_row_iter_q + 1 < ifm_num_rows_q) begin
-                            ifm_row_iter_n = ifm_row_iter_q + 1'b1;
+                        // Mode 2 fixed preload order: [row][cgrp][col_l].
+                        // ifm_bank_q stores cgrp; ifm_col_iter_q stores col_l.
+                        if (ifm_col_iter_q + 1 < PC) begin
+                            ifm_col_iter_n = ifm_col_iter_q + 1'b1;
                             state_n        = ST_IFM_REQ;
                         end
                         else begin
-                            ifm_row_iter_n = '0;
-                            if (ifm_bank_q + 1 < cfg_c_in) begin
+                            ifm_col_iter_n = '0;
+                            if (ifm_bank_q + 1 < mode2_cgroups_v) begin
                                 ifm_bank_n = ifm_bank_q + 1'b1;
                                 state_n    = ST_IFM_REQ;
                             end
                             else begin
-                                cmd_done_n = CMD_IFM;
-                                state_n    = ST_DONE;
+                                ifm_bank_n = '0;
+                                if (ifm_row_iter_q + 1 < ifm_num_rows_q) begin
+                                    ifm_row_iter_n = ifm_row_iter_q + 1'b1;
+                                    state_n        = ST_IFM_REQ;
+                                end
+                                else begin
+                                    cmd_done_n = CMD_IFM;
+                                    state_n    = ST_DONE;
+                                end
                             end
                         end
                     end

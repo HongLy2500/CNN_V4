@@ -23,6 +23,12 @@ module ce_mode2_top #(
   input  logic [15:0] Hout_cur,
   input  logic [15:0] Wout_cur,
 
+  // Mode-2 resident-tile window. One start computes one horizontal tile.
+  // out_col exported by the controller remains GLOBAL:
+  //   out_col = tile_col_base_g + local_col
+  input  logic [15:0] tile_col_base_g,
+  input  logic [15:0] tile_col_count,
+
   input  logic                     dr_write_en,
   input  logic [$clog2(K_MAX)-1:0] dr_write_row_idx,
   input  logic [PC*DATA_W-1:0]     dr_write_data,
@@ -105,6 +111,8 @@ module ce_mode2_top #(
     .F_cur             (F_cur),
     .Hout_cur          (Hout_cur),
     .Wout_cur          (Wout_cur),
+    .tile_col_base_g   (tile_col_base_g),
+    .tile_col_count    (tile_col_count),
     .out_row           (out_row),
     .out_col           (out_col),
     .f_group           (f_group),

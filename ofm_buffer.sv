@@ -246,6 +246,13 @@ module ofm_buffer #(
     logic [15:0] strm_m2_cgrp_q;
 
     // ============================================================
+    // Mode-2 direct stream source selection
+    // ============================================================
+    // Match Mode 1 behavior: STRM_M2_DIRECT first tries the current layer
+    // tag/geometry and, if that word is not ready, falls back to the previous
+    // completed layer tag/geometry.  No extra source-select command is used.
+
+    // ============================================================
     // DMA read registers
     // ============================================================
     logic                     dma_valid_q;
@@ -693,12 +700,16 @@ module ofm_buffer #(
                     strm_m1_ch_blk_q   <= ifm_stream_m1_ch_blk_g;
                     strm_m2_cgrp_q     <= ifm_stream_m2_cgrp_g;
 
-                    if (!src_mode_q && !next_mode_q)
+                    
+                    if (!src_mode_q && !next_mode_q) begin
                         strm_mode_q <= STRM_M1_DIRECT;
-                    else if (src_mode_q && next_mode_q)
+                    end
+                    else if (src_mode_q && next_mode_q) begin
                         strm_mode_q <= STRM_M2_DIRECT;
-                    else if (!src_mode_q && next_mode_q)
+                    end
+                    else if (!src_mode_q && next_mode_q) begin
                         strm_mode_q <= STRM_M1_TO_M2;
+                    end
                     else begin
                         strm_mode_q   <= STRM_IDLE;
                         strm_active_q <= 1'b0;
@@ -752,10 +763,16 @@ module ofm_buffer #(
                             integer m2_ch_base;
                             integer m2_num_ch;
                             m2_ch_base = strm_m2_cgrp_q * PC;
+
+                            // Match the source actually selected by the combinational
+                            // tag/fill check below.  Runtime refill after layer advance
+                            // may read the previous layer even though current layer
+                            // metadata is already active.
                             if (stream_src_tag_v == prev_layer_tag_q)
-                                m2_num_ch  = (m2_ch_base >= prev_f_out_q) ? 0 : (prev_f_out_q - m2_ch_base);
+                                m2_num_ch = (m2_ch_base >= prev_f_out_q) ? 0 : (prev_f_out_q - m2_ch_base);
                             else
-                                m2_num_ch  = (m2_ch_base >= f_out_q) ? 0 : (f_out_q - m2_ch_base);
+                                m2_num_ch = (m2_ch_base >= f_out_q) ? 0 : (f_out_q - m2_ch_base);
+
                             if (m2_num_ch > PC)
                                 m2_num_ch = PC;
 
@@ -1130,12 +1147,17 @@ module ofm_buffer #(
                 end
 
                 STRM_M2_DIRECT: begin
+                    // Match Mode 1 direct stream behavior.  First try current
+                    // layer tag/geometry for pre-advance same-mode refill.  If
+                    // the word is not ready, try the previous completed layer
+                    // tag/geometry for runtime refill after scheduler advance.
                     abs_row_v       = strm_row_base_q + strm_row_q;
                     abs_col_base_v  = strm_col_base_q;
                     phys_grp_v      = strm_col_base_q / PC;
                     phys_addr_v     = ofm_phys_addr(abs_row_v, phys_grp_v);
                     expected_keep_v = calc_keep_mask(PC, strm_col_base_q, w_out_q);
                     stream_bank_v   = m2_ch_base_v + strm_ch_q;
+                    stream_src_tag_v = layer_tag_q;
 
                     if (((m2_ch_base_v + strm_ch_q) < f_out_q) &&
                         (strm_row_q < strm_num_rows_q) &&

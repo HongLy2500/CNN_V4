@@ -17,13 +17,12 @@ module addr_gen_ifm_m2 #(
   // UPDATED CONTRACT:
   // - ifm_buffer is configured in mode 2
   // - input out_row/out_col are GLOBAL output coordinates
-  // - local tile coordinate is derived internally from the global column
-  //   using the current fixed-width tile model:
-  //       tile_col_base_g = floor(out_col_g / PC) * PC
-  //       out_col_l       = out_col_g - tile_col_base_g
-  //
-  // This keeps the interface backward-compatible while removing the old
-  // ambiguity where out_col was treated as local.
+  // - local tile coordinate is derived from the explicit resident tile
+  //   base supplied by local_dataflow_manager/control:
+  //       col_l = global_input_col - tile_col_base_g
+  // - the generator rejects reads outside the currently resident WT=PC tile;
+  //   this prevents the old behavior where global_col % PC silently wrapped
+  //   to tile 0 when compute crossed a tile boundary.
   // --------------------------------------------------
   input  logic [3:0] K_cur,
   input  logic [7:0] C_cur,
@@ -32,6 +31,13 @@ module addr_gen_ifm_m2 #(
   input  logic [15:0] W_in,
   input  logic [15:0] Hout_cur,
   input  logic [15:0] Wout_cur,
+
+  // GLOBAL column base of the horizontal Mode-2 tile currently resident
+  // in IFM buffer. Mode 2 IFM buffer stores only one WT=PC tile at a time:
+  //   bank = local column col_l = global_col - tile_col_base_g
+  //   addr = row*C_GRP_MAX + cgrp
+  //   lane = channel within PC group
+  input  logic [15:0] tile_col_base_g,
 
   // --------------------------------------------------
   // Triggers / loop position from ce_controller_mode2
@@ -288,34 +294,31 @@ module addr_gen_ifm_m2 #(
   //   bank_base      = c_group * PC
   //   abs_row_g      = out_row_g(block) + ky
   //   abs_col_g      = out_col_g(block) + kx
-  //   tile_base_g    = floor(abs_col_g / PC) * PC
-  //   col_sel_local  = abs_col_g - tile_base_g
+  //   tile_base_g    = explicit tile_col_base_g from local_dataflow_manager
+  //   col_sel_local  = abs_col_g - tile_col_base_g
   //
   // This keeps GLOBAL and LOCAL meanings separate:
   // - abs_row_g / abs_col_g are feature-map coordinates
-  // - col_sel_local is the address used inside the currently addressed PC-wide
-  //   segment
+  // - col_sel_local is the IFM-buffer physical bank index for mode 2
   //
-  // Boundary / tile rollover policy:
-  // - local tile coordinate is derived from the ABSOLUTE input column of each
-  //   issued tuple, not from the output block origin.
-  // - when kx pushes the window across a PC-wide boundary, the generator
-  //   automatically rolls over to the next segment by recomputing tile_base_g
-  //   from abs_col_g.
-  // - control/refill logic must still ensure that the segment containing the
-  //   requested abs_col_g is resident in ifm_buffer.
+  // Tile-resident policy:
+  // - only columns inside [tile_col_base_g, tile_col_base_g + PC) may be read.
+  // - do NOT use abs_col_g % PC here, because that would silently read from
+  //   the wrong resident tile for W > PC.
+  // - K>1 halo/cross-tile behavior must be handled by tile scheduling/control;
+  //   this module intentionally flags such out-of-resident-tile accesses.
   // --------------------------------------------------
   always_comb begin
     issue_bank_base16 = issue_cgroup * PC;
     issue_abs_row16   = issue_block_row + issue_ky;
     issue_abs_col_g16 = issue_block_col + issue_kx;
 
-    if (PC != 0)
-      issue_tile_base_g16 = (issue_abs_col_g16 / PC) * PC;
-    else
-      issue_tile_base_g16 = 16'd0;
+    issue_tile_base_g16 = tile_col_base_g;
 
-    issue_col_sel_l16 = issue_abs_col_g16 - issue_tile_base_g16;
+    if (issue_abs_col_g16 >= tile_col_base_g)
+      issue_col_sel_l16 = issue_abs_col_g16 - tile_col_base_g;
+    else
+      issue_col_sel_l16 = 16'hffff;
 
     issue_addr_valid  = 1'b1;
     if (!issue_any)
@@ -326,7 +329,15 @@ module addr_gen_ifm_m2 #(
       issue_addr_valid = 1'b0;
     else if (issue_abs_col_g16 >= W_in)
       issue_addr_valid = 1'b0;
-    else if ((PC == 0) || (issue_col_sel_l16 >= PC))
+    else if (tile_col_base_g >= W_in)
+      issue_addr_valid = 1'b0;
+    else if ((PC == 0) || ((tile_col_base_g % PC) != 0))
+      issue_addr_valid = 1'b0;
+    else if (issue_abs_col_g16 < tile_col_base_g)
+      issue_addr_valid = 1'b0;
+    else if (issue_abs_col_g16 >= (tile_col_base_g + PC))
+      issue_addr_valid = 1'b0;
+    else if (issue_col_sel_l16 >= PC)
       issue_addr_valid = 1'b0;
   end
 
@@ -363,6 +374,22 @@ module addr_gen_ifm_m2 #(
   assign dbg_waiting_for_return = stream_active_q && ret_valid_q && !ifm_rd_valid;
 
   assign final_out_valid = stream_active_q && out_valid && !have_next_block;
+
+`ifndef SYNTHESIS
+  // Simulation-only sanity checks for the explicit resident tile contract.
+  always_ff @(posedge clk) begin
+    if (rst_n && cfg_valid && start) begin
+      if ((PC != 0) && ((tile_col_base_g % PC) != 0)) begin
+        $display("ERROR: addr_gen_ifm_m2 tile_col_base_g=%0d is not PC-aligned PC=%0d at t=%0t",
+                 tile_col_base_g, PC, $time);
+      end
+      if (tile_col_base_g >= W_in) begin
+        $display("ERROR: addr_gen_ifm_m2 tile_col_base_g=%0d outside W_in=%0d at t=%0t",
+                 tile_col_base_g, W_in, $time);
+      end
+    end
+  end
+`endif
 
   // --------------------------------------------------
   // State / sequencing

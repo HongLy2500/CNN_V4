@@ -6,7 +6,12 @@ module ifm_buffer #(
     parameter int W_MAX  = 224,
     parameter int H_MAX  = 224,
     parameter int HT     = 8,    // fixed tile height for mode 1
-    parameter int DEPTH  = (((HT * W_MAX) > H_MAX) ? (HT * W_MAX) : H_MAX)
+    // DEPTH must cover both layouts:
+    //   mode 1: HT rows * W_MAX words/row
+    //   mode 2: H_MAX rows * ceil(C_MAX/PC) channel groups
+    parameter int DEPTH  = (((HT * W_MAX) > (H_MAX * ((C_MAX + PC - 1) / PC)))
+                            ? (HT * W_MAX)
+                            : (H_MAX * ((C_MAX + PC - 1) / PC)))
 )(
     input  logic clk,
     input  logic rst_n,
@@ -37,10 +42,11 @@ module ifm_buffer #(
     //   dma_wr_data    = low cfg_pv_cur lanes hold valid pixels
     //
     // mode 2:
-    //   dma_wr_bank    = channel index
+    //   WT = PC. The resident IFM tile is a horizontal tile of width PC.
+    //   dma_wr_bank    = local column col_l inside the resident W tile [0..PC-1]
     //   dma_wr_row_idx = absolute row index [0..H-1]
-    //   dma_wr_col_idx = unused
-    //   dma_wr_data    = low PC lanes hold one horizontal segment of that row
+    //   dma_wr_col_idx = channel-group index cgrp = floor(channel/PC)
+    //   dma_wr_data    = low PC lanes hold PC channel values at (row, col_l, cgrp)
     //==================================================
     input  logic                        dma_wr_en,
     input  logic [$clog2(C_MAX)-1:0]    dma_wr_bank,
@@ -57,9 +63,11 @@ module ifm_buffer #(
     //   ofm_wr_col_idx = horizontal group index in the stored IFM layout
     //
     // Mode 2 contract stays aligned with DMA write semantics:
-    //   ofm_wr_bank    = absolute channel index
+    //   WT = PC. The resident IFM tile is a horizontal tile of width PC.
+    //   ofm_wr_bank    = local column col_l inside the resident W tile [0..PC-1]
     //   ofm_wr_row_idx = absolute row index [0..H-1]
-    //   ofm_wr_col_idx = unused (single PC-wide segment per active tile)
+    //   ofm_wr_col_idx = channel-group index cgrp = floor(channel/PC)
+    //   ofm_wr_data    = low PC lanes hold PC channel values at (row, col_l, cgrp)
     //==================================================
     input  logic                        ofm_wr_en,
     input  logic [$clog2(C_MAX)-1:0]    ofm_wr_bank,
@@ -76,9 +84,11 @@ module ifm_buffer #(
     //   rd_col_idx   = horizontal group index based on cfg_pv_cur
     //
     // mode 2:
-    //   rd_bank_base = first channel index of current Pc group
+    //   rd_bank_base = first channel index of current PC group (cgrp*PC).
+    //                  It is used only to derive cgrp = rd_bank_base/PC.
     //   rd_row_idx   = absolute row index
-    //   rd_col_idx   = pixel select inside stored PC-wide segment
+    //   rd_col_idx   = local column col_l inside the resident W tile [0..PC-1]
+    //   rd_data      = PC channel lanes for the requested (row, col_l, cgrp)
     //==================================================
     input  logic                        rd_en,
     input  logic [$clog2(C_MAX)-1:0]    rd_bank_base,
@@ -120,6 +130,13 @@ module ifm_buffer #(
     localparam int ROWBASE_W = (HT <= 1) ? 1 : $clog2(HT);
     localparam int HCFG_W    = $clog2(H_MAX+1);
     localparam int M1_STRIDE = W_MAX;
+
+    // Mode 2 storage contract:
+    //   bank = local column col_l inside the resident W tile, 0..PC-1
+    //   addr = row * M2_CGRP_MAX + cgrp
+    //   lane = local channel pc_l inside that cgrp, 0..PC-1
+    localparam int M2_CGRP_MAX = (C_MAX + PC - 1) / PC;
+    localparam int M2_STRIDE   = M2_CGRP_MAX;
 
     //==================================================
     // Physical storage
@@ -172,6 +189,12 @@ module ifm_buffer #(
     logic                 wr_addr_valid;
     logic                 wr_src_is_ofm;
 
+    // Mode 2 read decode helpers. Kept separate from mode 1 so the mode 1
+    // address/read behavior remains unchanged.
+    logic [31:0]          rd_m2_cgrp_u32;
+    logic [31:0]          rd_m2_col_l_u32;
+    logic [31:0]          rd_addr_m2_u32;
+
     //==================================================
     // Read registers
     //==================================================
@@ -210,11 +233,14 @@ module ifm_buffer #(
         if (PC > PV_MAX) begin
             $error("ifm_buffer: PC must be <= PV_MAX");
         end
+        if (PC > C_MAX) begin
+            $error("ifm_buffer: PC must be <= C_MAX because mode 2 maps bank=col_l[0..PC-1]");
+        end
         if (DEPTH < (HT * W_MAX)) begin
             $error("ifm_buffer: DEPTH too small for mode 1 worst-case Pv=1 mapping");
         end
-        if (DEPTH < H_MAX) begin
-            $error("ifm_buffer: DEPTH too small for mode 2 max row storage");
+        if (DEPTH < (H_MAX * M2_CGRP_MAX)) begin
+            $error("ifm_buffer: DEPTH too small for mode 2 H_MAX*ceil(C_MAX/PC) mapping");
         end
     end
 
@@ -359,25 +385,31 @@ module ifm_buffer #(
     always_comb begin
         logic wr_bank_valid_v;
         logic wr_row_valid_v;
+        logic wr_cgrp_valid_v;
+        logic [31:0] cfg_m2_cgroups_v;
+        logic [31:0] wr_m2_addr_u32;
 
         wr_addr          = '0;
         wr_addr_valid    = 1'b0;
         wr_bank_valid_v  = 1'b0;
         wr_row_valid_v   = 1'b0;
-
-        // DMA writes are for the currently configured layer, so the
-        // current cfg_c_in_q guard is still correct.
-        //
-        // OFM->IFM writes may be filling the NEXT layer before cfg_load
-        // advances this buffer to that next layer. In that phase cfg_c_in_q
-        // can still describe the source/current layer, so using cfg_c_in_q
-        // would incorrectly drop valid next-layer banks, for example bank
-        // 8..11 when current C=8 and next C=12.
-        wr_bank_valid_v = wr_src_is_ofm
-                        ? (wr_bank_sel < C_MAX)
-                        : (wr_bank_sel < cfg_c_in_q);
+        wr_cgrp_valid_v  = 1'b0;
+        cfg_m2_cgroups_v = '0;
+        wr_m2_addr_u32   = '0;
 
         if (!cfg_mode_q) begin
+            // MODE 1 UNCHANGED:
+            // bank = channel, addr = physical_ring_row * W_MAX + col_group,
+            // lane = Pv pixel lane.
+            //
+            // DMA writes are for the currently configured layer, so the
+            // current cfg_c_in_q guard is still correct. OFM->IFM writes may
+            // be filling the NEXT layer before cfg_load advances this buffer,
+            // so they are guarded only by physical C_MAX.
+            wr_bank_valid_v = wr_src_is_ofm
+                            ? (wr_bank_sel < C_MAX)
+                            : (wr_bank_sel < cfg_c_in_q);
+
             // Mode 1 OFM refill provides a physical/free row slot inside HT.
             // DMA preload/refill also presents a row inside the active HT
             // window, so the same row guard is valid for both sources.
@@ -391,17 +423,30 @@ module ifm_buffer #(
             end
         end
         else begin
-            // Mode 2 DMA writes are for the current layer and remain guarded
-            // by cfg_h_in_q. OFM writes may target the next layer before the
-            // config latch advances, so only require the physical row to be
-            // representable by this buffer.
-            wr_row_valid_v = wr_src_is_ofm
-                           ? (wr_row_idx_sel < H_MAX)
-                           : (wr_row_idx_sel < cfg_h_in_q);
+            // MODE 2 FIXED CONTRACT:
+            //   wr_bank_sel    = col_l inside resident W tile, 0..PC-1
+            //   wr_row_idx_sel = absolute row
+            //   wr_col_idx_sel = cgrp
+            //   wr_data lanes  = PC channel lanes
+            //
+            // OFM->IFM writes may target the NEXT layer before cfg_load
+            // advances this buffer, so they must not be limited by the
+            // current cfg_c_in_q. DMA writes are for the current layer and
+            // can use cfg_c_in_q to reject impossible cgrp values.
+            cfg_m2_cgroups_v = (cfg_c_in_q + PC - 1) / PC;
 
-            if (wr_bank_valid_v && wr_row_valid_v) begin
-                wr_addr       = wr_row_idx_ext;
-                wr_addr_valid = (wr_addr < DEPTH);
+            wr_bank_valid_v = (wr_bank_sel < PC) && (wr_bank_sel < C_MAX);
+            wr_row_valid_v  = wr_src_is_ofm
+                            ? (wr_row_idx_sel < H_MAX)
+                            : (wr_row_idx_sel < cfg_h_in_q);
+            wr_cgrp_valid_v = wr_src_is_ofm
+                            ? (wr_col_idx_sel < M2_CGRP_MAX)
+                            : (wr_col_idx_sel < cfg_m2_cgroups_v);
+
+            if (wr_bank_valid_v && wr_row_valid_v && wr_cgrp_valid_v) begin
+                wr_m2_addr_u32 = (wr_row_idx_sel * M2_STRIDE) + wr_col_idx_sel;
+                wr_addr        = wr_m2_addr_u32;
+                wr_addr_valid  = (wr_m2_addr_u32 < DEPTH);
             end
         end
     end
@@ -434,15 +479,23 @@ module ifm_buffer #(
         else
             rd_m1_phys_row = tmp[ROWBASE_W-1:0];
 
+        // MODE 1 UNCHANGED.
         rd_addr_m1 = (rd_m1_phys_row * M1_STRIDE) + rd_col_idx;
-        rd_addr_m2 = rd_row_idx_ext;
+
+        // MODE 2 FIXED CONTRACT:
+        //   rd_bank_base carries cgrp*PC for interface compatibility.
+        //   rd_col_idx carries local column col_l.
+        //   IFM physical bank is col_l; word lanes are channel lanes.
+        rd_m2_cgrp_u32  = rd_bank_base / PC;
+        rd_m2_col_l_u32 = rd_col_idx;
+        rd_addr_m2_u32  = (rd_row_idx_ext * M2_STRIDE) + rd_m2_cgrp_u32;
+        rd_addr_m2      = rd_addr_m2_u32;
     end
 
     //==================================================
     // Read path: 1-cycle registered output
     //==================================================
     integer rlane;
-    integer bank_idx_i;
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -466,11 +519,23 @@ module ifm_buffer #(
                     end
                 end
                 else begin
+                    // MODE 2 FIXED CONTRACT:
+                    //   bank = col_l = rd_col_idx
+                    //   addr = row * M2_CGRP_MAX + cgrp
+                    //   lane = pc_l = rlane
+                    //
+                    // rd_bank_base still carries cgrp*PC so existing upstream
+                    // mode-2 address generation can remain source-compatible.
                     for (rlane = 0; rlane < PV_MAX; rlane++) begin
-                        if ((rlane < PC) && ((rd_bank_base + rlane) < cfg_c_in_q) && (rd_col_idx < PC)) begin
-                            bank_idx_i = rd_bank_base + rlane;
+                        if ((rlane < PC) &&
+                            ((rd_bank_base + rlane) < cfg_c_in_q) &&
+                            (rd_m2_col_l_u32 < PC) &&
+                            (rd_m2_col_l_u32 < C_MAX) &&
+                            (rd_m2_cgrp_u32 < M2_CGRP_MAX) &&
+                            (rd_addr_m2_u32 < DEPTH)) begin
+
                             rd_data_q[rlane*DATA_W +: DATA_W]
-                                <= mem[bank_idx_i[$clog2(C_MAX)-1:0]][rd_addr_m2][rd_col_idx*DATA_W +: DATA_W];
+                                <= mem[rd_m2_col_l_u32][rd_addr_m2][rlane*DATA_W +: DATA_W];
                         end
                         else begin
                             rd_data_q[rlane*DATA_W +: DATA_W] <= '0;
@@ -480,5 +545,155 @@ module ifm_buffer #(
             end
         end
     end
+
+
+
+logic [31:0] dbg_ifm_l5_wr_evt_q;
+logic [31:0] dbg_ifm_l5_rd_evt_q;
+
+logic                        dbg_l5_rd_v_q;
+logic [$clog2(C_MAX)-1:0]    dbg_l5_rd_bank_base_q;
+logic [$clog2(H_MAX)-1:0]    dbg_l5_rd_row_q;
+logic [$clog2(W_MAX)-1:0]    dbg_l5_rd_col_q;
+logic [DEPTH_W-1:0]          dbg_l5_rd_addr_q;
+
+// ------------------------------------------------------------
+// Trace ANY write into IFM banks 32..39.
+// For L5 input, banks 32..39 are valid channels 32..39.
+//
+// Important:
+//   In IFM buffer Mode 2:
+//     bank = channel index
+//     word lane = spatial column inside the current horizontal tile
+//
+// Therefore, for banks 32..39, d0..d11 are spatial columns 0..11
+// of one channel bank, not PC channel lanes.
+// ------------------------------------------------------------
+always_ff @(posedge clk or negedge rst_n) begin
+  if (!rst_n) begin
+    dbg_ifm_l5_wr_evt_q <= 32'd0;
+  end
+  else begin
+    if (cfg_mode_q &&
+        wr_en_sel &&
+        (wr_bank_sel >= 32) &&
+        (wr_bank_sel < 40)) begin
+
+      dbg_ifm_l5_wr_evt_q <= dbg_ifm_l5_wr_evt_q + 32'd1;
+
+      $display("DBG_IFM_ANY_WR_B32_39 t=%0t evt=%0d cfg=%0dx%0dx%0d src_ofm=%0b addr_valid=%0b bank=%0d row=%0d addr=%0d col_idx=%0d keep=%h d0=%h d1=%h d2=%h d3=%h d4=%h d5=%h d6=%h d7=%h d8=%h d9=%h d10=%h d11=%h d31=%h",
+        $time,
+        dbg_ifm_l5_wr_evt_q,
+        cfg_h_in_q,
+        cfg_w_in_q,
+        cfg_c_in_q,
+        wr_src_is_ofm,
+        wr_addr_valid,
+        wr_bank_sel,
+        wr_row_idx_sel,
+        wr_addr,
+        wr_col_idx_sel,
+        wr_keep_sel,
+
+        wr_data_sel[0*DATA_W +: DATA_W],
+        wr_data_sel[1*DATA_W +: DATA_W],
+        wr_data_sel[2*DATA_W +: DATA_W],
+        wr_data_sel[3*DATA_W +: DATA_W],
+        wr_data_sel[4*DATA_W +: DATA_W],
+        wr_data_sel[5*DATA_W +: DATA_W],
+        wr_data_sel[6*DATA_W +: DATA_W],
+        wr_data_sel[7*DATA_W +: DATA_W],
+        wr_data_sel[8*DATA_W +: DATA_W],
+        wr_data_sel[9*DATA_W +: DATA_W],
+        wr_data_sel[10*DATA_W +: DATA_W],
+        wr_data_sel[11*DATA_W +: DATA_W],
+        wr_data_sel[31*DATA_W +: DATA_W]
+      );
+    end
+  end
+end
+
+// ------------------------------------------------------------
+// Latch L5 read request context.
+// rd_data_q is registered, so print it one cycle later.
+//
+// For L5 c_group=1:
+//   rd_bank_base should be 32
+//   rd_data_q lane 0..7 reads banks 32..39 at one spatial col
+// ------------------------------------------------------------
+always_ff @(posedge clk or negedge rst_n) begin
+  if (!rst_n) begin
+    dbg_l5_rd_v_q         <= 1'b0;
+    dbg_l5_rd_bank_base_q <= '0;
+    dbg_l5_rd_row_q       <= '0;
+    dbg_l5_rd_col_q       <= '0;
+    dbg_l5_rd_addr_q      <= '0;
+  end
+  else begin
+    dbg_l5_rd_v_q <= 1'b0;
+
+    if (cfg_mode_q &&
+        (cfg_h_in_q == 16'd8) &&
+        (cfg_w_in_q == 16'd12) &&
+        (cfg_c_in_q == 8'd40) &&
+        rd_en &&
+        (rd_bank_base == 32) &&
+        (rd_row_idx < 8) &&
+        (rd_col_idx < 12)) begin
+
+      dbg_l5_rd_v_q         <= 1'b1;
+      dbg_l5_rd_bank_base_q <= rd_bank_base;
+      dbg_l5_rd_row_q       <= rd_row_idx;
+      dbg_l5_rd_col_q       <= rd_col_idx;
+      dbg_l5_rd_addr_q      <= rd_addr_m2;
+    end
+  end
+end
+
+always_ff @(posedge clk or negedge rst_n) begin
+  if (!rst_n) begin
+    dbg_ifm_l5_rd_evt_q <= 32'd0;
+  end
+  else begin
+    if (dbg_l5_rd_v_q) begin
+      dbg_ifm_l5_rd_evt_q <= dbg_ifm_l5_rd_evt_q + 32'd1;
+
+      $display("DBG_IFM_M2_L5_RD t=%0t evt=%0d cfg=%0dx%0dx%0d bank_base=%0d row=%0d col_l=%0d addr=%0d rd_valid=%0b rd0=%h rd1=%h rd2=%h rd3=%h rd4=%h rd5=%h rd6=%h rd7=%h rd8=%h rd31=%h mem32=%h mem33=%h mem34=%h mem35=%h mem36=%h mem37=%h mem38=%h mem39=%h",
+        $time,
+        dbg_ifm_l5_rd_evt_q,
+        cfg_h_in_q,
+        cfg_w_in_q,
+        cfg_c_in_q,
+        dbg_l5_rd_bank_base_q,
+        dbg_l5_rd_row_q,
+        dbg_l5_rd_col_q,
+        dbg_l5_rd_addr_q,
+        rd_valid_q,
+
+        rd_data_q[0*DATA_W +: DATA_W],
+        rd_data_q[1*DATA_W +: DATA_W],
+        rd_data_q[2*DATA_W +: DATA_W],
+        rd_data_q[3*DATA_W +: DATA_W],
+        rd_data_q[4*DATA_W +: DATA_W],
+        rd_data_q[5*DATA_W +: DATA_W],
+        rd_data_q[6*DATA_W +: DATA_W],
+        rd_data_q[7*DATA_W +: DATA_W],
+        rd_data_q[8*DATA_W +: DATA_W],
+        rd_data_q[31*DATA_W +: DATA_W],
+
+        mem[32][dbg_l5_rd_addr_q][dbg_l5_rd_col_q*DATA_W +: DATA_W],
+        mem[33][dbg_l5_rd_addr_q][dbg_l5_rd_col_q*DATA_W +: DATA_W],
+        mem[34][dbg_l5_rd_addr_q][dbg_l5_rd_col_q*DATA_W +: DATA_W],
+        mem[35][dbg_l5_rd_addr_q][dbg_l5_rd_col_q*DATA_W +: DATA_W],
+        mem[36][dbg_l5_rd_addr_q][dbg_l5_rd_col_q*DATA_W +: DATA_W],
+        mem[37][dbg_l5_rd_addr_q][dbg_l5_rd_col_q*DATA_W +: DATA_W],
+        mem[38][dbg_l5_rd_addr_q][dbg_l5_rd_col_q*DATA_W +: DATA_W],
+        mem[39][dbg_l5_rd_addr_q][dbg_l5_rd_col_q*DATA_W +: DATA_W]
+      );
+    end
+  end
+end
+
+
 
 endmodule

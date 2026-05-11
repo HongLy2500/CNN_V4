@@ -24,13 +24,14 @@ module addr_gen_ifm_ddr #(
   //   starting from abs_row_base, into ifm_buffer rows beginning at
   //   buf_row_base inside the current HT window.
   //
-  // Mode 2 DDR layout assumption:
-  //   [tile_x][channel][row]
-  //   one word = one PC-wide horizontal segment for a given (channel,row)
+  // Mode 2 DDR layout assumption after the IFM-buffer mode-2 fix:
+  //   [tile_x][row][cgrp][col_l]
+  //   one word = PC channel lanes for one local column col_l inside the
+  //   resident horizontal tile WT=PC.
   //   req_m2_tile_idx selects which horizontal tile is loaded.
-  //   A command loads num_rows consecutive absolute rows across all channels,
-  //   starting from abs_row_base, into ifm_buffer rows beginning at
-  //   buf_row_base (normally equal to abs_row_base for mode 2).
+  //   A command loads num_rows consecutive absolute rows for all channel
+  //   groups and all col_l=0..PC-1 positions of that tile, starting from
+  //   abs_row_base, into ifm_buffer rows beginning at buf_row_base.
   // --------------------------------------------------
   input  logic                        start,
   input  logic                        cfg_mode,          // 0: mode1, 1: mode2
@@ -79,8 +80,9 @@ module addr_gen_ifm_ddr #(
 
   localparam int CMD_ROW_W  = (H_MAX <= 1) ? 1 : $clog2(H_MAX+1);
   localparam int BUF_ROW_W  = (H_MAX <= 1) ? 1 : $clog2(H_MAX);
-  localparam int TILES_MAX  = (W_MAX + PC - 1) / PC;
-  localparam int TILE_W     = (TILES_MAX <= 1) ? 1 : $clog2(TILES_MAX + 1);
+  localparam int TILES_MAX    = (W_MAX + PC - 1) / PC;
+  localparam int TILE_W       = (TILES_MAX <= 1) ? 1 : $clog2(TILES_MAX + 1);
+  localparam int M2_CGRP_MAX  = (C_MAX + PC - 1) / PC;
 
   localparam logic [DDR_ADDR_W-1:0] DDR_IFM_END = `DDR_IFM_BASE + `DDR_IFM_SIZE - 1;
 
@@ -100,6 +102,7 @@ module addr_gen_ifm_ddr #(
 
   logic [31:0] mode1_words_per_row32;
   logic [31:0] mode2_num_tiles32;
+  logic [31:0] mode2_cgroups32;
   logic [31:0] tile_words32;
   logic [31:0] req_num_rows32;
   logic [31:0] req_abs_row_base32;
@@ -126,8 +129,19 @@ module addr_gen_ifm_ddr #(
   end
 
   always_comb begin
-    mode2_num_tiles32 = (cfg_w_layer + PC - 1) / PC;
-    tile_words32      = cfg_c_in * cfg_h_in;
+    if (cfg_w_layer == 0)
+      mode2_num_tiles32 = 32'd0;
+    else
+      mode2_num_tiles32 = (cfg_w_layer + PC - 1) / PC;
+
+    if (cfg_c_in == 0)
+      mode2_cgroups32 = 32'd0;
+    else
+      mode2_cgroups32 = (cfg_c_in + PC - 1) / PC;
+
+    // Mode 2 tile layout is [row][cgrp][col_l].
+    // Each word holds PC channel lanes for one local column col_l.
+    tile_words32 = cfg_h_in * mode2_cgroups32 * PC;
   end
 
   // --------------------------------------------------
@@ -164,16 +178,28 @@ module addr_gen_ifm_ddr #(
     end
     else begin
       // --------------------------
-      // Mode 2: [tile_x][channel][row]
-      // one tile = C * H words
+      // Mode 2: [tile_x][row][cgrp][col_l]
+      // one word = PC channel lanes for one local column col_l.
+      // one tile = H * ceil(C/PC) * PC words.
       // --------------------------
-      total_words32        = cfg_c_in * req_num_rows32;
-      ddr_base_word_addr32 = cfg_ifm_ddr_base + (req_tile_idx32 * tile_words32) + req_abs_row_base32;
+      total_words32        = req_num_rows32 * mode2_cgroups32 * PC;
+      ddr_base_word_addr32 = cfg_ifm_ddr_base
+                           + (req_tile_idx32     * tile_words32)
+                           + (req_abs_row_base32 * mode2_cgroups32 * PC);
       ddr_last_word_addr32 = ddr_base_word_addr32 + ((total_words32 == 0) ? 0 : (total_words32 - 1));
 
       if ((cfg_c_in != 0) &&
+          (cfg_c_in <= C_MAX) &&
           (cfg_h_in != 0) &&
+          (cfg_h_in <= H_MAX) &&
           (cfg_w_layer != 0) &&
+          (cfg_w_layer <= W_MAX) &&
+          (PC != 0) &&
+          (PC <= PV_MAX) &&
+          (PC <= C_MAX) &&
+          (mode2_cgroups32 != 0) &&
+          (mode2_cgroups32 <= M2_CGRP_MAX) &&
+          (mode2_num_tiles32 != 0) &&
           (req_num_rows32 != 0) &&
           (req_abs_row_base32 < cfg_h_in) &&
           ((req_abs_row_base32 + req_num_rows32) <= cfg_h_in) &&

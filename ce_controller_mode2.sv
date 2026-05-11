@@ -30,22 +30,42 @@ module ce_controller_mode2 #(
   input  logic [15:0] Wout_cur,
 
   // =====================================================
+  // Mode-2 resident-tile contract
+  // =====================================================
+  // IFM buffer Mode 2 holds one horizontal tile at a time:
+  //   bank = local column col_l inside the resident tile
+  //   lane = channel inside PC group
+  //
+  // This controller computes exactly ONE resident output tile per start:
+  //   global out_col = tile_col_base_g + local_col
+  //   local_col      = 0 .. tile_col_count-1
+  //
+  // The outer control_unit_top is responsible for:
+  //   load/refill tile -> start CE -> wait done -> next tile.
+  input  logic [15:0] tile_col_base_g,
+  input  logic [15:0] tile_col_count,
+
+  // =====================================================
   // Loop outputs
   //
   // IMPORTANT CONTRACT:
   // - out_row / out_col are GLOBAL output-feature-map coordinates.
-  // - ce_controller_mode2 does NOT generate any tile-local coordinate.
-  // - Any local column used to index data already loaded in ifm_buffer
-  //   must be derived downstream from:
-  //       out_col_local = out_col_global - tile_col_base_global
+  // - Internally this controller scans tile-local columns only.
+  // - Downstream addr_gen_ifm_m2 derives IFM local column as:
+  //       ifm_col_l = out_col_global - tile_col_base_g
   //
-  // Mode 2 loop order:
-  //   for f_group
-  //     for out_row_g
-  //       for out_col_g
+  // Mode 2 tile-local loop order per start, aligned with Mode 1:
+  //   for out_row_g
+  //     for out_col_l within resident tile
+  //       for f_group
   //         for c_group
   //           for ky
   //             for kx
+  //
+  // In other words, CE is the single source of GLOBAL spatial
+  // coordinates. Downstream ReLU/pooling/OFM write must use out_row/out_col
+  // as global coordinates; only IFM address generation derives a tile-local
+  // column by subtracting tile_col_base_g.
   // =====================================================
   output logic [15:0] out_row,
   output logic [15:0] out_col,
@@ -81,10 +101,10 @@ module ce_controller_mode2 #(
   // Finished one GLOBAL output pixel of current filter-group.
   output logic pixel_done_pulse,
 
-  // Finished an entire GLOBAL raster map of current filter-group.
+  // Finished an entire GLOBAL raster map of current filter-group for this tile.
   output logic f_group_done_pulse,
 
-  // Finished entire configured workload.
+  // Finished entire configured tile workload.
   output logic done,
   output logic busy
 );
@@ -99,12 +119,19 @@ module ce_controller_mode2 #(
 
   state_t state, next_state;
 
-  // These registers hold GLOBAL coordinates.
-  logic [15:0] out_row_g_r, out_col_g_r, f_group_r, c_group_r;
+  // out_col_l_r is local to the currently resident Mode-2 tile.
+  // out_row_g_r and out_col output remain global externally.
+  logic [15:0] out_row_g_r, out_col_l_r, f_group_r, c_group_r;
   logic [$clog2(K_MAX)-1:0] ky_r, kx_r;
 
   logic [15:0] num_fgroup;
   logic [15:0] num_cgroup;
+
+  logic [15:0] tile_remaining_cols;
+  logic [15:0] tile_col_count_req;
+  logic [15:0] tile_col_count_eff;
+  logic        tile_cfg_valid;
+  logic        workload_valid;
 
   logic last_kx;
   logic last_ky;
@@ -130,11 +157,40 @@ module ce_controller_mode2 #(
       num_cgroup = 16'd0;
   end
 
+  // Effective tile width is clipped to remaining output width.
+  // A zero tile_col_count means "use all remaining columns" for safety,
+  // but normal control_unit_top should drive min(PC, Wout - tile_base).
+  always_comb begin
+    if (tile_col_base_g < Wout_cur)
+      tile_remaining_cols = Wout_cur - tile_col_base_g;
+    else
+      tile_remaining_cols = 16'd0;
+
+    tile_col_count_req = (tile_col_count != 16'd0) ? tile_col_count
+                                                   : tile_remaining_cols;
+
+    if (tile_col_count_req > tile_remaining_cols)
+      tile_col_count_eff = tile_remaining_cols;
+    else
+      tile_col_count_eff = tile_col_count_req;
+
+    tile_cfg_valid = (tile_remaining_cols != 16'd0) &&
+                     (tile_col_count_eff != 16'd0);
+
+    workload_valid = tile_cfg_valid &&
+                     (K_cur != 4'd0) &&
+                     (Hout_cur != 16'd0) &&
+                     (Wout_cur != 16'd0) &&
+                     (num_fgroup != 16'd0) &&
+                     (num_cgroup != 16'd0);
+  end
+
   always_comb begin
     last_kx     = (kx_r == K_cur - 1);
     last_ky     = (ky_r == K_cur - 1);
     last_cgroup = (c_group_r == num_cgroup - 1);
-    last_col    = (out_col_g_r == Wout_cur - 1);
+    last_col    = (tile_col_count_eff == 16'd0) ||
+                  (out_col_l_r == tile_col_count_eff - 1);
     last_row    = (out_row_g_r == Hout_cur - 1);
     last_fgroup = (f_group_r == num_fgroup - 1);
   end
@@ -153,24 +209,18 @@ module ce_controller_mode2 #(
 
   // =====================================================
   // FSM next-state logic
-  //
-  // Important for mac_array_mode2:
-  // - The final multiply-accumulate must happen in S_RUN.
-  // - A separate S_FLUSH cycle then asserts out_valid to emit the result.
   // =====================================================
   always_comb begin
     next_state = state;
 
     case (state)
       S_IDLE: begin
-        if (start)
+        if (start && workload_valid)
           next_state = S_CLEAR;
       end
 
       S_CLEAR: begin
         // Wait only for the first IFM/weight tuple of this output block.
-        // After entering S_RUN, the existing Mode-2 prefetch pipeline
-        // advances with mac_en/step_en as originally designed.
         if (block_start_fire)
           next_state = S_RUN;
       end
@@ -203,7 +253,7 @@ module ce_controller_mode2 #(
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
       out_row_g_r <= 16'd0;
-      out_col_g_r <= 16'd0;
+      out_col_l_r <= 16'd0;
       f_group_r   <= 16'd0;
       c_group_r   <= 16'd0;
       ky_r        <= '0;
@@ -212,9 +262,9 @@ module ce_controller_mode2 #(
     else begin
       case (state)
         S_IDLE: begin
-          if (start) begin
+          if (start && workload_valid) begin
             out_row_g_r <= 16'd0;
-            out_col_g_r <= 16'd0;
+            out_col_l_r <= 16'd0;
             f_group_r   <= 16'd0;
             c_group_r   <= 16'd0;
             ky_r        <= '0;
@@ -254,24 +304,31 @@ module ce_controller_mode2 #(
         end
 
         S_ADVANCE: begin
-          // Next order after finishing one GLOBAL output pixel:
-          //   out_col_g -> out_row_g -> f_group
-          if (!last_col) begin
-            out_col_g_r <= out_col_g_r + 1'b1;
+          // Mode-1-style order after finishing one GLOBAL output pixel
+          // for the current filter group:
+          //   f_group -> out_col_l -> out_row_g
+          //
+          // This keeps all Pf groups for the same spatial pixel adjacent,
+          // then advances to the next pixel. The exported out_col remains
+          // GLOBAL because it is tile_col_base_g + out_col_l_r.
+          if (!last_fgroup) begin
+            f_group_r <= f_group_r + 1'b1;
           end
           else begin
-            out_col_g_r <= 16'd0;
+            f_group_r <= 16'd0;
 
-            if (!last_row) begin
-              out_row_g_r <= out_row_g_r + 1'b1;
+            if (!last_col) begin
+              out_col_l_r <= out_col_l_r + 1'b1;
             end
             else begin
-              out_row_g_r <= 16'd0;
+              out_col_l_r <= 16'd0;
 
-              if (!last_fgroup)
-                f_group_r <= f_group_r + 1'b1;
-              else
-                f_group_r <= 16'd0;
+              if (!last_row) begin
+                out_row_g_r <= out_row_g_r + 1'b1;
+              end
+              else begin
+                out_row_g_r <= 16'd0;
+              end
             end
           end
         end
@@ -288,7 +345,7 @@ module ce_controller_mode2 #(
   always_comb begin
     // Export GLOBAL coordinates.
     out_row = out_row_g_r;
-    out_col = out_col_g_r;
+    out_col = tile_col_base_g + out_col_l_r;
     f_group = f_group_r;
     c_group = c_group_r;
     ky      = ky_r;
@@ -307,16 +364,12 @@ module ce_controller_mode2 #(
     out_valid = (state == S_FLUSH);
 
     // Start of accumulation for the current GLOBAL pixel block.
-    // This must be a single pulse when leaving S_CLEAR; otherwise
-    // addr_gen_ifm_m2/weight_read_ctrl_mode2 can issue repeatedly
-    // while waiting for the first tuple.
     pass_start_pulse = (state == S_CLEAR) && block_start_fire;
 
-    // First GLOBAL pixel result of one filter-group.
-    // Top-level should delay this to match relu_out_valid timing.
+    // First GLOBAL pixel result of one filter-group in this tile.
     group_start_pulse = (state == S_FLUSH) &&
                         (out_row_g_r == 16'd0) &&
-                        (out_col_g_r == 16'd0);
+                        (out_col_l_r == 16'd0);
 
     row_done_pulse = (state == S_RUN) && step_en && last_kx;
     row_done_ky    = ky_r;
@@ -331,5 +384,7 @@ module ce_controller_mode2 #(
     done = (state == S_ADVANCE) &&
            last_fgroup && last_row && last_col;
   end
+
+
 
 endmodule

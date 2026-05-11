@@ -111,6 +111,15 @@ module dma_phase_manager
   phase_t grant_phase;
   phase_t selected_phase_for_mux;
 
+  // Mode-2 full-width execution may issue a burst of IFM tile preload
+  // requests (req_m2_tile_idx = 0..ceil(W/PC)-1).  Keep those IFM requests
+  // ahead of weight/ofm phases while the current layer is Mode 2 so the
+  // tile-preload sequence cannot be interleaved or starved.  Mode 1 keeps
+  // the original WGT > IFM > OFM priority.
+  logic mode2_cur_s;
+  logic ifm_req_slot_free_s;
+  logic capture_ifm_req_s;
+
   // --------------------------------------------------------------------------
   // Sub-generator wires
   // --------------------------------------------------------------------------
@@ -131,6 +140,14 @@ module dma_phase_manager
   logic [$clog2(OFM_LINEAR_DEPTH+1)-1:0] ofm_gen_cmd_num_words;
   logic [OFM_AW-1:0] ofm_gen_cmd_buf_base;
 
+  assign mode2_cur_s = (cur_cfg.mode == MODE2);
+
+  // Treat a pending IFM slot as free if its generator is completing in the
+  // current cycle.  This prevents a one-cycle M2 tile request from being lost
+  // when it arrives on the same cycle as the previous IFM command's done pulse.
+  assign ifm_req_slot_free_s = !pending_ifm_q || ifm_gen_done || ifm_gen_error;
+  assign capture_ifm_req_s   = req_ifm_load && ifm_req_slot_free_s;
+
   // --------------------------------------------------------------------------
   // Request latching
   // --------------------------------------------------------------------------
@@ -142,6 +159,12 @@ module dma_phase_manager
     if (ifm_gen_done || ifm_gen_error) pending_ifm_d = 1'b0;
     if (wgt_gen_done || wgt_gen_error) pending_wgt_d = 1'b0;
     if (ofm_gen_done || ofm_gen_error) pending_ofm_d = 1'b0;
+
+    // If a new IFM request arrives exactly when the previous IFM request is
+    // completing, keep the pending bit asserted and let the sequential block
+    // below capture the new row/tile context.  This is especially important
+    // for Mode-2 multi-tile initial preloads.
+    if (capture_ifm_req_s) pending_ifm_d = 1'b1;
   end
 
   // --------------------------------------------------------------------------
@@ -157,7 +180,15 @@ module dma_phase_manager
     start_ofm_gen = 1'b0;
 
     if (!subgen_active_q) begin
-      if (pending_wgt_q) begin
+      if (mode2_cur_s && pending_ifm_q) begin
+        // Mode 2 keeps one horizontal WT=PC tile resident in IFM.  When the
+        // control unit is sweeping initial DDR tiles, finish the IFM tile
+        // sequence before servicing weight/ofm phases.  Mode 1 is unaffected
+        // and keeps the legacy priority below.
+        grant_phase   = PH_IFM;
+        start_ifm_gen = 1'b1;
+      end
+      else if (pending_wgt_q) begin
         grant_phase   = PH_WGT;
         start_wgt_gen = 1'b1;
       end
@@ -243,7 +274,7 @@ module dma_phase_manager
       // accepted into the pending slot. The control unit keeps requests
       // one-at-a-time, so a request while pending_ifm_q is already set is
       // intentionally ignored here rather than overwriting the active one.
-      if (req_ifm_load && !pending_ifm_q) begin
+      if (capture_ifm_req_s) begin
         ifm_req_abs_row_base_q <= req_ifm_abs_row_base;
         ifm_req_num_rows_q     <= req_ifm_num_rows;
         ifm_req_buf_row_base_q <= req_ifm_buf_row_base;
