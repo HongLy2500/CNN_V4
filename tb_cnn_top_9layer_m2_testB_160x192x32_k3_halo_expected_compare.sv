@@ -1,41 +1,38 @@
 `timescale 1ns/1ps
 `include "cnn_ddr_defs.svh"
 
-module tb_cnn_top_9layer_m2_testA_64x96x32_k1_multitile_expected_compare;
+module tb_cnn_top_9layer_m2_testB_160x192x32_k3_halo_expected_compare;
   import cnn_layer_desc_pkg::*;
 
   // --------------------------------------------------------------------------
-  // 9-layer Mode-2 DCP/EfficientNet-B0-style Test-A large-shape test.
+  // 9-layer Mode-2 DCP/EfficientNet-B0-style Test-B K=3 halo/window test.
   //
   // Purpose:
-  //   This is the Test-A companion to the W32 Mode-2 regression.
-  //   It uses a Mode-2-friendly initial IFM shape, 64x96x32, to stress
-  //   W > PC multi-horizontal-tile scheduling without forcing the unrealistic
-  //   224x224x3 first image directly into Mode 2.
+  //   Companion to Test-A K=1.  Test-A validated the corrected Mode-2
+  //   WT=PC resident IFM layout and Mode1-style active-context OFM->IFM
+  //   refill without K>1 halo/window pressure.  This Test-B deliberately
+  //   uses K=3 for all 9 layers to stress the parts Test-A did not touch:
   //
-  // Important scope note:
-  //   K is intentionally kept at 1 for all layers. This test validates the
-  //   corrected Mode-2 WT=PC IFM layout and multi-horizontal-tile handling
-  //   for W=96 without mixing in K>1 cross-tile/halo behavior. A later K=3
-  //   test should be added after the Mode-2 halo/window-crossing contract is
-  //   implemented and verified.
+  //   - 3x3 sliding windows in Mode 2
+  //   - horizontal halo crossing across PC-wide resident tiles
+  //   - vertical halo crossing across rows
+  //   - pooling after K=3 convolution
+  //   - later-layer partial C groups and partial F groups
+  //   - final Mode-2 OFM DDR readback with small final W
   //
-  // Data model:
-  //   First-layer IFM is tile-coded, not uniform:
-  //     IFM[row][tile_x*PC + col_l][valid channel] = tile_x + 1.
-  //   All weights are 1. Expected final OFM is still checked exactly.
-  //   With K=1 and ReLU/signed-8 saturation, L2 onward saturates to 127,
-  //   while an additional L0->L1 stream checker verifies that different
-  //   horizontal tiles are actually consumed, not silently aliased to tile 0.
+  // Shape choice:
+  //   K=3 shrinks H/W by 2 at every layer, and layers 0/2/4/6 pool by 2.
+  //   The first-layer shape is increased to 160x192x32 so all 9 layers remain
+  //   valid while still requiring multiple PC-wide horizontal tiles.
   //
-  // This stresses:
-  //   - Mode-2 first-layer DDR->IFM preload over 3 horizontal tiles
-  //   - W=96 with WT=PC=32, i.e. ceil(96/32)=3 col tiles
-  //   - Mode2->Mode2 Mode1-style active-context OFM->IFM refill over 8 transitions
-  //   - partial C groups, especially C=16,24,40,80 with PC=32
-  //   - partial F groups for F=16,24,40,80,192 with PF=64
-  //   - L0->L1 stream data differs by horizontal tile
-  //   - final DDR OFM compare
+  // Data/weight model:
+  //   First-layer IFM is row+tile-coded:
+  //     IFM[row][tile_x*PC + col_l][channel] = tile_x + 1 + (row % 4).
+  //   L0 weights are sparse: for every filter and every 3x3 tap, only PC lane
+  //   0 is 1.  This keeps L0->L1 values below saturation so the checker can
+  //   catch actual K=3 horizontal/vertical halo behavior.
+  //   Layers L1..L8 use all-ones weights; from L1 onward values saturate to 127,
+  //   so the final OFM is still checked exactly against 127.
   // --------------------------------------------------------------------------
 
   localparam int DATA_W = 8;
@@ -54,16 +51,16 @@ module tb_cnn_top_9layer_m2_testA_64x96x32_k1_multitile_expected_compare;
 
   localparam int C_MAX = 192;
   localparam int F_MAX = 192;
-  localparam int W_MAX = 96;
-  localparam int H_MAX = 64;
+  localparam int W_MAX = 192;
+  localparam int H_MAX = 160;
   localparam int HT = 4;
   localparam int K_MAX = 3;
 
   localparam int WGT_DEPTH = 512;
-  // OFM storage in this all-Mode2 K1 test packs spatial columns in PC-wide words.
-  // Do not use W_MAX as the physical row stride here: W_MAX=96 would make
-  // DEPTH=64*ceil(96/32) per bank and can crash XSim with huge unpacked arrays.
-  // The required physical groups per row are ceil(W_MAX/PC)=3.
+  // OFM storage in this all-Mode2 K3 test packs spatial columns in PC-wide words.
+  // Do not use W_MAX as the physical row stride here: W_MAX=192 would make
+  // DEPTH=160*ceil(192/32) per bank and can crash XSim with huge unpacked arrays.
+  // The required physical groups per row are ceil(W_MAX/PC)=6.
   localparam int OFM_ROW_STRIDE = (W_MAX + PC - 1) / PC;
   localparam int OFM_BANK_DEPTH = H_MAX * OFM_ROW_STRIDE;
   localparam int OFM_LINEAR_DEPTH = C_MAX * OFM_BANK_DEPTH;
@@ -75,52 +72,52 @@ module tb_cnn_top_9layer_m2_testA_64x96x32_k1_multitile_expected_compare;
   localparam int WGT_SUBWORDS = (PTOTAL + PV_MAX - 1) / PV_MAX;
   localparam int MEM_DEPTH = (`DDR_RSVD_BASE + `DDR_RSVD_SIZE);
   localparam int CLK_PERIOD_NS = 10;
-  localparam int MAX_CYCLES = 50000000;
+  localparam int MAX_CYCLES = 120000000;
 
   // 9-layer EfficientNet-B0 channel trend used in the Mode-1 Table-VI test.
-  // K is set to 1 here so the Test-A W96 regression can validate
-  // multi-tile Mode-2 storage without mixing in K>1 halo behavior yet.
-  localparam int L0_H_IN=64, L0_W_IN=96, L0_C_IN=32, L0_F_OUT=32, L0_K=1, L0_POOL_EN=1;
+  // K is set to 3 here to validate Mode-2 halo/window behavior after
+  // the Test-A K1 multi-tile storage regression has passed.
+  localparam int L0_H_IN=160, L0_W_IN=192, L0_C_IN=32, L0_F_OUT=32, L0_K=3, L0_POOL_EN=1;
   localparam int L0_H_CONV_OUT=L0_H_IN-L0_K+1, L0_W_CONV_OUT=L0_W_IN-L0_K+1;
   localparam int L0_H_OUT=(L0_POOL_EN ? (L0_H_CONV_OUT/2) : L0_H_CONV_OUT);
   localparam int L0_W_OUT=(L0_POOL_EN ? (L0_W_CONV_OUT/2) : L0_W_CONV_OUT);
 
-  localparam int L1_H_IN=L0_H_OUT, L1_W_IN=L0_W_OUT, L1_C_IN=L0_F_OUT, L1_F_OUT=16, L1_K=1, L1_POOL_EN=0;
+  localparam int L1_H_IN=L0_H_OUT, L1_W_IN=L0_W_OUT, L1_C_IN=L0_F_OUT, L1_F_OUT=16, L1_K=3, L1_POOL_EN=0;
   localparam int L1_H_CONV_OUT=L1_H_IN-L1_K+1, L1_W_CONV_OUT=L1_W_IN-L1_K+1;
   localparam int L1_H_OUT=(L1_POOL_EN ? (L1_H_CONV_OUT/2) : L1_H_CONV_OUT);
   localparam int L1_W_OUT=(L1_POOL_EN ? (L1_W_CONV_OUT/2) : L1_W_CONV_OUT);
 
-  localparam int L2_H_IN=L1_H_OUT, L2_W_IN=L1_W_OUT, L2_C_IN=L1_F_OUT, L2_F_OUT=24, L2_K=1, L2_POOL_EN=1;
+  localparam int L2_H_IN=L1_H_OUT, L2_W_IN=L1_W_OUT, L2_C_IN=L1_F_OUT, L2_F_OUT=24, L2_K=3, L2_POOL_EN=1;
   localparam int L2_H_CONV_OUT=L2_H_IN-L2_K+1, L2_W_CONV_OUT=L2_W_IN-L2_K+1;
   localparam int L2_H_OUT=(L2_POOL_EN ? (L2_H_CONV_OUT/2) : L2_H_CONV_OUT);
   localparam int L2_W_OUT=(L2_POOL_EN ? (L2_W_CONV_OUT/2) : L2_W_CONV_OUT);
 
-  localparam int L3_H_IN=L2_H_OUT, L3_W_IN=L2_W_OUT, L3_C_IN=L2_F_OUT, L3_F_OUT=24, L3_K=1, L3_POOL_EN=0;
+  localparam int L3_H_IN=L2_H_OUT, L3_W_IN=L2_W_OUT, L3_C_IN=L2_F_OUT, L3_F_OUT=24, L3_K=3, L3_POOL_EN=0;
   localparam int L3_H_CONV_OUT=L3_H_IN-L3_K+1, L3_W_CONV_OUT=L3_W_IN-L3_K+1;
   localparam int L3_H_OUT=(L3_POOL_EN ? (L3_H_CONV_OUT/2) : L3_H_CONV_OUT);
   localparam int L3_W_OUT=(L3_POOL_EN ? (L3_W_CONV_OUT/2) : L3_W_CONV_OUT);
 
-  localparam int L4_H_IN=L3_H_OUT, L4_W_IN=L3_W_OUT, L4_C_IN=L3_F_OUT, L4_F_OUT=40, L4_K=1, L4_POOL_EN=1;
+  localparam int L4_H_IN=L3_H_OUT, L4_W_IN=L3_W_OUT, L4_C_IN=L3_F_OUT, L4_F_OUT=40, L4_K=3, L4_POOL_EN=1;
   localparam int L4_H_CONV_OUT=L4_H_IN-L4_K+1, L4_W_CONV_OUT=L4_W_IN-L4_K+1;
   localparam int L4_H_OUT=(L4_POOL_EN ? (L4_H_CONV_OUT/2) : L4_H_CONV_OUT);
   localparam int L4_W_OUT=(L4_POOL_EN ? (L4_W_CONV_OUT/2) : L4_W_CONV_OUT);
 
-  localparam int L5_H_IN=L4_H_OUT, L5_W_IN=L4_W_OUT, L5_C_IN=L4_F_OUT, L5_F_OUT=40, L5_K=1, L5_POOL_EN=0;
+  localparam int L5_H_IN=L4_H_OUT, L5_W_IN=L4_W_OUT, L5_C_IN=L4_F_OUT, L5_F_OUT=40, L5_K=3, L5_POOL_EN=0;
   localparam int L5_H_CONV_OUT=L5_H_IN-L5_K+1, L5_W_CONV_OUT=L5_W_IN-L5_K+1;
   localparam int L5_H_OUT=(L5_POOL_EN ? (L5_H_CONV_OUT/2) : L5_H_CONV_OUT);
   localparam int L5_W_OUT=(L5_POOL_EN ? (L5_W_CONV_OUT/2) : L5_W_CONV_OUT);
 
-  localparam int L6_H_IN=L5_H_OUT, L6_W_IN=L5_W_OUT, L6_C_IN=L5_F_OUT, L6_F_OUT=80, L6_K=1, L6_POOL_EN=1;
+  localparam int L6_H_IN=L5_H_OUT, L6_W_IN=L5_W_OUT, L6_C_IN=L5_F_OUT, L6_F_OUT=80, L6_K=3, L6_POOL_EN=1;
   localparam int L6_H_CONV_OUT=L6_H_IN-L6_K+1, L6_W_CONV_OUT=L6_W_IN-L6_K+1;
   localparam int L6_H_OUT=(L6_POOL_EN ? (L6_H_CONV_OUT/2) : L6_H_CONV_OUT);
   localparam int L6_W_OUT=(L6_POOL_EN ? (L6_W_CONV_OUT/2) : L6_W_CONV_OUT);
 
-  localparam int L7_H_IN=L6_H_OUT, L7_W_IN=L6_W_OUT, L7_C_IN=L6_F_OUT, L7_F_OUT=80, L7_K=1, L7_POOL_EN=0;
+  localparam int L7_H_IN=L6_H_OUT, L7_W_IN=L6_W_OUT, L7_C_IN=L6_F_OUT, L7_F_OUT=80, L7_K=3, L7_POOL_EN=0;
   localparam int L7_H_CONV_OUT=L7_H_IN-L7_K+1, L7_W_CONV_OUT=L7_W_IN-L7_K+1;
   localparam int L7_H_OUT=(L7_POOL_EN ? (L7_H_CONV_OUT/2) : L7_H_CONV_OUT);
   localparam int L7_W_OUT=(L7_POOL_EN ? (L7_W_CONV_OUT/2) : L7_W_CONV_OUT);
 
-  localparam int L8_H_IN=L7_H_OUT, L8_W_IN=L7_W_OUT, L8_C_IN=L7_F_OUT, L8_F_OUT=192, L8_K=1, L8_POOL_EN=0;
+  localparam int L8_H_IN=L7_H_OUT, L8_W_IN=L7_W_OUT, L8_C_IN=L7_F_OUT, L8_F_OUT=192, L8_K=3, L8_POOL_EN=0;
   localparam int L8_H_CONV_OUT=L8_H_IN-L8_K+1, L8_W_CONV_OUT=L8_W_IN-L8_K+1;
   localparam int L8_H_OUT=(L8_POOL_EN ? (L8_H_CONV_OUT/2) : L8_H_CONV_OUT);
   localparam int L8_W_OUT=(L8_POOL_EN ? (L8_W_CONV_OUT/2) : L8_W_CONV_OUT);
@@ -450,7 +447,7 @@ module tb_cnn_top_9layer_m2_testA_64x96x32_k1_multitile_expected_compare;
         expected_keep_pc = '0;
         got_bad = '0;
         exp_bad = '0;
-        exp_val = expected_l0_stream_value(global_col);
+        exp_val = expected_l0_stream_value(int'(dut.ifm_ofm_wr_row_idx_s), global_col);
 
         // Structural checks for IFM Mode-2 resident-tile write.
         if ((dut.ifm_ofm_wr_row_idx_s >= L1_H_IN) ||
@@ -464,7 +461,7 @@ module tb_cnn_top_9layer_m2_testA_64x96x32_k1_multitile_expected_compare;
         end
 
         // Value check: lanes are channel lanes within cgrp. For the L0->L1
-        // tile-pattern check, all valid channels at the same global output
+        // row+tile halo check, all valid channels at the same global output
         // column have the same expected value.
         for (lane = 0; lane < PC; lane = lane + 1) begin
           ch = cgrp * PC + lane;
@@ -543,14 +540,20 @@ module tb_cnn_top_9layer_m2_testA_64x96x32_k1_multitile_expected_compare;
 
   function automatic logic [DDR_WORD_W-1:0] pack_m2_ifm_tile_word;
     input int tile_x;
+    input int row;
     input int cgrp;
     input int col_l;
     logic [DDR_WORD_W-1:0] word;
     int ch;
+    int val_i;
     logic [DATA_W-1:0] val;
     begin
       word = '0;
-      val = tile_x + 1;
+      // Row+tile pattern keeps L0 K=3 checker sensitive to both horizontal
+      // tile halo and vertical row halo without saturating when L0 sparse
+      // weights are used.
+      val_i = tile_x + 1 + (row % 4);
+      val = val_i[DATA_W-1:0];
       for (int lane = 0; lane < DDR_LANES; lane++) begin
         ch = cgrp * PC + lane;
         if ((lane < PC) && (ch < L0_C_IN) && ((tile_x * PC + col_l) < L0_W_IN)) begin
@@ -561,20 +564,79 @@ module tb_cnn_top_9layer_m2_testA_64x96x32_k1_multitile_expected_compare;
     end
   endfunction
 
-  function automatic logic [DATA_W-1:0] expected_l0_stream_value;
-    input int out_col;
-    int src_input_col;
-    int src_tile;
-    int val_i;
+  function automatic logic [DDR_WORD_W-1:0] pack_m2_weight_ch0_subword;
+    input int subword_idx;
+    logic [DDR_WORD_W-1:0] word;
+    int global_w_lane;
     begin
-      // L0 uses K=1 and pool_stride=2. Pool output column out_col consumes
-      // input columns {2*out_col, 2*out_col+1}. PC-aligned tiles make both
-      // columns belong to the same tile for this W96/PC32 regression.
-      src_input_col = out_col * 2;
-      src_tile = src_input_col / PC;
-      val_i = (src_tile + 1) * L0_C_IN;
+      word = '0;
+      // PTOTAL weights are ordered as PF filters x PC lanes.  For L0 only,
+      // every filter keeps only PC lane 0 enabled for every K=3 tap.  This
+      // verifies spatial K=3 halo/window behavior while avoiding immediate
+      // L0 saturation.  Later layers use all-ones weights.
+      for (int lane = 0; lane < DDR_LANES; lane++) begin
+        global_w_lane = subword_idx * DDR_LANES + lane;
+        if ((global_w_lane < PTOTAL) && ((global_w_lane % PC) == 0)) begin
+          word[lane*DATA_W +: DATA_W] = 8'sd1;
+        end
+      end
+      return word;
+    end
+  endfunction
+
+  function automatic int l0_ifm_pattern_val;
+    input int row;
+    input int col;
+    int tile_x;
+    begin
+      tile_x = col / PC;
+      return tile_x + 1 + (row % 4);
+    end
+  endfunction
+
+  function automatic int l0_conv3_sparse_sum;
+    input int conv_row;
+    input int conv_col;
+    int acc;
+    begin
+      acc = 0;
+      for (int ky = 0; ky < L0_K; ky++) begin
+        for (int kx = 0; kx < L0_K; kx++) begin
+          acc += l0_ifm_pattern_val(conv_row + ky, conv_col + kx);
+        end
+      end
+      return acc;
+    end
+  endfunction
+
+  function automatic logic [DATA_W-1:0] expected_l0_stream_value;
+    input int out_row;
+    input int out_col;
+    int raw_row0;
+    int raw_col0;
+    int val_i;
+    int cand;
+    begin
+      // L0 uses K=3, stride=1, pool_stride=2, no padding.  L0 weights are
+      // sparse: only channel lane 0 contributes for every filter and tap.
+      // Therefore one raw conv output is the sum of the 3x3 spatial input
+      // pattern over channel 0 only.  Pooling takes max over a 2x2 raw window.
+      if (L0_POOL_EN) begin
+        raw_row0 = out_row * 2;
+        raw_col0 = out_col * 2;
+        val_i = l0_conv3_sparse_sum(raw_row0, raw_col0);
+        cand  = l0_conv3_sparse_sum(raw_row0, raw_col0 + 1);
+        if (cand > val_i) val_i = cand;
+        cand  = l0_conv3_sparse_sum(raw_row0 + 1, raw_col0);
+        if (cand > val_i) val_i = cand;
+        cand  = l0_conv3_sparse_sum(raw_row0 + 1, raw_col0 + 1);
+        if (cand > val_i) val_i = cand;
+      end else begin
+        val_i = l0_conv3_sparse_sum(out_row, out_col);
+      end
       if (val_i > 127) val_i = 127;
-      return val_i;
+      if (val_i < -128) val_i = -128;
+      return val_i[DATA_W-1:0];
     end
   endfunction
 
@@ -623,23 +685,23 @@ module tb_cnn_top_9layer_m2_testA_64x96x32_k1_multitile_expected_compare;
 
       // Corrected Mode-2 first-layer IFM DDR layout:
       //   [tile_x][row][cgrp][col_l], lanes = PC channels.
-      // This Test-A W96 regression has 3 tile_x blocks when PC=32.
-      // Each valid IFM lane is tile-coded as tile_x+1 so the test can catch
-      // accidental reuse of tile 0 when computing columns from later tiles.
-      // Expected first-layer IFM reads = 3 * 64 * ceil(32/32) * 32 = 6144.
+      // This Test-B W192 regression has 6 tile_x blocks when PC=32.
+      // Each valid IFM lane is row+tile coded so the test can catch both
+      // horizontal halo errors and vertical 3x3 window errors.
+      // Expected first-layer IFM reads = 6 * 160 * ceil(32/32) * 32 = 30720.
       word_idx = 0;
       for (int tile_x = 0; tile_x < L0_COLBLKS; tile_x = tile_x + 1) begin
         for (row = 0; row < L0_H_IN; row = row + 1) begin
           for (int cgrp = 0; cgrp < L0_NUM_CGROUP; cgrp = cgrp + 1) begin
             for (int col_l = 0; col_l < PC; col_l = col_l + 1) begin
-              ddr_mem[`DDR_IFM_BASE + word_idx] = pack_m2_ifm_tile_word(tile_x, cgrp, col_l);
+              ddr_mem[`DDR_IFM_BASE + word_idx] = pack_m2_ifm_tile_word(tile_x, row, cgrp, col_l);
               word_idx = word_idx + 1;
             end
           end
         end
       end
 
-      for (i = 0; i < L0_WGT_DDR_WORDS; i = i + 1) ddr_mem[L0_WGT_DDR_BASE + i] = pack_ddr_ones_word();
+      for (i = 0; i < L0_WGT_DDR_WORDS; i = i + 1) ddr_mem[L0_WGT_DDR_BASE + i] = pack_m2_weight_ch0_subword(i % WGT_SUBWORDS);
       for (i = 0; i < L1_WGT_DDR_WORDS; i = i + 1) ddr_mem[L1_WGT_DDR_BASE + i] = pack_ddr_ones_word();
       for (i = 0; i < L2_WGT_DDR_WORDS; i = i + 1) ddr_mem[L2_WGT_DDR_BASE + i] = pack_ddr_ones_word();
       for (i = 0; i < L3_WGT_DDR_WORDS; i = i + 1) ddr_mem[L3_WGT_DDR_BASE + i] = pack_ddr_ones_word();
@@ -764,23 +826,23 @@ module tb_cnn_top_9layer_m2_testA_64x96x32_k1_multitile_expected_compare;
         exp_word = expected_final_word(j);
         if (ddr_mem[`DDR_OFM_BASE + j] !== exp_word) begin
           if (mismatch < 40) begin
-            $display("TB_MISMATCH_M2_9L_FULLSIZE_K1 word=%0d got=0x%0h exp=0x%0h", j, ddr_mem[`DDR_OFM_BASE + j], exp_word);
+            $display("TB_MISMATCH_M2_9L_FULLSIZE_K3 word=%0d got=0x%0h exp=0x%0h", j, ddr_mem[`DDR_OFM_BASE + j], exp_word);
           end
           mismatch = mismatch + 1;
         end
       end
       if (mismatch != 0) begin
         dump_ofm_region();
-        $fatal(1, "TB_FAIL: 9-layer Mode2 Test-A K1 final OFM mismatch count=%0d", mismatch);
+        $fatal(1, "TB_FAIL: 9-layer Mode2 Test-B K3 final OFM mismatch count=%0d", mismatch);
       end
     end
   endtask
 
   task automatic print_banner;
     begin
-      $display("TB_INFO: 9-layer Mode2 DCP/EfficientNet-B0-style Test-A 64x96x32 K1 expected-compare test");
-      $display("TB_INFO: Test-A Mode2 multi-tile regression; IFM tile pattern checks true tile scheduling");
-      $display("TB_INFO: this test uses input %0dx%0dx%0d; K=1 isolates multi-tile WT=PC from K>1 halo behavior", L0_H_IN, L0_W_IN, L0_C_IN);
+      $display("TB_INFO: 9-layer Mode2 DCP/EfficientNet-B0-style Test-B 160x192x32 K3 expected-compare test");
+      $display("TB_INFO: Test-B Mode2 K=3 halo regression; IFM row+tile pattern checks 3x3 window scheduling");
+      $display("TB_INFO: this test uses input %0dx%0dx%0d; K=3 stresses horizontal/vertical halo behavior", L0_H_IN, L0_W_IN, L0_C_IN);
       $display("TB_INFO: Mode2 PC=%0d PF=%0d PTOTAL=%0d PV_MAX=%0d WGT_SUBWORDS=%0d", PC, PF, PTOTAL, PV_MAX, WGT_SUBWORDS);
       $display("TB_INFO: channel trend: 32 -> 32 -> 16 -> 24 -> 24 -> 40 -> 40 -> 80 -> 80 -> 192");
       $display("TB_INFO: L0 %0dx%0dx%0d -> conv %0dx%0dx%0d K=%0d -> %s %0dx%0dx%0d", L0_H_IN, L0_W_IN, L0_C_IN, L0_H_CONV_OUT, L0_W_CONV_OUT, L0_F_OUT, L0_K, (L0_POOL_EN ? "pool" : "nopool"), L0_H_OUT, L0_W_OUT, L0_F_OUT);
@@ -797,7 +859,7 @@ module tb_cnn_top_9layer_m2_testA_64x96x32_k1_multitile_expected_compare;
       $display("TB_INFO: expected Mode1-style OFM->IFM Mode2 IFM-entry streams >= %0d", EXP_OFM2IFM_STREAMS);
       $display("TB_INFO: expected final OFM logical elements=%0d", EXPECTED_FINAL_ELEMENTS);
       $display("TB_INFO: expected final OFM DDR words=%0d using Mode2 layout F*H*ceil(W/PC) = %0d*%0d*ceil(%0d/%0d)", EXPECTED_OFM_DDR_WORDS, L8_F_OUT, L8_H_OUT, L8_W_OUT, PC);
-      $display("TB_INFO: expected L0->L1 tile-pattern IFM writes=%0d", EXPECTED_L0_STREAM_IFM_WRITES);
+      $display("TB_INFO: expected L0->L1 row+tile halo IFM writes=%0d", EXPECTED_L0_STREAM_IFM_WRITES);
       $display("TB_INFO: expected final value per valid element=%0d", EXPECTED_FINAL_VALUE);
     end
   endtask
@@ -849,11 +911,11 @@ module tb_cnn_top_9layer_m2_testA_64x96x32_k1_multitile_expected_compare;
     $display("TB_INFO: 9-layer Mode2 done after %0d cycles", cycle_count);
     $display("TB_INFO: DDR counts: ifm_reads=%0d expected=%0d, wgt_reads=%0d expected=%0d, ofm_writes=%0d expected=%0d", ddr_ifm_read_count, EXPECTED_IFM_DDR_READS, ddr_wgt_read_count, EXPECTED_WGT_DDR_READS, ddr_ofm_write_count, EXPECTED_OFM_DDR_WORDS);
     $display("TB_INFO: OFM->IFM stream starts=%0d done=%0d expected>=%0d, legacy_m2_mgr_req=%0d", ofm_ifm_stream_start_count, ofm_ifm_stream_done_count, EXP_OFM2IFM_STREAMS, legacy_m2_mgr_req_count);
-    $display("TB_INFO: L0 stream tile-pattern IFM-write checks=%0d mismatch=%0d", l0_stream_checked_count, l0_stream_mismatch_count);
+    $display("TB_INFO: L0 stream row+tile halo IFM-write checks=%0d mismatch=%0d", l0_stream_checked_count, l0_stream_mismatch_count);
 
     if (ddr_ifm_read_count != EXPECTED_IFM_DDR_READS) $fatal(1, "TB_FAIL: unexpected IFM DDR read count");
     if (l0_stream_checked_count != EXPECTED_L0_STREAM_IFM_WRITES) $fatal(1, "TB_FAIL: unexpected L0->L1 IFM stream write count");
-    if (l0_stream_mismatch_count != 0) $fatal(1, "TB_FAIL: L0->L1 IFM stream tile-pattern mismatch count=%0d", l0_stream_mismatch_count);
+    if (l0_stream_mismatch_count != 0) $fatal(1, "TB_FAIL: L0->L1 IFM stream K3 halo mismatch count=%0d", l0_stream_mismatch_count);
     if (ddr_wgt_read_count != EXPECTED_WGT_DDR_READS) $fatal(1, "TB_FAIL: unexpected WGT DDR read count");
     if (ddr_ofm_write_count != EXPECTED_OFM_DDR_WORDS) begin
       dump_ofm_region();
@@ -863,7 +925,7 @@ module tb_cnn_top_9layer_m2_testA_64x96x32_k1_multitile_expected_compare;
     if (legacy_m2_mgr_req_count != 0) $fatal(1, "TB_FAIL: legacy Mode2 refill-manager request fired count=%0d", legacy_m2_mgr_req_count);
 
     check_final_ofm();
-    $display("TB_PASS: 9-layer Mode2 Test-A 64x96x32 K1 multi-tile pattern expected-compare passed. final_value=%0d elements=%0d ddr_words=%0d", EXPECTED_FINAL_VALUE, EXPECTED_FINAL_ELEMENTS, EXPECTED_OFM_DDR_WORDS);
+    $display("TB_PASS: 9-layer Mode2 Test-B 160x192x32 K3 halo/window expected-compare passed. final_value=%0d elements=%0d ddr_words=%0d", EXPECTED_FINAL_VALUE, EXPECTED_FINAL_ELEMENTS, EXPECTED_OFM_DDR_WORDS);
     $finish;
   end
   

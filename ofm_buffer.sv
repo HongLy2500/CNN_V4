@@ -92,7 +92,7 @@ module ofm_buffer #(
     //     col_base is ignored
     // - next_mode = 1:
     //     row_base / num_rows define the rows to load
-    //     col_base selects the horizontal tile base (pixel index)
+    //     col_base is the exact global spatial column for one Mode2 refill entry
     // ============================================================
     input logic [$clog2(H_MAX+1)-1:0]   ifm_stream_row_base,
     input logic [$clog2(H_MAX+1)-1:0]   ifm_stream_num_rows,
@@ -733,6 +733,29 @@ module ofm_buffer #(
                         (mem_tag[stream_bank_v][phys_addr_v] == stream_src_tag_v)) begin
                         mem_fill[stream_bank_v][phys_addr_v] <=
                             mem_fill[stream_bank_v][phys_addr_v] & ~expected_keep_v;
+                    end
+
+                    // Mirror the Mode1 consume-on-stream behavior for Mode2.
+                    // A Mode2 stream command transfers one logical refill entry:
+                    //   source OFM: banks = cgrp*PC + lane, addr = {row,col/PC}, lane = col%PC
+                    //   dest IFM  : bank = col_l, row_idx = row, col_idx = cgrp, data lanes = PC channels
+                    // Once IFM accepts that entry, clear the consumed source lanes for
+                    // the selected source tag.  This keeps the storage lifecycle aligned
+                    // with Mode1 and prevents already-consumed previous-layer data from
+                    // being treated as still resident.
+                    if ((strm_mode_q == STRM_M2_DIRECT) &&
+                        (phys_addr_v < DEPTH)) begin
+                        for (slot = 0; slot < PV_MAX; slot++) begin
+                            ch   = (strm_m2_cgrp_q * PC) + slot;
+                            lane = (PC == 0) ? 0 : (strm_col_base_q % PC);
+                            if ((slot < PC) &&
+                                ifm_ofm_wr_keep[slot] &&
+                                (ch < C_MAX) &&
+                                (lane < PV_MAX) &&
+                                (mem_tag[ch][phys_addr_v] == stream_src_tag_v)) begin
+                                mem_fill[ch][phys_addr_v][lane] <= 1'b0;
+                            end
+                        end
                     end
 
                     case (strm_mode_q)
