@@ -551,45 +551,50 @@ module ofm_buffer #(
 
                 if (src_mode_q && next_mode_q) begin
                     integer cgrp;
+                    integer exact_col;
+                    integer lane_chk;
                     integer c_base;
-                    integer c_last;
                     integer ch_chk;
                     integer c_rel;
-                    integer group_ready;
+                    integer entry_ready;
                     for (i_tok = 0; i_tok < PF; i_tok++) begin
                         if (m2_touch_v_q[i_tok]) begin
-                            row      = m2_touch_row_q[i_tok];
-                            grp      = m2_touch_colgrp_q[i_tok];
-                            cgrp     = m2_touch_bank_q[i_tok];
-                            addr     = ofm_phys_addr(row, grp);
-                            exp_keep = calc_keep_mask(PC, grp * PC, w_out_q);
+                            row       = m2_touch_row_q[i_tok];
+                            exact_col = m2_touch_colgrp_q[i_tok];
+                            cgrp      = m2_touch_bank_q[i_tok];
+                            grp       = (PC == 0) ? 0 : (exact_col / PC);
+                            lane_chk  = (PC == 0) ? 0 : (exact_col % PC);
+                            addr      = ofm_phys_addr(row, grp);
 
-                            group_ready = 1;
-                            if ((addr >= DEPTH) || (PC == 0))
-                                group_ready = 0;
+                            entry_ready = 1;
+                            if ((addr >= DEPTH) || (PC == 0) || (exact_col >= w_out_q) || (lane_chk >= PV_MAX)) begin
+                                entry_ready = 0;
+                            end
                             else begin
                                 c_base = cgrp * PC;
-                                c_last = c_base + PC;
                                 if (c_base >= f_out_q)
-                                    group_ready = 0;
+                                    entry_ready = 0;
                                 else begin
-                                    // PC is a parameter, so this loop has a static bound.
+                                    // A Mode2 ready token is now an exact IFM-entry token:
+                                    //   {row_g, exact_col_g, cgrp_g}
+                                    // It is ready when all valid PC channel lanes for this one
+                                    // spatial column have been written.
                                     for (c_rel = 0; c_rel < PC; c_rel++) begin
                                         ch_chk = c_base + c_rel;
                                         if (ch_chk < f_out_q) begin
                                             if ((mem_tag[ch_chk][addr] != layer_tag_q) ||
-                                                ((mem_fill[ch_chk][addr] & exp_keep) != exp_keep))
-                                                group_ready = 0;
+                                                !mem_fill[ch_chk][addr][lane_chk])
+                                                entry_ready = 0;
                                         end
                                     end
                                 end
                             end
 
-                            if (group_ready) begin
+                            if (entry_ready) begin
                                 m2_sm_ready_valid[i_tok]        <= 1'b1;
                                 m2_sm_ready_bank[i_tok]         <= cgrp[15:0];
                                 m2_sm_ready_row_g[i_tok]        <= row[15:0];
-                                m2_sm_ready_colbase_g[i_tok]    <= (grp * PC);
+                                m2_sm_ready_colbase_g[i_tok]    <= exact_col[15:0];
                             end
                         end
                     end
@@ -722,7 +727,7 @@ module ofm_buffer #(
                     // treated as still holding unconsumed previous-layer data.
                     // M1_TO_M2 builds a word from multiple source words, so it is not
                     // cleared here by this single-address logic.
-                    if (((strm_mode_q == STRM_M1_DIRECT) || (strm_mode_q == STRM_M2_DIRECT)) &&
+                    if ((strm_mode_q == STRM_M1_DIRECT) &&
                         (stream_bank_v < C_MAX) &&
                         (phys_addr_v < DEPTH) &&
                         (mem_tag[stream_bank_v][phys_addr_v] == stream_src_tag_v)) begin
@@ -760,36 +765,15 @@ module ofm_buffer #(
                         end
 
                         STRM_M2_DIRECT: begin
-                            integer m2_ch_base;
-                            integer m2_num_ch;
-                            m2_ch_base = strm_m2_cgrp_q * PC;
-
-                            // Match the source actually selected by the combinational
-                            // tag/fill check below.  Runtime refill after layer advance
-                            // may read the previous layer even though current layer
-                            // metadata is already active.
-                            if (stream_src_tag_v == prev_layer_tag_q)
-                                m2_num_ch = (m2_ch_base >= prev_f_out_q) ? 0 : (prev_f_out_q - m2_ch_base);
-                            else
-                                m2_num_ch = (m2_ch_base >= f_out_q) ? 0 : (f_out_q - m2_ch_base);
-
-                            if (m2_num_ch > PC)
-                                m2_num_ch = PC;
-
-                            if (strm_ch_q + 1 < m2_num_ch[15:0]) begin
-                                strm_ch_q <= strm_ch_q + 1'b1;
-                            end
-                            else begin
-                                strm_ch_q <= '0;
-                                if (strm_row_q + 1 < strm_num_rows_q) begin
-                                    strm_row_q <= strm_row_q + 1'b1;
-                                end
-                                else begin
-                                    strm_active_q   <= 1'b0;
-                                    strm_mode_q     <= STRM_IDLE;
-                                    ifm_stream_done <= 1'b1;
-                                end
-                            end
+                            // New Mode2 refill contract: one control command streams exactly
+                            // one IFM entry {row_g, col_g, cgrp_g}.  Do not auto-walk a
+                            // PC-wide spatial segment here; control_unit_top issues the next
+                            // exact column as a separate command after free/ready match.
+                            strm_ch_q       <= '0;
+                            strm_row_q      <= '0;
+                            strm_active_q   <= 1'b0;
+                            strm_mode_q     <= STRM_IDLE;
+                            ifm_stream_done <= 1'b1;
                         end
 
                         STRM_M1_TO_M2: begin
@@ -999,7 +983,7 @@ module ofm_buffer #(
                                     if (nxt_m2_touch_v[slot] &&
                                         (nxt_m2_touch_bank[slot] == cgrp_id[15:0]) &&
                                         (nxt_m2_touch_row[slot] == row[15:0]) &&
-                                        (nxt_m2_touch_colgrp[slot] == grp[15:0]))
+                                        (nxt_m2_touch_colgrp[slot] == col[15:0]))
                                         found_dup = 1'b1;
                                     if (!nxt_m2_touch_v[slot] && (free_slot < 0))
                                         free_slot = slot;
@@ -1008,7 +992,8 @@ module ofm_buffer #(
                                     nxt_m2_touch_v[free_slot]      = 1'b1;
                                     nxt_m2_touch_bank[free_slot]   = cgrp_id[15:0];
                                     nxt_m2_touch_row[free_slot]    = row[15:0];
-                                    nxt_m2_touch_colgrp[free_slot] = grp[15:0];
+                                    // Store exact global column, not col/PC group.
+                                    nxt_m2_touch_colgrp[free_slot] = col[15:0];
                                 end
                             end
                         end
@@ -1060,6 +1045,16 @@ module ofm_buffer #(
         logic [DEPTH_W-1:0] prev_phys_addr_v;
         logic [PV_MAX-1:0] prev_expected_keep_v;
         logic [BANK_W-1:0] prev_stream_bank_v;
+        logic [PV_MAX-1:0] m2_chan_keep_v;
+        logic [WORD_W-1:0] m2_pack_word_v;
+        logic              m2_pack_ready_v;
+        logic              m2_pack_have_lane_v;
+        integer m2_lane_v;
+        integer m2_ch_g_v;
+        integer m2_abs_col_v;
+        integer m2_src_grp_v;
+        integer m2_src_lane_v;
+        integer m2_src_addr_v;
 
         ifm_stream_busy    = strm_active_q;
         ifm_ofm_wr_en      = 1'b0;
@@ -1082,6 +1077,10 @@ module ofm_buffer #(
         prev_phys_addr_v     = '0;
         prev_expected_keep_v = '0;
         prev_stream_bank_v   = '0;
+        m2_chan_keep_v       = '0;
+        m2_pack_word_v       = '0;
+        m2_pack_ready_v      = 1'b0;
+        m2_pack_have_lane_v  = 1'b0;
 
         m1_blk_span_v = (pf_next_q == 0) ? 1 : pf_next_q;
         m1_ch_base_v  = strm_m1_ch_blk_q * m1_blk_span_v;
@@ -1147,55 +1146,116 @@ module ofm_buffer #(
                 end
 
                 STRM_M2_DIRECT: begin
-                    // Match Mode 1 direct stream behavior.  First try current
-                    // layer tag/geometry for pre-advance same-mode refill.  If
-                    // the word is not ready, try the previous completed layer
-                    // tag/geometry for runtime refill after scheduler advance.
+                    // Mode-2 IFM layout is different from OFM storage:
+                    //   OFM storage bank = output channel, lane = spatial col_l
+                    //   IFM Mode2 bank   = local column col_l, lane = channel pc_l
+                    // Therefore one OFM->IFM stream beat must transpose PC
+                    // channel banks into one IFM word for one (row,col_l,cgrp).
                     abs_row_v       = strm_row_base_q + strm_row_q;
-                    abs_col_base_v  = strm_col_base_q;
-                    phys_grp_v      = strm_col_base_q / PC;
+                    abs_col_base_v  = strm_col_base_q; // exact global column for one Mode2 IFM entry
+                    phys_grp_v      = (PC == 0) ? '0 : (abs_col_base_v / PC);
                     phys_addr_v     = ofm_phys_addr(abs_row_v, phys_grp_v);
-                    expected_keep_v = calc_keep_mask(PC, strm_col_base_q, w_out_q);
-                    stream_bank_v   = m2_ch_base_v + strm_ch_q;
+                    stream_bank_v   = (PC == 0) ? '0 : (abs_col_base_v % PC); // destination IFM bank = col_l
                     stream_src_tag_v = layer_tag_q;
 
-                    if (((m2_ch_base_v + strm_ch_q) < f_out_q) &&
-                        (strm_row_q < strm_num_rows_q) &&
-                        (abs_row_v < h_out_q) &&
-                        (phys_addr_v < DEPTH) &&
-                        (mem_tag[stream_bank_v][phys_addr_v] == layer_tag_q) &&
-                        ((mem_fill[stream_bank_v][phys_addr_v] & expected_keep_v) == expected_keep_v)) begin
+                    // Try current layer tag/geometry first.  This covers the
+                    // pre-advance initial-tile handoff.
+                    m2_chan_keep_v      = '0;
+                    m2_pack_word_v      = '0;
+                    m2_pack_ready_v     = 1'b1;
+                    m2_pack_have_lane_v = 1'b0;
+
+                    for (m2_lane_v = 0; m2_lane_v < PV_MAX; m2_lane_v++) begin
+                        if (m2_lane_v < PC) begin
+                            m2_ch_g_v      = m2_ch_base_v + m2_lane_v;
+                            m2_abs_col_v   = abs_col_base_v;
+                            m2_src_grp_v   = (PC == 0) ? 0 : (m2_abs_col_v / PC);
+                            m2_src_lane_v  = (PC == 0) ? 0 : (m2_abs_col_v % PC);
+                            m2_src_addr_v  = ofm_phys_addr(abs_row_v, m2_src_grp_v);
+
+                            if ((m2_ch_g_v < f_out_q) &&
+                                (strm_row_q < strm_num_rows_q) &&
+                                (abs_row_v < h_out_q) &&
+                                (m2_abs_col_v < w_out_q)) begin
+                                m2_chan_keep_v[m2_lane_v] = 1'b1;
+                                m2_pack_have_lane_v = 1'b1;
+
+                                if ((m2_src_addr_v < DEPTH) &&
+                                    (mem_tag[m2_ch_g_v][m2_src_addr_v] == layer_tag_q) &&
+                                    mem_fill[m2_ch_g_v][m2_src_addr_v][m2_src_lane_v]) begin
+                                    m2_pack_word_v[m2_lane_v*DATA_W +: DATA_W] =
+                                        mem_data[m2_ch_g_v][m2_src_addr_v][m2_src_lane_v*DATA_W +: DATA_W];
+                                end
+                                else begin
+                                    m2_pack_ready_v = 1'b0;
+                                end
+                            end
+                        end
+                    end
+
+                    if (m2_pack_have_lane_v && m2_pack_ready_v) begin
                         word_ready_v     = 1'b1;
-                        stream_word_v    = mem_data[stream_bank_v][phys_addr_v];
+                        stream_word_v    = m2_pack_word_v;
+                        expected_keep_v  = m2_chan_keep_v;
                         stream_src_tag_v = layer_tag_q;
                     end
                     else begin
-                        prev_m2_ch_base_v    = strm_m2_cgrp_q * PC;
-                        prev_phys_grp_v      = strm_col_base_q / PC;
+                        // Runtime refill after scheduler advance: source data
+                        // belongs to the previous layer and must be addressed
+                        // with the previous layer's tag/geometry.
+                        prev_phys_grp_v      = (PC == 0) ? '0 : (abs_col_base_v / PC);
                         prev_phys_addr_v     = ofm_phys_addr(abs_row_v, prev_phys_grp_v);
-                        prev_expected_keep_v = calc_keep_mask(PC, strm_col_base_q, prev_w_out_q);
-                        prev_stream_bank_v   = prev_m2_ch_base_v + strm_ch_q;
+                        prev_expected_keep_v = '0;
+                        prev_stream_bank_v   = (PC == 0) ? '0 : (abs_col_base_v % PC);
 
-                        if (((prev_m2_ch_base_v + strm_ch_q) < prev_f_out_q) &&
-                            (strm_row_q < strm_num_rows_q) &&
-                            (abs_row_v < prev_h_out_q) &&
-                            (prev_phys_addr_v < DEPTH) &&
-                            (mem_tag[prev_stream_bank_v][prev_phys_addr_v] == prev_layer_tag_q) &&
-                            ((mem_fill[prev_stream_bank_v][prev_phys_addr_v] & prev_expected_keep_v) == prev_expected_keep_v)) begin
+                        m2_chan_keep_v      = '0;
+                        m2_pack_word_v      = '0;
+                        m2_pack_ready_v     = 1'b1;
+                        m2_pack_have_lane_v = 1'b0;
+
+                        for (m2_lane_v = 0; m2_lane_v < PV_MAX; m2_lane_v++) begin
+                            if (m2_lane_v < PC) begin
+                                m2_ch_g_v      = (strm_m2_cgrp_q * PC) + m2_lane_v;
+                                m2_abs_col_v   = abs_col_base_v;
+                                m2_src_grp_v   = (PC == 0) ? 0 : (m2_abs_col_v / PC);
+                                m2_src_lane_v  = (PC == 0) ? 0 : (m2_abs_col_v % PC);
+                                m2_src_addr_v  = ofm_phys_addr(abs_row_v, m2_src_grp_v);
+
+                                if ((m2_ch_g_v < prev_f_out_q) &&
+                                    (strm_row_q < strm_num_rows_q) &&
+                                    (abs_row_v < prev_h_out_q) &&
+                                    (m2_abs_col_v < prev_w_out_q)) begin
+                                    m2_chan_keep_v[m2_lane_v] = 1'b1;
+                                    m2_pack_have_lane_v = 1'b1;
+
+                                    if ((m2_src_addr_v < DEPTH) &&
+                                        (mem_tag[m2_ch_g_v][m2_src_addr_v] == prev_layer_tag_q) &&
+                                        mem_fill[m2_ch_g_v][m2_src_addr_v][m2_src_lane_v]) begin
+                                        m2_pack_word_v[m2_lane_v*DATA_W +: DATA_W] =
+                                            mem_data[m2_ch_g_v][m2_src_addr_v][m2_src_lane_v*DATA_W +: DATA_W];
+                                    end
+                                    else begin
+                                        m2_pack_ready_v = 1'b0;
+                                    end
+                                end
+                            end
+                        end
+
+                        if (m2_pack_have_lane_v && m2_pack_ready_v) begin
                             word_ready_v     = 1'b1;
-                            stream_word_v    = mem_data[prev_stream_bank_v][prev_phys_addr_v];
+                            stream_word_v    = m2_pack_word_v;
+                            expected_keep_v  = m2_chan_keep_v;
                             stream_src_tag_v = prev_layer_tag_q;
                             stream_bank_v    = prev_stream_bank_v;
                             phys_grp_v       = prev_phys_grp_v;
                             phys_addr_v      = prev_phys_addr_v;
-                            expected_keep_v  = prev_expected_keep_v;
                         end
                     end
 
                     ifm_ofm_wr_en      = word_ready_v;
                     ifm_ofm_wr_bank    = stream_bank_v;
                     ifm_ofm_wr_row_idx = abs_row_v[ROW_W-1:0];
-                    ifm_ofm_wr_col_idx = '0;
+                    ifm_ofm_wr_col_idx = strm_m2_cgrp_q[COLIDX_W-1:0];
                     ifm_ofm_wr_data    = stream_word_v;
                     ifm_ofm_wr_keep    = expected_keep_v;
                 end

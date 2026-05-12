@@ -356,5 +356,33 @@ always_ff @(posedge clk or negedge rst_n) begin
   end
 end
 
+// -----------------------------------------------------------------------------
+// DEBUG: Mode2 final OFM write monitor with staged coordinate context
+// Place inside pooling_mode2.sv, before endmodule.
+// -----------------------------------------------------------------------------
+
+always_ff @(posedge clk or negedge rst_n) begin
+  if (!rst_n) begin
+    // no-op
+  end else begin
+    if (ofm_wr_en) begin
+      $display("DBG_M2_FINAL_WRITE t=%0t pool_en_q=%0b W_q=%0d H_q=%0d st_row=%0d st_col=%0d st_tile_base=%0d st_fbase=%0d close=%0b wr_row=%0d wr_col=%0d wr_fbase=%0d wr_data0=%0d",
+               $time,
+               pool_en_q,
+               W_cur_q,
+               H_cur_q,
+               in_row_g_q,
+               in_col_g_q,
+               tile_col_base_g_q,
+               in_f_base_q,
+               pool_window_close_s,
+               ofm_wr_row,
+               ofm_wr_col,
+               ofm_wr_f_base,
+               $signed(ofm_wr_data[0*OUT_W +: OUT_W]));
+    end
+  end
+end
+
 
 endmodule

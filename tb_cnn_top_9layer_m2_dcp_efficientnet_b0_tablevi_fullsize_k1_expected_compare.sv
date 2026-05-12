@@ -31,7 +31,7 @@ module tb_cnn_top_9layer_m2_testA_64x96x32_k1_multitile_expected_compare;
   // This stresses:
   //   - Mode-2 first-layer DDR->IFM preload over 3 horizontal tiles
   //   - W=96 with WT=PC=32, i.e. ceil(96/32)=3 col tiles
-  //   - Mode2->Mode2 deterministic OFM->IFM handoff over 8 transitions
+  //   - Mode2->Mode2 token-based OFM->IFM refill over 8 transitions
   //   - partial C groups, especially C=16,24,40,80 with PC=32
   //   - partial F groups for F=16,24,40,80,192 with PF=64
   //   - L0->L1 stream data differs by horizontal tile
@@ -175,20 +175,27 @@ module tb_cnn_top_9layer_m2_testA_64x96x32_k1_multitile_expected_compare;
   localparam int L7_COLBLKS=(L7_W_IN+PC-1)/PC;
   localparam int L8_COLBLKS=(L8_W_IN+PC-1)/PC;
 
+  // Token-based Mode-2 OFM->IFM refill streams one IFM resident entry per
+  // command/write in this regression:
+  //   IFM entry = {row_g, global_col_g, cgrp}, data lanes = PC channels.
+  // This is intentionally different from the OFM storage/DMA readback layout
+  // {channel,row,col_group}.
   localparam int EXP_OFM2IFM_STREAMS =
-      (L1_H_IN*L1_COLBLKS*L1_NUM_CGROUP) +
-      (L2_H_IN*L2_COLBLKS*L2_NUM_CGROUP) +
-      (L3_H_IN*L3_COLBLKS*L3_NUM_CGROUP) +
-      (L4_H_IN*L4_COLBLKS*L4_NUM_CGROUP) +
-      (L5_H_IN*L5_COLBLKS*L5_NUM_CGROUP) +
-      (L6_H_IN*L6_COLBLKS*L6_NUM_CGROUP) +
-      (L7_H_IN*L7_COLBLKS*L7_NUM_CGROUP) +
-      (L8_H_IN*L8_COLBLKS*L8_NUM_CGROUP);
+      (L1_H_IN*L1_W_IN*L1_NUM_CGROUP) +
+      (L2_H_IN*L2_W_IN*L2_NUM_CGROUP) +
+      (L3_H_IN*L3_W_IN*L3_NUM_CGROUP) +
+      (L4_H_IN*L4_W_IN*L4_NUM_CGROUP) +
+      (L5_H_IN*L5_W_IN*L5_NUM_CGROUP) +
+      (L6_H_IN*L6_W_IN*L6_NUM_CGROUP) +
+      (L7_H_IN*L7_W_IN*L7_NUM_CGROUP) +
+      (L8_H_IN*L8_W_IN*L8_NUM_CGROUP);
 
-  // L0->L1 Mode-2 stream writes one packed PC-lane word per output channel
-  // bank, row and horizontal tile.  The lanes inside each word are spatial
-  // columns and must be checked lane-by-lane.
-  localparam int EXPECTED_L0_STREAM_WORDS = L1_H_IN * L1_COLBLKS * L1_C_IN;
+  // L0->L1 checker observes the IFM write port after ofm_buffer has converted
+  // final OFM data into the IFM Mode-2 resident-tile layout:
+  //   ifm_ofm_wr_bank    = local column col_l = global_col % PC
+  //   ifm_ofm_wr_col_idx = cgrp
+  //   ifm_ofm_wr_data    = PC channel lanes at {row, global_col, cgrp}
+  localparam int EXPECTED_L0_STREAM_IFM_WRITES = L1_H_IN * L1_W_IN * L1_NUM_CGROUP;
 
   // Corrected Mode-2 IFM DDR preload layout:
   //   [tile_x][row][cgrp][col_l], lanes = PC channels.
@@ -246,6 +253,7 @@ module tb_cnn_top_9layer_m2_testA_64x96x32_k1_multitile_expected_compare;
   integer ofm_ifm_stream_start_count;
   integer ofm_ifm_stream_done_count;
   integer m2_sm_refill_req_count;
+  logic   tb_m2_legacy_req_seen_q;
   integer l0_stream_checked_count;
   integer l0_stream_mismatch_count;
 
@@ -306,6 +314,7 @@ module tb_cnn_top_9layer_m2_testA_64x96x32_k1_multitile_expected_compare;
       ofm_ifm_stream_start_count <= 0;
       ofm_ifm_stream_done_count <= 0;
       m2_sm_refill_req_count <= 0;
+      tb_m2_legacy_req_seen_q <= 1'b0;
       l0_stream_checked_count <= 0;
       l0_stream_mismatch_count <= 0;
       tb_l0_stream_cmd_valid_q <= 1'b0;
@@ -371,9 +380,26 @@ module tb_cnn_top_9layer_m2_testA_64x96x32_k1_multitile_expected_compare;
         tb_l0_stream_col_base_q  <= dut.ofm_ifm_stream_col_base_s;
         tb_l0_stream_row_base_q  <= dut.ofm_ifm_stream_row_base_s;
         tb_l0_stream_cgrp_q      <= dut.ofm_ifm_stream_m2_cgrp_g_s;
+        if (ofm_ifm_stream_start_count < 64) begin
+          $display("DBG_TB_M2_STREAM_START t=%0t cycle=%0d count=%0d layer=%0d mode=%0d row=%0d col=%0d cgrp=%0d legacy_req_count=%0d legacy_req_now=%0b",
+                   $time, cycle_count, ofm_ifm_stream_start_count,
+                   dbg_layer_idx, dbg_mode,
+                   dut.ofm_ifm_stream_row_base_s,
+                   dut.ofm_ifm_stream_col_base_s,
+                   dut.ofm_ifm_stream_m2_cgrp_g_s,
+                   m2_sm_refill_req_count,
+                   (m2_sm_refill_req_valid && m2_sm_refill_req_ready));
+        end
       end
       if (dut.ofm_ifm_stream_done_s) ofm_ifm_stream_done_count <= ofm_ifm_stream_done_count + 1;
-      if (m2_sm_refill_req_valid && m2_sm_refill_req_ready) m2_sm_refill_req_count <= m2_sm_refill_req_count + 1;
+      if (m2_sm_refill_req_valid && m2_sm_refill_req_ready) begin
+        m2_sm_refill_req_count <= m2_sm_refill_req_count + 1;
+        if (!tb_m2_legacy_req_seen_q) begin
+          tb_m2_legacy_req_seen_q <= 1'b1;
+          $display("TB_WARN_LEGACY_M2_REFILL_REQ t=%0t cycle=%0d: m2_sm_refill_req_valid fired. This should remain 0 for the agreed Mode2 path (sm_m2_mgr_active_s must be 1'b0). If this appears, simulation is using old/legacy M2 refill logic or stale control_unit_top.",
+                   $time, cycle_count);
+        end
+      end
     end
   end
 
@@ -387,63 +413,72 @@ module tb_cnn_top_9layer_m2_testA_64x96x32_k1_multitile_expected_compare;
 
   always_ff @(posedge clk) begin
     if (rst_n) begin
-      // Check only the first L0->L1 OFM->IFM stream words.  After the
-      // control fixes, L0->L1 may continue after dbg_layer_idx has already
-      // advanced to layer 1, so this checker must not be gated by
-      // dbg_layer_idx == 0.
+      // Check only the first L0->L1 OFM->IFM IFM-entry writes.
+      // This checker observes ifm_ofm_wr_* after ofm_buffer has converted
+      // producer final OFM storage into the IFM Mode-2 resident-tile format.
+      //
+      // Correct IFM Mode-2 write contract:
+      //   ifm_ofm_wr_bank    = col_l = global_col % PC
+      //   ifm_ofm_wr_col_idx = cgrp
+      //   ifm_ofm_wr_data    = PC channel lanes at {row, global_col, cgrp}
+      //
+      // Do NOT interpret bank as output channel or lane as spatial column.
       if (dut.ifm_ofm_wr_en_s &&
           dut.ifm_ofm_wr_ready_s &&
           tb_l0_stream_cmd_valid_q &&
-          (l0_stream_checked_count < EXPECTED_L0_STREAM_WORDS)) begin
-        int col_base;
+          (l0_stream_checked_count < EXPECTED_L0_STREAM_IFM_WRITES)) begin
+        int col_l;
+        int global_col;
+        int cgrp;
         int lane;
-        int lane_col;
+        int ch;
         int bad_lane;
-        int bad_col;
         logic word_bad;
         logic expected_keep_lane;
         logic [PC-1:0] expected_keep_pc;
         logic [DATA_W-1:0] got_bad;
         logic [DATA_W-1:0] exp_bad;
+        logic [DATA_W-1:0] exp_val;
 
-        // Use the latched stream command context, not the live command
-        // port.  Tile-1 data beats may arrive while live col_base has already
-        // returned to 0, which made the old checker expect tile-0 values and
-        // full keep=ffffffff for the partial final tile.
-        col_base = int'(tb_l0_stream_col_base_q);
-        bad_lane = -1;
-        bad_col  = -1;
-        word_bad = 1'b0;
+        col_l      = int'(dut.ifm_ofm_wr_bank_s);
+        cgrp       = int'(dut.ifm_ofm_wr_col_idx_s);
+        // Token-based Mode-2 stream commands carry the exact global column.
+        // ofm_buffer derives destination col_l as global_col % PC.
+        global_col = int'(tb_l0_stream_col_base_q);
+        bad_lane   = -1;
+        word_bad   = 1'b0;
         expected_keep_pc = '0;
         got_bad = '0;
         exp_bad = '0;
+        exp_val = expected_l0_stream_value(global_col);
 
-        // Structural checks for the packed Mode-2 L0->L1 word.
-        // bank = source/output channel, lanes = spatial columns.
+        // Structural checks for IFM Mode-2 resident-tile write.
         if ((dut.ifm_ofm_wr_row_idx_s >= L1_H_IN) ||
-            (dut.ifm_ofm_wr_bank_s >= L1_C_IN) ||
-            (dut.ifm_ofm_wr_col_idx_s != 0) ||
-            (col_base >= L1_W_IN)) begin
+            (dut.ifm_ofm_wr_row_idx_s != tb_l0_stream_row_base_q) ||
+            (col_l < 0) || (col_l >= PC) ||
+            (global_col >= L1_W_IN) ||
+            (col_l != (global_col % PC)) ||
+            (cgrp >= L1_NUM_CGROUP) ||
+            (cgrp != int'(tb_l0_stream_cgrp_q))) begin
           word_bad = 1'b1;
         end
 
-        // Value check: each active lane has its own global output column and
-        // therefore its own expected tile-pattern value.  The previous checker
-        // compared got0/got1/got31 against one scalar expected value, which is
-        // wrong for PC-packed Mode-2 words spanning multiple pooled columns.
+        // Value check: lanes are channel lanes within cgrp. For the L0->L1
+        // tile-pattern check, all valid channels at the same global output
+        // column have the same expected value.
         for (lane = 0; lane < PC; lane = lane + 1) begin
-          lane_col = col_base + lane;
-          expected_keep_lane = (lane_col < L1_W_IN);
+          ch = cgrp * PC + lane;
+          expected_keep_lane = (ch < L1_C_IN) && (global_col < L1_W_IN) &&
+                               (dut.ifm_ofm_wr_row_idx_s < L1_H_IN);
           expected_keep_pc[lane] = expected_keep_lane;
 
           if (expected_keep_lane) begin
             if (!dut.ifm_ofm_wr_keep_s[lane] ||
-                (dut.ifm_ofm_wr_data_s[lane*DATA_W +: DATA_W] !== expected_l0_stream_value(lane_col))) begin
+                (dut.ifm_ofm_wr_data_s[lane*DATA_W +: DATA_W] !== exp_val)) begin
               if (!word_bad) begin
                 bad_lane = lane;
-                bad_col  = lane_col;
                 got_bad  = dut.ifm_ofm_wr_data_s[lane*DATA_W +: DATA_W];
-                exp_bad  = expected_l0_stream_value(lane_col);
+                exp_bad  = exp_val;
               end
               word_bad = 1'b1;
             end
@@ -452,7 +487,6 @@ module tb_cnn_top_9layer_m2_testA_64x96x32_k1_multitile_expected_compare;
             if (dut.ifm_ofm_wr_keep_s[lane]) begin
               if (!word_bad) begin
                 bad_lane = lane;
-                bad_col  = lane_col;
                 got_bad  = dut.ifm_ofm_wr_data_s[lane*DATA_W +: DATA_W];
                 exp_bad  = '0;
               end
@@ -466,18 +500,19 @@ module tb_cnn_top_9layer_m2_testA_64x96x32_k1_multitile_expected_compare;
         if (word_bad) begin
           l0_stream_mismatch_count <= l0_stream_mismatch_count + 1;
           if (l0_stream_mismatch_count < 16) begin
-            $display("TB_MISMATCH_L0_M2_STREAM t=%0t cycle=%0d word=%0d row=%0d ch_bank=%0d col_base=%0d live_col_base=%0d cmd_row_base=%0d cmd_cgrp=%0d bad_lane=%0d bad_col=%0d got_bad=%0d exp_bad=%0d got0=%0d got1=%0d got15=%0d got16=%0d got31=%0d keep=%h exp_keep=%h",
+            $display("TB_MISMATCH_L0_M2_IFM_WR t=%0t cycle=%0d word=%0d row=%0d cmd_row=%0d col_l=%0d global_col=%0d cgrp=%0d cmd_col=%0d live_col=%0d cmd_cgrp=%0d bad_lane=%0d got_bad=%0d exp_bad=%0d got0=%0d got1=%0d got15=%0d got16=%0d got31=%0d keep=%h exp_keep=%h",
               $time,
               cycle_count,
               l0_stream_checked_count,
               dut.ifm_ofm_wr_row_idx_s,
-              dut.ifm_ofm_wr_bank_s,
-              col_base,
-              dut.ofm_ifm_stream_col_base_s,
               tb_l0_stream_row_base_q,
+              col_l,
+              global_col,
+              cgrp,
+              tb_l0_stream_col_base_q,
+              dut.ofm_ifm_stream_col_base_s,
               tb_l0_stream_cgrp_q,
               bad_lane,
-              bad_col,
               $signed(got_bad),
               $signed(exp_bad),
               $signed(dut.ifm_ofm_wr_data_s[0*DATA_W +: DATA_W]),
@@ -759,10 +794,10 @@ module tb_cnn_top_9layer_m2_testA_64x96x32_k1_multitile_expected_compare;
       $display("TB_INFO: L8 %0dx%0dx%0d -> conv %0dx%0dx%0d K=%0d -> %s %0dx%0dx%0d", L8_H_IN, L8_W_IN, L8_C_IN, L8_H_CONV_OUT, L8_W_CONV_OUT, L8_F_OUT, L8_K, (L8_POOL_EN ? "pool" : "nopool"), L8_H_OUT, L8_W_OUT, L8_F_OUT);
       $display("TB_INFO: expected DDR->IFM reads=%0d", EXPECTED_IFM_DDR_READS);
       $display("TB_INFO: expected WGT DDR reads=%0d physical_words=%0d", EXPECTED_WGT_DDR_READS, L0_WGT_WORDS+L1_WGT_WORDS+L2_WGT_WORDS+L3_WGT_WORDS+L4_WGT_WORDS+L5_WGT_WORDS+L6_WGT_WORDS+L7_WGT_WORDS+L8_WGT_WORDS);
-      $display("TB_INFO: expected deterministic OFM->IFM Mode2 stream commands >= %0d", EXP_OFM2IFM_STREAMS);
+      $display("TB_INFO: expected token-based OFM->IFM Mode2 IFM-entry streams >= %0d", EXP_OFM2IFM_STREAMS);
       $display("TB_INFO: expected final OFM logical elements=%0d", EXPECTED_FINAL_ELEMENTS);
       $display("TB_INFO: expected final OFM DDR words=%0d using Mode2 layout F*H*ceil(W/PC) = %0d*%0d*ceil(%0d/%0d)", EXPECTED_OFM_DDR_WORDS, L8_F_OUT, L8_H_OUT, L8_W_OUT, PC);
-      $display("TB_INFO: expected L0->L1 tile-pattern stream words=%0d", EXPECTED_L0_STREAM_WORDS);
+      $display("TB_INFO: expected L0->L1 tile-pattern IFM writes=%0d", EXPECTED_L0_STREAM_IFM_WRITES);
       $display("TB_INFO: expected final value per valid element=%0d", EXPECTED_FINAL_VALUE);
     end
   endtask
@@ -814,11 +849,11 @@ module tb_cnn_top_9layer_m2_testA_64x96x32_k1_multitile_expected_compare;
     $display("TB_INFO: 9-layer Mode2 done after %0d cycles", cycle_count);
     $display("TB_INFO: DDR counts: ifm_reads=%0d expected=%0d, wgt_reads=%0d expected=%0d, ofm_writes=%0d expected=%0d", ddr_ifm_read_count, EXPECTED_IFM_DDR_READS, ddr_wgt_read_count, EXPECTED_WGT_DDR_READS, ddr_ofm_write_count, EXPECTED_OFM_DDR_WORDS);
     $display("TB_INFO: OFM->IFM stream starts=%0d done=%0d expected>=%0d, legacy_m2_refill_req=%0d", ofm_ifm_stream_start_count, ofm_ifm_stream_done_count, EXP_OFM2IFM_STREAMS, m2_sm_refill_req_count);
-    $display("TB_INFO: L0 stream tile-pattern checks=%0d mismatch=%0d", l0_stream_checked_count, l0_stream_mismatch_count);
+    $display("TB_INFO: L0 stream tile-pattern IFM-write checks=%0d mismatch=%0d", l0_stream_checked_count, l0_stream_mismatch_count);
 
     if (ddr_ifm_read_count != EXPECTED_IFM_DDR_READS) $fatal(1, "TB_FAIL: unexpected IFM DDR read count");
-    if (l0_stream_checked_count != EXPECTED_L0_STREAM_WORDS) $fatal(1, "TB_FAIL: unexpected L0->L1 stream data word count");
-    if (l0_stream_mismatch_count != 0) $fatal(1, "TB_FAIL: L0->L1 stream tile-pattern mismatch count=%0d", l0_stream_mismatch_count);
+    if (l0_stream_checked_count != EXPECTED_L0_STREAM_IFM_WRITES) $fatal(1, "TB_FAIL: unexpected L0->L1 IFM stream write count");
+    if (l0_stream_mismatch_count != 0) $fatal(1, "TB_FAIL: L0->L1 IFM stream tile-pattern mismatch count=%0d", l0_stream_mismatch_count);
     if (ddr_wgt_read_count != EXPECTED_WGT_DDR_READS) $fatal(1, "TB_FAIL: unexpected WGT DDR read count");
     if (ddr_ofm_write_count != EXPECTED_OFM_DDR_WORDS) begin
       dump_ofm_region();
@@ -831,4 +866,21 @@ module tb_cnn_top_9layer_m2_testA_64x96x32_k1_multitile_expected_compare;
     $display("TB_PASS: 9-layer Mode2 Test-A 64x96x32 K1 multi-tile pattern expected-compare passed. final_value=%0d elements=%0d ddr_words=%0d", EXPECTED_FINAL_VALUE, EXPECTED_FINAL_ELEMENTS, EXPECTED_OFM_DDR_WORDS);
     $finish;
   end
+  
+  always @(posedge clk) begin
+  if (rst_n) begin
+    if (dut.u_ofm_buffer.m2_sm_ready_valid) begin
+      $display("DBG_M2_READY_TOKEN t=%0t layer=%0d pool_en=%0b row=%0d col=%0d cgrp=%0d final_h=%0d final_w=%0d",
+               $time,
+               dut.u_control_unit_top.cur_cfg_s.layer_id,
+               dut.u_control_unit_top.cur_cfg_s.pool_en,
+               dut.u_ofm_buffer.m2_sm_ready_row_g,
+               dut.u_ofm_buffer.m2_sm_ready_colbase_g,
+               dut.u_ofm_buffer.m2_sm_ready_bank,
+               dut.u_control_unit_top.ofm_cfg_h_out,
+               dut.u_control_unit_top.ofm_cfg_w_out);
+    end
+  end
+end
+
 endmodule

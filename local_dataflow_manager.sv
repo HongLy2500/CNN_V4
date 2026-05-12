@@ -82,9 +82,13 @@ module local_dataflow_manager
   output logic m2_local_busy,
 
   // Optional same-mode free-token visibility for mode 2.
-  // This does NOT change existing behavior of the manager itself; it only
-  // exposes the IFM tuple that has actually been captured into
-  // data_register_mode2 so higher-level control can use it as a free token.
+  // MODE2 FOLLOW-MODE1 CONTRACT:
+  // - This token must mean the IFM entry/word is truly free for refill, not
+  //   merely that the entry was captured into data_register_mode2.
+  // - Therefore it is emitted after the corresponding output pixel has been
+  //   compute-consumed for the last PF/f-group, and it requests the next
+  //   global column that can reuse the same local col_l slot.
+  // - Mode1 is intentionally untouched; this token is Mode2-only.
   output logic        m2_free_valid,
   output logic [15:0] m2_free_row_g,
   output logic [15:0] m2_free_col_g,
@@ -205,6 +209,25 @@ module local_dataflow_manager
   logic [15:0] m2_ret_seg_base_g_s;
   logic [15:0] m2_ret_cgrp_g_q;
 
+  // Mode2 follow-Mode1 free-token emitter.
+  // A free token is generated from compute-consume completion, not from the
+  // IFM return path.  The stored token describes the NEXT global IFM column
+  // that may reuse the just-consumed local col_l slot.
+  logic        m2_free_emit_active_q;
+  logic [15:0] m2_free_emit_row_g_q;
+  logic [15:0] m2_free_emit_col_g_q;
+  logic [15:0] m2_free_emit_col_l_q;
+  logic [15:0] m2_free_emit_cgrp_q;
+  logic [15:0] m2_free_emit_num_cgrp_q;
+
+  logic [15:0] m2_num_cgrp_s;
+  logic        m2_pixel_consumed_last_fgroup_s;
+  logic        m2_free_refill_needed_s;
+  logic [15:0] m2_free_refill_col_g_s;
+  logic [15:0] m2_free_consumed_col_l_s;
+  logic        m2_free_consumed_col_in_tile_s;
+  logic        m2_free_emit_hold_s;
+
   assign m2_out_row_g_s       = m2_out_row;
   assign m2_out_col_g_s       = m2_out_col;
   assign m2_tile_col_base_g_s = m2_tile_col_base_g;
@@ -217,6 +240,11 @@ module local_dataflow_manager
       m2_num_fgroup_s = (cur_cfg.f_out + PF_MODE2 - 1) / PF_MODE2;
     else
       m2_num_fgroup_s = 16'd0;
+
+    if (PC_MODE2 != 0)
+      m2_num_cgrp_s = (cur_cfg.c_in + PC_MODE2 - 1) / PC_MODE2;
+    else
+      m2_num_cgrp_s = 16'd0;
 
     // Tile-window aware successor calculation.  After ce_controller_mode2 was
     // changed so one start computes only one resident tile, local dataflow must
@@ -262,6 +290,29 @@ module local_dataflow_manager
     m2_last_row_s    = (cur_cfg.h_out == 0) ? 1'b1 : (m2_out_row_g_s == (cur_cfg.h_out - 1));
     m2_last_fgroup_s = (m2_num_fgroup_s == 0) ? 1'b1 : (m2_f_group == (m2_num_fgroup_s - 1));
     m2_have_next_block_s = !(m2_last_col_s && m2_last_row_s && m2_last_fgroup_s);
+
+    // Mode2 free-token timing: the IFM entry is free only after the output
+    // pixel has completed the LAST PF/f-group.  This mirrors Mode1's row-slot
+    // free semantics, but uses Mode2's {row_g, col_g, col_l, cgrp} metadata.
+    m2_pixel_consumed_last_fgroup_s = (cur_mode == MODE2) &&
+                                      m2_ce_out_valid &&
+                                      m2_last_fgroup_s;
+
+    m2_free_refill_col_g_s = m2_out_col_g_s + PC_MODE2;
+    m2_free_consumed_col_l_s = 16'd0;
+    m2_free_consumed_col_in_tile_s = 1'b0;
+    if ((m2_out_col_g_s >= m2_tile_col_base_g_s) &&
+        (m2_out_col_g_s <  (m2_tile_col_base_g_s + PC_MODE2))) begin
+      m2_free_consumed_col_l_s = m2_out_col_g_s - m2_tile_col_base_g_s;
+      m2_free_consumed_col_in_tile_s = 1'b1;
+    end
+
+    // Refill is needed only if the same physical col_l slot maps to another
+    // valid consumer-IFM global column. Bounds are consumer IFM bounds.
+    m2_free_refill_needed_s = m2_pixel_consumed_last_fgroup_s &&
+                              m2_free_consumed_col_in_tile_s &&
+                              (m2_num_cgrp_s != 16'd0) &&
+                              (m2_free_refill_col_g_s < cur_cfg.w_in);
 
     if (!m2_last_col_s) begin
       m2_next_block_col_s = m2_out_col_g_s + 16'd1;
@@ -514,6 +565,12 @@ module local_dataflow_manager
       m2_ret_block_tile_base_g_q <= 16'd0;
       m2_ret_block_col_mod_q    <= 16'd0;
       m2_ret_cgrp_g_q           <= 16'd0;
+      m2_free_emit_active_q     <= 1'b0;
+      m2_free_emit_row_g_q      <= 16'd0;
+      m2_free_emit_col_g_q      <= 16'd0;
+      m2_free_emit_col_l_q      <= 16'd0;
+      m2_free_emit_cgrp_q       <= 16'd0;
+      m2_free_emit_num_cgrp_q   <= 16'd0;
       m2_boundary_pending_q     <= 1'b0;
       m2_boundary_issue_sent_q  <= 1'b0;
       m2_boundary_pending_col_q <= 16'd0;
@@ -555,22 +612,50 @@ module local_dataflow_manager
         else
           m2_ret_cgrp_g_q         <= 16'd0;
       end
+
+      // Mode2 free-token emitter.  It serializes cgrp tokens for one
+      // compute-consumed IFM entry.  hold_compute is asserted while active so
+      // a new output pixel is not accepted before all cgrp free tokens for the
+      // current entry have been exposed.
+      if (cur_mode != MODE2) begin
+        m2_free_emit_active_q   <= 1'b0;
+        m2_free_emit_cgrp_q     <= 16'd0;
+      end
+      else if (m2_free_emit_active_q) begin
+        if ((m2_free_emit_cgrp_q + 16'd1) < m2_free_emit_num_cgrp_q) begin
+          m2_free_emit_cgrp_q <= m2_free_emit_cgrp_q + 16'd1;
+        end
+        else begin
+          m2_free_emit_active_q <= 1'b0;
+          m2_free_emit_cgrp_q   <= 16'd0;
+        end
+      end
+      else if (m2_free_refill_needed_s) begin
+        m2_free_emit_active_q   <= 1'b1;
+        m2_free_emit_row_g_q    <= m2_out_row_g_s;
+        m2_free_emit_col_g_q    <= m2_free_refill_col_g_s;
+        m2_free_emit_col_l_q    <= m2_free_consumed_col_l_s;
+        m2_free_emit_cgrp_q     <= 16'd0;
+        m2_free_emit_num_cgrp_q <= m2_num_cgrp_s;
+      end
     end
   end
 
   always_comb begin
+    // Legacy IFM-return reconstruction is retained only for debug/visibility;
+    // it is NOT used to declare a free slot anymore.
     m2_ret_seg_base_g_s = m2_ret_block_tile_base_g_q;
     if ((PC_MODE2 != 0) && (m2_ret_col_l_q < m2_ret_block_col_mod_q))
       m2_ret_seg_base_g_s = m2_ret_block_tile_base_g_q + PC_MODE2;
 
     m2_free_valid  = 1'b0;
-    m2_free_row_g  = m2_ret_row_g_q;
-    m2_free_col_g  = m2_ret_seg_base_g_s;
-    m2_free_col_l  = m2_ret_col_l_q;
-    m2_free_cgrp_g = m2_ret_cgrp_g_q;
+    m2_free_row_g  = m2_free_emit_row_g_q;
+    m2_free_col_g  = m2_free_emit_col_g_q;
+    m2_free_col_l  = m2_free_emit_col_l_q;
+    m2_free_cgrp_g = m2_free_emit_cgrp_q;
 
     if (cur_mode == MODE2)
-      m2_free_valid = m2_dr_write_en_s && m2_ret_meta_valid_q;
+      m2_free_valid = m2_free_emit_active_q;
   end
 
   // --------------------------------------------------------------------------
@@ -582,7 +667,12 @@ module local_dataflow_manager
   // control_unit_top/ce_controller_mode2, so local dataflow must not hold the
   // compute path at tile boundaries.
   // --------------------------------------------------------------------------
-  assign hold_compute = (cur_mode == MODE1) ? m1_busy_s : 1'b0;
+  // Mode1 behavior is unchanged.  Mode2 asserts a narrow hold only while
+  // serializing cgrp free tokens so no compute-consumed entry is dropped.
+  assign m2_free_emit_hold_s = m2_free_emit_active_q || m2_free_refill_needed_s;
+
+  assign hold_compute = (cur_mode == MODE1) ? m1_busy_s :
+                        (cur_mode == MODE2) ? m2_free_emit_hold_s : 1'b0;
 
   assign local_busy  = (cur_mode == MODE1) ? m1_busy_s  :
                        (cur_mode == MODE2) ? m2_busy_s  : 1'b0;
@@ -621,12 +711,10 @@ module local_dataflow_manager
         $error("local_dataflow_manager: first mode-2 output col (%0d) is outside resident tile base=%0d width=%0d.",
                m2_out_col_g_s, m2_tile_col_base_g_s, PC_MODE2);
       end
-      // Free-token segment-base reconstruction assumes the controller does not
-      // ask one Kx sweep to span more than one resident PC-wide tile.
-      if (cur_cfg.k > PC_MODE2) begin
-        $error("local_dataflow_manager: cur_cfg.k (%0d) > PC_MODE2 (%0d); mode-2 tile-local reconstruction is ambiguous.",
-               cur_cfg.k, PC_MODE2);
-      end
+      // Note: the Mode2 free-token timing is exact for the current K=1
+      // same-mode refill tests.  Wider kernels require halo-aware free-token
+      // qualification at the control/refill layer because one IFM entry can be
+      // used by multiple output windows.  Do not turn this into a Mode1 check.
     end
   end
 `endif

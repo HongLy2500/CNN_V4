@@ -241,6 +241,11 @@ module control_unit_top
   localparam int M1Q_AW    = (SM_M1_RDY_Q_DEPTH <= 1) ? 1 : $clog2(SM_M1_RDY_Q_DEPTH+1);
   localparam int M2Q_AW    = (SM_M2_RDY_Q_DEPTH <= 1) ? 1 : $clog2(SM_M2_RDY_Q_DEPTH+1);
   localparam int M1FQ_AW   = (HT <= 1) ? 1 : $clog2(HT+1);
+  // Internal Mode-2 tiled-refill queues.  Keep this separate from the legacy
+  // same_mode_refill_manager_m2 path; Mode2 follows the Mode1 in-control
+  // refill style while preserving the Mode2 {row,col_l,cgrp,PC-lanes} layout.
+  localparam int M2T_Q_DEPTH = (OFM_LINEAR_DEPTH <= 1) ? 2 : OFM_LINEAR_DEPTH;
+  localparam int M2T_Q_AW    = (M2T_Q_DEPTH <= 1) ? 1 : $clog2(M2T_Q_DEPTH+1);
 
   typedef struct packed {
     logic [15:0] row_g;
@@ -253,6 +258,20 @@ module control_unit_top
     logic [15:0] col_g;
     logic [15:0] cgrp_g;
   } m2_rdy_tok_t;
+
+  typedef struct packed {
+    logic [7:0]  src_layer_id;
+    logic [15:0] row_g;
+    logic [15:0] col_g;
+    logic [15:0] cgrp_g;
+  } m2t_rdy_tok_t;
+
+  typedef struct packed {
+    logic [15:0] row_g;
+    logic [15:0] col_g;
+    logic [15:0] col_l;
+    logic [15:0] cgrp_g;
+  } m2t_free_tok_t;
 
   logic start_q, start_pulse;
   always_ff @(posedge clk or negedge rst_n) begin
@@ -300,6 +319,34 @@ module control_unit_top
   logic transition_done_s, transition_busy_s, transition_error_s;
   logic same_mode_drain_done_s, sched_next_path_done_s;
   logic compute_done_s, compute_busy_s;
+  // Raw compute_dispatcher status.  Mode 1 is forwarded unchanged; Mode 2
+  // is wrapped by the tile scheduler below so the global scheduler only sees
+  // layer-done after all resident horizontal tiles have completed.
+  logic dispatch_compute_done_s, dispatch_compute_busy_s;
+  logic kick_compute_dispatch_s;
+  logic dispatch_m2_start_s, dispatch_m2_step_en_s;
+
+  typedef enum logic [2:0] {
+    M2TS_IDLE,
+    M2TS_START_TILE,
+    M2TS_WAIT_TILE,
+    M2TS_DDR_REQ,
+    M2TS_DDR_WAIT,
+    M2TS_OFM_REQ,
+    M2TS_OFM_WAIT
+  } m2_tile_state_t;
+
+  m2_tile_state_t m2_tile_state_q;
+  logic [TILE_W-1:0] m2_tile_idx_q;
+  logic [15:0]       m2_tile_base_s;
+  logic [15:0]       m2_tile_count_s;
+  logic [15:0]       m2_num_tiles_s;
+  logic              m2_tile_last_s;
+  logic              m2_tile_layer_done_pulse_s;
+  logic              m2_ifm_tile_load_req_s;
+  logic              m2_runtime_stream_req_s;
+  logic              m2_runtime_stream_done_pulse_s;
+
   logic weight_bank_layer_done_s;
   layer_desc_t wgt_dma_cfg_s;
   logic any_error_s;
@@ -361,22 +408,50 @@ module control_unit_top
   logic [7:0]       ofm2ifm_dst_layer_id_q;
   logic             ofm2ifm_in_dst_layer_s;
 
-  // Same-mode M2 OFM->IFM deterministic handoff.
-  // This mirrors the stabilized M1 path: do not consume free/ready tokens
-  // from the legacy M2 refill manager while the source layer is still
-  // computing.  Instead, after the current OFM is complete, stream the full
-  // next-layer IFM image from OFM into IFM in row/column/channel-group order.
+  // Same-mode M2 OFM->IFM tile handoff.
+  // Follow the Mode-1 lifecycle: stream only the initial resident tile before
+  // layer advance; after advance, the Mode-2 tile scheduler requests one
+  // OFM->IFM refill per additional horizontal tile.
   logic             sm_m2_mgr_active_s;
   logic             m2_ofm2ifm_active_q;
   logic             m2_ofm2ifm_ready_q;
   logic             m2_ofm2ifm_stream_busy_q;
   logic             m2_ofm2ifm_stream_start_s;
+  logic             m2_ofm2ifm_runtime_q;
   logic [ROW_W-1:0] m2_ofm2ifm_row_q;
   logic [15:0]      m2_ofm2ifm_col_blk_q;
   logic [15:0]      m2_ofm2ifm_cgrp_q;
   logic [ROW_W-1:0] m2_ofm2ifm_num_rows_q;
   logic [15:0]      m2_ofm2ifm_num_col_blks_q;
   logic [15:0]      m2_ofm2ifm_num_cgrps_q;
+
+  // Mode2 in-control tiled refill state.  Initial requests are generated from
+  // the destination/consumer IFM geometry.  Runtime requests come from the
+  // local-dataflow free-token stream.  Ready tokens are OFM final-entry tokens.
+  logic [7:0]       m2_ofm2ifm_src_layer_id_q;
+  logic [7:0]       m2_ofm2ifm_dst_layer_id_q;
+  logic             m2_ofm2ifm_seen_dst_q;
+  logic [15:0]      m2_ofm2ifm_w_q;
+  logic [15:0]      m2_ofm2ifm_c_q;
+  logic [15:0]      m2_ofm2ifm_initial_cols_q;
+
+  m2t_rdy_tok_t     m2t_ready_fifo [0:M2T_Q_DEPTH-1];
+  m2t_free_tok_t    m2t_free_fifo  [0:M2T_Q_DEPTH-1];
+  logic [M2T_Q_AW-1:0] m2t_ready_count_q;
+  logic [M2T_Q_AW-1:0] m2t_free_count_q;
+  logic             m2t_ready_overflow_q;
+  logic             m2t_free_overflow_q;
+
+  logic             m2t_req_valid_s;
+  logic             m2t_req_is_runtime_s;
+  logic [15:0]      m2t_req_row_g_s;
+  logic [15:0]      m2t_req_col_g_s;
+  logic [15:0]      m2t_req_col_l_s;
+  logic [15:0]      m2t_req_cgrp_g_s;
+  logic             m2t_ready_match_s;
+  logic [M2T_Q_AW-1:0] m2t_ready_match_idx_s;
+  logic             m2t_stream_fire_s;
+  logic             m2t_runtime_idle_s;
 
   logic [ROW_W-1:0] stream_req_row_base_s;
   logic [ROW_W-1:0] stream_req_num_rows_s;
@@ -389,13 +464,34 @@ module control_unit_top
   assign m2_out_row_g_s = m2_out_row;
   assign m2_out_col_g_s = m2_out_col;
 
-  // Mode-2 tile-window compatibility outputs for tile-aware cnn_top/CE.
-  // This control implementation still lets compute_dispatcher issue one
-  // layer-level Mode-2 start.  The tile-aware CE controller treats
-  // tile_col_count == 0 as "all remaining columns" from tile_col_base_g.
-  // Mode 1 does not use these signals.
-  assign m2_tile_col_base_g = 16'd0;
-  assign m2_tile_col_count  = 16'd0;
+  // Mode-2 tile-window outputs.
+  // Mode 1 remains untouched.  For Mode 2, one compute_dispatcher start now
+  // represents exactly one resident horizontal WT=PC tile, following the same
+  // resident-tile lifecycle that Mode 1 already uses for row tiles.
+  always_comb begin
+    if (PC_MODE2 != 0)
+      m2_num_tiles_s = (cur_cfg_s.w_out + 16'(PC_MODE2) - 16'd1) / 16'(PC_MODE2);
+    else
+      m2_num_tiles_s = 16'd0;
+
+    m2_tile_base_s = 16'(m2_tile_idx_q) * 16'(PC_MODE2);
+
+    if ((cur_cfg_s.w_out == 0) || (m2_tile_base_s >= cur_cfg_s.w_out)) begin
+      m2_tile_count_s = 16'd0;
+    end
+    else if ((m2_tile_base_s + 16'(PC_MODE2)) <= cur_cfg_s.w_out) begin
+      m2_tile_count_s = 16'(PC_MODE2);
+    end
+    else begin
+      m2_tile_count_s = cur_cfg_s.w_out - m2_tile_base_s;
+    end
+
+    m2_tile_last_s = (m2_num_tiles_s == 16'd0) ? 1'b1 :
+                     ((16'(m2_tile_idx_q) + 16'd1) >= m2_num_tiles_s);
+  end
+
+  assign m2_tile_col_base_g = (cur_cfg_s.mode == MODE2) ? m2_tile_base_s  : 16'd0;
+  assign m2_tile_col_count  = (cur_cfg_s.mode == MODE2) ? m2_tile_count_s : 16'd0;
 
   // Internal mode-2 free-token source from local_dataflow_manager.
   // Keep top-level m2_free_* ports unchanged for compatibility, but the
@@ -477,10 +573,10 @@ module control_unit_top
   // row_slot X and incomplete handoff.
   assign sm_m1_tiled_active_s = sm_m1_active;
   assign sm_m1_mgr_active_s   = 1'b0;
-  // Disable the legacy M2 free/ready-token manager on the main path.  Its
-  // free tokens are produced in the current-layer coordinate space but it
-  // validates them against next-layer geometry, which causes false/out-of-range
-  // failures for large M2->M2 chains.  Use the deterministic M2 handoff below.
+  // Disable the legacy M2 free/ready-token manager on the main path.  Mode2
+  // follows the Mode1 pattern: an in-control tiled-refill block below matches
+  // IFM free entries with OFM final-entry ready tokens.  Do not enable the
+  // legacy same_mode_refill_manager_m2 here.
   assign sm_m2_mgr_active_s   = 1'b0;
   assign rst_n_sm_m1        = rst_n && sm_m1_mgr_active_s;
   assign rst_n_sm_m2        = rst_n && sm_m2_mgr_active_s;
@@ -516,6 +612,14 @@ module control_unit_top
     ifm_req_abs_row_base_s = '0;
     ifm_req_buf_row_base_s = '0;
     ifm_req_m2_tile_idx_s  = '0;
+
+    // Mode-2 first/current-layer DDR tile refill uses the resident horizontal
+    // tile index selected by the Mode-2 tile scheduler.  Mode 1 keeps the
+    // original row-refill path below.
+    if ((cur_cfg_s.mode == MODE2) &&
+        ((m2_tile_state_q == M2TS_DDR_REQ) || (m2_tile_state_q == M2TS_DDR_WAIT))) begin
+      ifm_req_m2_tile_idx_s = m2_tile_idx_q;
+    end
 
     // Initial preload command loads rows [0 .. min(H,HT)-1].
     // Later initial-IFM tiling refill commands load one absolute DDR row at a
@@ -831,27 +935,173 @@ module control_unit_top
 
 
   // --------------------------------------------------------------------------
-  // Same-mode M2 OFM->IFM deterministic handoff
+  // Mode-2 compute tile scheduler
   // --------------------------------------------------------------------------
-  // For M2->M2, stream the completed producer OFM into the next IFM before
-  // scheduler advances.  The loop bounds below are derived from current final
-  // OFM geometry (cur_m2_final_* and cur_cfg_s.f_out), so every channel group
-  // of the producer output is committed before the consumer layer can start.
-  always_comb begin
-    m2_ofm2ifm_stream_start_s = 1'b0;
+  // The global scheduler issues one kick_compute_s per layer.  Mode 1 still
+  // forwards that pulse directly to compute_dispatcher.  Mode 2 expands it
+  // into one compute_dispatcher start per resident horizontal tile:
+  //   preload/refill tile -> start CE -> wait tile done -> next tile.
+  // This keeps the Mode-1 lifecycle rule while changing only Mode-2 control.
+  assign m2_ifm_tile_load_req_s = (cur_cfg_s.mode == MODE2) && (m2_tile_state_q == M2TS_DDR_REQ);
+  assign m2_runtime_stream_req_s = (cur_cfg_s.mode == MODE2) && (m2_tile_state_q == M2TS_OFM_REQ);
 
-    if (m2_ofm2ifm_active_q && !m2_ofm2ifm_ready_q &&
-        !m2_ofm2ifm_stream_busy_q &&
-        !transition_busy_s && !trans_ifm_stream_start_s &&
-        !ofm2ifm_stream_start_s && !ofm_ifm_stream_busy) begin
-      m2_ofm2ifm_stream_start_s = 1'b1;
+  always_ff @(posedge clk or negedge rst_n) begin : PROC_M2_COMPUTE_TILE_SCHED
+    if (!rst_n) begin
+      m2_tile_state_q <= M2TS_IDLE;
+      m2_tile_idx_q   <= '0;
+      m2_tile_layer_done_pulse_s <= 1'b0;
+    end
+    else begin
+      m2_tile_layer_done_pulse_s <= 1'b0;
+
+      if (abort || advance_layer_s) begin
+        m2_tile_state_q <= M2TS_IDLE;
+        m2_tile_idx_q   <= '0;
+      end
+      else begin
+        case (m2_tile_state_q)
+          M2TS_IDLE: begin
+            if (kick_compute_s && (cur_cfg_s.mode == MODE2)) begin
+              m2_tile_idx_q   <= '0;
+              m2_tile_state_q <= M2TS_START_TILE;
+            end
+          end
+
+          M2TS_START_TILE: begin
+            if (dispatch_m2_start_s) begin
+              m2_tile_state_q <= M2TS_WAIT_TILE;
+            end
+          end
+
+          M2TS_WAIT_TILE: begin
+            if (dispatch_compute_done_s) begin
+              if (m2_tile_last_s) begin
+                m2_tile_layer_done_pulse_s <= 1'b1;
+                m2_tile_state_q <= M2TS_IDLE;
+              end
+              else begin
+                m2_tile_idx_q <= m2_tile_idx_q + 1'b1;
+
+                // First-layer input tiles come from DDR.  Same-mode M2 layers
+                // receive later tiles through the in-control token refill path;
+                // wait here until all entries for the next resident tile have
+                // been refilled instead of issuing a deterministic stream.
+                if (cur_first_layer_s)
+                  m2_tile_state_q <= M2TS_DDR_REQ;
+                else
+                  m2_tile_state_q <= M2TS_OFM_WAIT;
+              end
+            end
+          end
+
+          M2TS_DDR_REQ: begin
+            m2_tile_state_q <= M2TS_DDR_WAIT;
+          end
+
+          M2TS_DDR_WAIT: begin
+            if (ifm_load_done_s)
+              m2_tile_state_q <= M2TS_START_TILE;
+          end
+
+          M2TS_OFM_REQ: begin
+            // Legacy state kept for enum compatibility; the token refill path
+            // drives readiness, so move directly to WAIT.
+            m2_tile_state_q <= M2TS_OFM_WAIT;
+          end
+
+          M2TS_OFM_WAIT: begin
+            if (m2t_runtime_idle_s)
+              m2_tile_state_q <= M2TS_START_TILE;
+          end
+
+          default: begin
+            m2_tile_state_q <= M2TS_IDLE;
+          end
+        endcase
+      end
     end
   end
 
-  always_ff @(posedge clk or negedge rst_n) begin : PROC_OFM2IFM_M2_DET_REFILL
-    logic [15:0] m2_handoff_rows_v;
-    logic [15:0] m2_handoff_col_blks_v;
-    logic [15:0] m2_handoff_cgrps_v;
+
+  // --------------------------------------------------------------------------
+  // Same-mode M2 OFM->IFM tiled refill (Mode2-only)
+  // --------------------------------------------------------------------------
+  // Follow the Mode1 lifecycle without enabling the legacy manager:
+  //   initial consumer IFM entries are requested from next_cfg_s geometry;
+  //   runtime entries come from local_dataflow_manager free tokens;
+  //   OFM ready tokens are final-OFM entries from ofm_buffer.
+  // A stream is launched only when the requested entry and a ready token match.
+  always_comb begin : PROC_M2_TILED_REFILL_COMB
+    m2t_req_valid_s       = 1'b0;
+    m2t_req_is_runtime_s  = 1'b0;
+    m2t_req_row_g_s       = '0;
+    m2t_req_col_g_s       = '0;
+    m2t_req_col_l_s       = '0;
+    m2t_req_cgrp_g_s      = '0;
+    m2t_ready_match_s     = 1'b0;
+    m2t_ready_match_idx_s = '0;
+
+    // Initial resident tile of the consumer layer: full H, first PC columns,
+    // all cgroups.  Coordinates are in consumer IFM/final producer OFM space.
+    if (m2_ofm2ifm_active_q && !m2_ofm2ifm_ready_q &&
+        (m2_ofm2ifm_row_q < m2_ofm2ifm_num_rows_q) &&
+        (m2_ofm2ifm_col_blk_q < m2_ofm2ifm_initial_cols_q) &&
+        (m2_ofm2ifm_cgrp_q < m2_ofm2ifm_num_cgrps_q)) begin
+      m2t_req_valid_s      = 1'b1;
+      m2t_req_is_runtime_s = 1'b0;
+      m2t_req_row_g_s      = 16'(m2_ofm2ifm_row_q);
+      m2t_req_col_g_s      = m2_ofm2ifm_col_blk_q;
+      m2t_req_col_l_s      = (PC_MODE2 == 0) ? 16'd0 : (m2_ofm2ifm_col_blk_q % 16'(PC_MODE2));
+      m2t_req_cgrp_g_s     = m2_ofm2ifm_cgrp_q;
+    end
+    // Runtime refill requests are destination-layer free entries.
+    else if (m2_ofm2ifm_active_q && m2_ofm2ifm_ready_q && (m2t_free_count_q != '0)) begin
+      m2t_req_valid_s      = 1'b1;
+      m2t_req_is_runtime_s = 1'b1;
+      m2t_req_row_g_s      = m2t_free_fifo[0].row_g;
+      m2t_req_col_g_s      = m2t_free_fifo[0].col_g;
+      m2t_req_col_l_s      = m2t_free_fifo[0].col_l;
+      m2t_req_cgrp_g_s     = m2t_free_fifo[0].cgrp_g;
+    end
+
+    // CAM search the ready queue so future-layer tokens can coexist with the
+    // current handoff.  Match also includes the producer/source layer id.
+    for (int mi = 0; mi < M2T_Q_DEPTH; mi++) begin
+      if (!m2t_ready_match_s && (mi < m2t_ready_count_q) && m2t_req_valid_s &&
+          (m2t_ready_fifo[mi].src_layer_id == m2_ofm2ifm_src_layer_id_q) &&
+          (m2t_ready_fifo[mi].row_g        == m2t_req_row_g_s) &&
+          (m2t_ready_fifo[mi].col_g        == m2t_req_col_g_s) &&
+          (m2t_ready_fifo[mi].cgrp_g       == m2t_req_cgrp_g_s)) begin
+        m2t_ready_match_s     = 1'b1;
+        m2t_ready_match_idx_s = mi[M2T_Q_AW-1:0];
+      end
+    end
+  end
+
+  assign m2t_stream_fire_s = (cur_cfg_s.mode == MODE2) &&
+                             m2t_req_valid_s && m2t_ready_match_s &&
+                             !m2_ofm2ifm_stream_busy_q &&
+                             !transition_busy_s && !trans_ifm_stream_start_s &&
+                             !ofm2ifm_stream_start_s && !ofm_ifm_stream_busy;
+
+  assign m2t_runtime_idle_s = m2_ofm2ifm_active_q &&
+                              m2_ofm2ifm_ready_q &&
+                              (m2t_free_count_q == '0) &&
+                              !m2_ofm2ifm_stream_busy_q &&
+                              !m2t_req_valid_s;
+
+  assign m2_ofm2ifm_stream_start_s = m2t_stream_fire_s;
+
+  always_ff @(posedge clk or negedge rst_n) begin : PROC_OFM2IFM_M2_TILED_REFILL
+    integer rr;
+    integer ff;
+    integer wr_idx_m2;
+    integer ready_pop_idx;
+    integer ready_count_tmp;
+    integer free_count_tmp;
+    logic [15:0] init_cols_v;
+    logic [15:0] init_cgrps_v;
+    logic        take_free_v;
 
     if (!rst_n) begin
       m2_ofm2ifm_active_q          <= 1'b0;
@@ -863,9 +1113,30 @@ module control_unit_top
       m2_ofm2ifm_num_rows_q        <= '0;
       m2_ofm2ifm_num_col_blks_q    <= '0;
       m2_ofm2ifm_num_cgrps_q       <= '0;
+      m2_ofm2ifm_runtime_q         <= 1'b0;
+      m2_runtime_stream_done_pulse_s <= 1'b0;
+      m2_ofm2ifm_src_layer_id_q    <= '0;
+      m2_ofm2ifm_dst_layer_id_q    <= '0;
+      m2_ofm2ifm_seen_dst_q        <= 1'b0;
+      m2_ofm2ifm_w_q               <= '0;
+      m2_ofm2ifm_c_q               <= '0;
+      m2_ofm2ifm_initial_cols_q    <= '0;
+      m2t_ready_count_q            <= '0;
+      m2t_free_count_q             <= '0;
+      m2t_ready_overflow_q         <= 1'b0;
+      m2t_free_overflow_q          <= 1'b0;
+      for (rr = 0; rr < M2T_Q_DEPTH; rr = rr + 1) begin
+        m2t_ready_fifo[rr] <= '0;
+        m2t_free_fifo[rr]  <= '0;
+      end
     end
     else begin
-      if (abort || advance_layer_s) begin
+      m2_runtime_stream_done_pulse_s <= 1'b0;
+
+      ready_count_tmp = m2t_ready_count_q;
+      free_count_tmp  = m2t_free_count_q;
+
+      if (abort) begin
         m2_ofm2ifm_active_q          <= 1'b0;
         m2_ofm2ifm_ready_q           <= 1'b0;
         m2_ofm2ifm_stream_busy_q     <= 1'b0;
@@ -875,62 +1146,176 @@ module control_unit_top
         m2_ofm2ifm_num_rows_q        <= '0;
         m2_ofm2ifm_num_col_blks_q    <= '0;
         m2_ofm2ifm_num_cgrps_q       <= '0;
+        m2_ofm2ifm_runtime_q         <= 1'b0;
+        m2_ofm2ifm_src_layer_id_q    <= '0;
+        m2_ofm2ifm_dst_layer_id_q    <= '0;
+        m2_ofm2ifm_seen_dst_q        <= 1'b0;
+        m2_ofm2ifm_w_q               <= '0;
+        m2_ofm2ifm_c_q               <= '0;
+        m2_ofm2ifm_initial_cols_q    <= '0;
+        m2t_ready_count_q            <= '0;
+        m2t_free_count_q             <= '0;
+        m2t_ready_overflow_q         <= 1'b0;
+        m2t_free_overflow_q          <= 1'b0;
       end
       else begin
-        // The M2 same-mode handoff streams the completed producer OFM into
-        // the next layer IFM.  Use the producer's *stored OFM* geometry as the
-        // source of truth, not next_cfg_s.  This is important for layers where
-        // the next descriptor is not yet the reliable context at the exact
-        // ofm_layer_write_done pulse, and for pooled M2 producers where
-        // next C/H/W must match the current layer's final OFM F/H/W.
-        // Example Test-A L4->L5: final OFM is 8x12x40, so the handoff must
-        // stream cgrp=0 and cgrp=1 before L5 compute is allowed to read IFM.
-        m2_handoff_rows_v = (cur_m2_final_h_out_s == 0) ? 16'd1 : cur_m2_final_h_out_s;
-        m2_handoff_col_blks_v = (cur_m2_final_w_out_s == 0) ? 16'd1 :
-                                ((cur_m2_final_w_out_s + 16'(PC_MODE2) - 16'd1) / 16'(PC_MODE2));
-        m2_handoff_cgrps_v = (cur_cfg_s.f_out == 0) ? 16'd1 :
-                             ((cur_cfg_s.f_out + 16'(PC_MODE2) - 16'd1) / 16'(PC_MODE2));
+        // Arm a new M2->M2 handoff context when none is active.  This can
+        // happen while the source layer is still computing; ready tokens are
+        // tagged with cur layer_id and can be matched later.
+        if (!m2_ofm2ifm_active_q && sm_m2_active) begin
+          init_cols_v  = (next_cfg_s.w_in == 0) ? 16'd1 :
+                         ((next_cfg_s.w_in < 16'(PC_MODE2)) ? next_cfg_s.w_in : 16'(PC_MODE2));
+          init_cgrps_v = (next_cfg_s.c_in == 0) ? 16'd1 :
+                         ((next_cfg_s.c_in + 16'(PC_MODE2) - 16'd1) / 16'(PC_MODE2));
 
-        if (!m2_ofm2ifm_active_q && sm_m2_active && ofm_layer_write_done_pulse_s) begin
           m2_ofm2ifm_active_q       <= 1'b1;
           m2_ofm2ifm_ready_q        <= 1'b0;
           m2_ofm2ifm_stream_busy_q  <= 1'b0;
+          m2_ofm2ifm_runtime_q      <= 1'b0;
           m2_ofm2ifm_row_q          <= '0;
-          m2_ofm2ifm_col_blk_q      <= '0;
+          m2_ofm2ifm_col_blk_q      <= '0;  // exact global column in the new contract
           m2_ofm2ifm_cgrp_q         <= '0;
-          m2_ofm2ifm_num_rows_q     <= m2_handoff_rows_v[ROW_W-1:0];
-          m2_ofm2ifm_num_col_blks_q <= (m2_handoff_col_blks_v == 0) ? 16'd1 : m2_handoff_col_blks_v;
-          m2_ofm2ifm_num_cgrps_q    <= (m2_handoff_cgrps_v    == 0) ? 16'd1 : m2_handoff_cgrps_v;
+          m2_ofm2ifm_num_rows_q     <= next_cfg_s.h_in[ROW_W-1:0];
+          m2_ofm2ifm_num_col_blks_q <= init_cols_v;
+          m2_ofm2ifm_num_cgrps_q    <= (init_cgrps_v == 0) ? 16'd1 : init_cgrps_v;
+          m2_ofm2ifm_initial_cols_q <= init_cols_v;
+          m2_ofm2ifm_w_q            <= next_cfg_s.w_in;
+          m2_ofm2ifm_c_q            <= next_cfg_s.c_in;
+          m2_ofm2ifm_src_layer_id_q <= cur_cfg_s.layer_id[7:0];
+          m2_ofm2ifm_dst_layer_id_q <= next_cfg_s.layer_id[7:0];
+          m2_ofm2ifm_seen_dst_q     <= 1'b0;
+          m2t_free_count_q          <= '0;
+          free_count_tmp            = 0;
         end
 
-        if (m2_ofm2ifm_stream_start_s) begin
+        // Push ready tokens from the OFM final-entry stream.  Store the source
+        // layer id so tokens from a later producer cannot satisfy an older
+        // consumer refill.
+        wr_idx_m2 = ready_count_tmp;
+        if (sm_m2_active) begin
+          for (int ri = 0; ri < PF_MODE2; ri++) begin
+            if (m2_sm_ready_valid[ri]) begin
+              if (wr_idx_m2 < M2T_Q_DEPTH) begin
+                m2t_ready_fifo[wr_idx_m2].src_layer_id <= cur_cfg_s.layer_id[7:0];
+                m2t_ready_fifo[wr_idx_m2].row_g        <= m2_sm_ready_row_g[ri];
+                m2t_ready_fifo[wr_idx_m2].col_g        <= m2_sm_ready_colbase_g[ri];
+                m2t_ready_fifo[wr_idx_m2].cgrp_g       <= m2_sm_ready_bank[ri];
+                wr_idx_m2 = wr_idx_m2 + 1;
+              end
+              else begin
+                m2t_ready_overflow_q <= 1'b1;
+              end
+            end
+          end
+        end
+        ready_count_tmp = wr_idx_m2;
+
+        // Push destination-layer free entries only after the initial tile is
+        // ready and scheduler has advanced into the destination layer.  Source
+        // layer free tokens are stale for this handoff and must be ignored.
+        take_free_v = m2_ofm2ifm_active_q && m2_ofm2ifm_ready_q &&
+                      (cur_cfg_s.mode == MODE2) &&
+                      (cur_cfg_s.layer_id[7:0] == m2_ofm2ifm_dst_layer_id_q) &&
+                      ldm_m2_free_valid_s &&
+                      (ldm_m2_free_row_g_s < m2_ofm2ifm_num_rows_q) &&
+                      (ldm_m2_free_col_g_s < m2_ofm2ifm_w_q) &&
+                      (ldm_m2_free_cgrp_g_s < m2_ofm2ifm_num_cgrps_q);
+
+        if (take_free_v) begin
+          if (free_count_tmp < M2T_Q_DEPTH) begin
+            m2t_free_fifo[free_count_tmp].row_g   <= ldm_m2_free_row_g_s;
+            m2t_free_fifo[free_count_tmp].col_g   <= ldm_m2_free_col_g_s;
+            m2t_free_fifo[free_count_tmp].col_l   <= ldm_m2_free_col_l_s;
+            m2t_free_fifo[free_count_tmp].cgrp_g  <= ldm_m2_free_cgrp_g_s;
+            free_count_tmp = free_count_tmp + 1;
+          end
+          else begin
+            m2t_free_overflow_q <= 1'b1;
+          end
+        end
+
+        // Launch a matched stream.  Pop the matched ready token immediately;
+        // pop the runtime free token too.  Initial requests are generated by
+        // counters, so no free pop is needed for them.
+        if (m2t_stream_fire_s) begin
           m2_ofm2ifm_stream_busy_q <= 1'b1;
+          m2_ofm2ifm_runtime_q     <= m2t_req_is_runtime_s;
+          m2_ofm2ifm_row_q         <= m2t_req_row_g_s[ROW_W-1:0];
+          m2_ofm2ifm_col_blk_q     <= m2t_req_col_g_s;
+          m2_ofm2ifm_cgrp_q        <= m2t_req_cgrp_g_s;
+
+          ready_pop_idx = m2t_ready_match_idx_s;
+          for (rr = ready_pop_idx; rr < M2T_Q_DEPTH-1; rr = rr + 1) begin
+            if (rr < (ready_count_tmp - 1))
+              m2t_ready_fifo[rr] <= m2t_ready_fifo[rr+1];
+          end
+          if (ready_count_tmp != 0)
+            ready_count_tmp = ready_count_tmp - 1;
+
+          if (m2t_req_is_runtime_s) begin
+            for (ff = 0; ff < M2T_Q_DEPTH-1; ff = ff + 1) begin
+              if (ff < (free_count_tmp - 1))
+                m2t_free_fifo[ff] <= m2t_free_fifo[ff+1];
+            end
+            if (free_count_tmp != 0)
+              free_count_tmp = free_count_tmp - 1;
+          end
         end
 
         if (m2_ofm2ifm_stream_busy_q && ofm_ifm_stream_done) begin
           m2_ofm2ifm_stream_busy_q <= 1'b0;
 
-          if ((m2_ofm2ifm_cgrp_q + 16'd1) < m2_ofm2ifm_num_cgrps_q) begin
-            m2_ofm2ifm_cgrp_q <= m2_ofm2ifm_cgrp_q + 16'd1;
-          end
-          else begin
-            m2_ofm2ifm_cgrp_q <= '0;
-
-            if ((m2_ofm2ifm_col_blk_q + 16'd1) < m2_ofm2ifm_num_col_blks_q) begin
-              m2_ofm2ifm_col_blk_q <= m2_ofm2ifm_col_blk_q + 16'd1;
+          if (!m2_ofm2ifm_runtime_q) begin
+            // Advance the initial tile request cursor after the stream done.
+            if ((m2_ofm2ifm_cgrp_q + 16'd1) < m2_ofm2ifm_num_cgrps_q) begin
+              m2_ofm2ifm_cgrp_q <= m2_ofm2ifm_cgrp_q + 16'd1;
             end
             else begin
-              m2_ofm2ifm_col_blk_q <= '0;
-
-              if ((m2_ofm2ifm_row_q + ROW_W'(1)) < m2_ofm2ifm_num_rows_q) begin
-                m2_ofm2ifm_row_q <= m2_ofm2ifm_row_q + ROW_W'(1);
+              m2_ofm2ifm_cgrp_q <= '0;
+              if ((m2_ofm2ifm_col_blk_q + 16'd1) < m2_ofm2ifm_initial_cols_q) begin
+                m2_ofm2ifm_col_blk_q <= m2_ofm2ifm_col_blk_q + 16'd1;
               end
               else begin
-                m2_ofm2ifm_ready_q <= 1'b1;
+                m2_ofm2ifm_col_blk_q <= '0;
+                if ((m2_ofm2ifm_row_q + ROW_W'(1)) < m2_ofm2ifm_num_rows_q) begin
+                  m2_ofm2ifm_row_q <= m2_ofm2ifm_row_q + ROW_W'(1);
+                end
+                else begin
+                  m2_ofm2ifm_ready_q <= 1'b1;
+                  m2_ofm2ifm_row_q   <= '0;
+                  m2_ofm2ifm_col_blk_q <= '0;
+                  m2_ofm2ifm_cgrp_q  <= '0;
+                end
               end
             end
           end
+          else begin
+            m2_ofm2ifm_runtime_q <= 1'b0;
+          end
         end
+
+        if (m2_tile_state_q == M2TS_OFM_WAIT && m2t_runtime_idle_s) begin
+          m2_runtime_stream_done_pulse_s <= 1'b1;
+        end
+
+        if (m2_ofm2ifm_active_q && m2_ofm2ifm_ready_q &&
+            (cur_cfg_s.layer_id[7:0] == m2_ofm2ifm_dst_layer_id_q)) begin
+          m2_ofm2ifm_seen_dst_q <= 1'b1;
+        end
+
+        // Retire the completed handoff context after all runtime free tokens
+        // have drained.  A following M2->M2 context can then arm for the next
+        // source/destination layer pair.
+        if (m2_ofm2ifm_active_q && m2_ofm2ifm_ready_q && m2_ofm2ifm_seen_dst_q &&
+            (cur_cfg_s.layer_id[7:0] != m2_ofm2ifm_dst_layer_id_q) &&
+            (m2t_free_count_q == '0) && !m2_ofm2ifm_stream_busy_q) begin
+          m2_ofm2ifm_active_q   <= 1'b0;
+          m2_ofm2ifm_ready_q    <= 1'b0;
+          m2_ofm2ifm_seen_dst_q <= 1'b0;
+        end
+
+        m2t_ready_count_q <= ready_count_tmp[M2T_Q_AW-1:0];
+        m2t_free_count_q  <= free_count_tmp[M2T_Q_AW-1:0];
       end
     end
   end
@@ -959,7 +1344,9 @@ module control_unit_top
   assign m1_pool_en       = cur_m1_pool_active_s;
   // cfg_pool_en is only used by the M1 packing path inside ofm_buffer.
   // Preserve the existing M1 behavior and keep it deasserted for M2.
-  assign ofm_cfg_pool_en  = cur_m1_pool_active_s;
+  assign ofm_cfg_pool_en = (cur_cfg_s.mode == MODE2)
+                       ? cur_m2_pool_active_s
+                       : cur_m1_pool_active_s;
 
   assign ofm_cfg_h_out    = (cur_cfg_s.mode == MODE1)
                             ? cur_m1_final_h_out_s[$clog2(H_MAX+1)-1:0]
@@ -1275,11 +1662,11 @@ module control_unit_top
   assign m1_sm_refill_col_blk_g   = m1_sm_col_blk_g_i;
   assign m1_sm_refill_ch_blk_g    = m1_sm_ch_blk_g_i;
 
-  assign m2_sm_refill_req_valid   = sm_m2_mgr_active_s && m2_sm_req_valid_i;
-  assign m2_sm_refill_row_g       = m2_sm_row_g_i;
-  assign m2_sm_refill_col_g       = m2_sm_col_g_i;
-  assign m2_sm_refill_col_l       = m2_sm_col_l_i;
-  assign m2_sm_refill_cgrp_g      = m2_sm_cgrp_g_i;
+  assign m2_sm_refill_req_valid   = m2t_req_valid_s;
+  assign m2_sm_refill_row_g       = m2t_req_row_g_s;
+  assign m2_sm_refill_col_g       = m2t_req_col_g_s;
+  assign m2_sm_refill_col_l       = m2t_req_col_l_s;
+  assign m2_sm_refill_cgrp_g      = m2t_req_cgrp_g_s;
 
   // --------------------------------------------------------------------------
   // Sub-block instantiation
@@ -1314,7 +1701,7 @@ module control_unit_top
     .cur_cfg(cur_cfg_s),
     .compute_bank_sel(compute_bank_sel_s),
     .compute_bank_ready(compute_bank_ready_s),
-    .kick_compute(kick_compute_s),
+    .kick_compute(kick_compute_dispatch_s),
     .hold_compute(sched_hold_compute_s | local_hold_compute_s | init_ifm_refill_hold_s | ofm2ifm_runtime_hold_s),
     .cur_mode(cur_cfg_s.mode == MODE2),
     .m1_done(m1_done), .m1_busy(m1_busy), .m2_done(m2_done), .m2_busy(m2_busy),
@@ -1323,12 +1710,27 @@ module control_unit_top
     .m1_hout_cur(m1_hout_cur), .m1_wout_cur(m1_wout_cur), .m1_w_cur(m1_w_cur),
     .m1_pv_cur(m1_pv_cur), .m1_pf_cur(m1_pf_cur),
     .m1_weight_bank_sel(m1_weight_bank_sel), .m1_weight_bank_ready(m1_weight_bank_ready),
-    .m2_start(m2_start), .m2_step_en(m2_step_en),
+    .m2_start(dispatch_m2_start_s), .m2_step_en(dispatch_m2_step_en_s),
     .m2_k_cur(m2_k_cur), .m2_c_cur(m2_c_cur), .m2_f_cur(m2_f_cur),
     .m2_hout_cur(m2_hout_cur), .m2_wout_cur(m2_wout_cur),
     .m2_weight_bank_sel(m2_weight_bank_sel), .m2_weight_bank_ready(m2_weight_bank_ready),
-    .compute_done(compute_done_s), .compute_busy(compute_busy_s)
+    .compute_done(dispatch_compute_done_s), .compute_busy(dispatch_compute_busy_s)
   );
+
+  assign m2_start   = dispatch_m2_start_s;
+  assign m2_step_en = dispatch_m2_step_en_s;
+
+  assign kick_compute_dispatch_s = (cur_cfg_s.mode == MODE2) ?
+                                   (m2_tile_state_q == M2TS_START_TILE) :
+                                   kick_compute_s;
+
+  assign compute_done_s = (cur_cfg_s.mode == MODE2) ?
+                          m2_tile_layer_done_pulse_s :
+                          dispatch_compute_done_s;
+
+  assign compute_busy_s = (cur_cfg_s.mode == MODE2) ?
+                          ((m2_tile_state_q != M2TS_IDLE) || dispatch_compute_busy_s || kick_compute_s) :
+                          dispatch_compute_busy_s;
 
   dma_phase_manager #(
     .PTOTAL(PTOTAL), .PV_MAX(PV_MAX), .PC_MODE2(PC_MODE2),
@@ -1336,7 +1738,7 @@ module control_unit_top
     .WGT_DEPTH(WGT_DEPTH), .OFM_LINEAR_DEPTH(OFM_LINEAR_DEPTH), .DDR_ADDR_W(DDR_ADDR_W)
   ) u_dma_phase_manager (
     .clk(clk), .rst_n(rst_n),
-    .req_ifm_load(kick_ifm_load_s | init_ifm_refill_req_s), .req_wgt_load(kick_wgt_preload_s), .req_ofm_store(kick_ofm_store_s),
+    .req_ifm_load(kick_ifm_load_s | init_ifm_refill_req_s | ((cur_cfg_s.mode == MODE2) && m2_ifm_tile_load_req_s)), .req_wgt_load(kick_wgt_preload_s), .req_ofm_store(kick_ofm_store_s),
     .cur_cfg(cur_cfg_s), .wgt_cfg(wgt_dma_cfg_s), .preload_bank_sel(preload_bank_sel_s),
     .req_ifm_abs_row_base(ifm_req_abs_row_base_s), .req_ifm_num_rows(ifm_req_num_rows_s),
     .req_ifm_buf_row_base(ifm_req_buf_row_base_s), .req_m2_tile_idx(ifm_req_m2_tile_idx_s),
@@ -1379,6 +1781,7 @@ module control_unit_top
   ) u_local_dataflow_manager (
     .clk(clk), .rst_n(rst_n),
     .cur_cfg(cur_cfg_s), .cur_mode(cur_cfg_s.mode),
+    .m2_tile_col_base_g(m2_tile_col_base_g),
     .ifm_rd_en(ifm_rd_en), .ifm_rd_bank_base(ifm_rd_bank_base), .ifm_rd_row_idx(ifm_rd_row_idx),
     .ifm_rd_col_idx(ifm_rd_col_idx), .ifm_rd_valid(ifm_rd_valid), .ifm_rd_data(ifm_rd_data),
     .m1_pass_start_pulse(m1_pass_start_pulse), .m1_chan_done_pulse(m1_chan_done_pulse), .m1_c_iter(m1_c_iter),
@@ -1471,7 +1874,10 @@ module control_unit_top
 
   assign same_mode_drain_done_s = sm_m1_active ?
                                   same_mode_initial_tile_ready_s :
-                                  (sm_m2_active ? (m2_ofm2ifm_active_q && m2_ofm2ifm_ready_q)
+                                  (sm_m2_active ? ((cur_cfg_s.mode == MODE2) &&
+                                                   (next_cfg_s.mode == MODE2) &&
+                                                   m2_ofm2ifm_active_q &&
+                                                   m2_ofm2ifm_ready_q)
                                                 : same_mode_legacy_drain_done_s);
 
   assign sched_next_path_done_s = ((next_valid_s && (cur_cfg_s.mode == MODE1) && (next_cfg_s.mode == MODE2)) ? transition_done_s :
@@ -1500,29 +1906,30 @@ module control_unit_top
   // internally controlled same-mode refill transactions.
   assign ofm_ifm_stream_start = trans_ifm_stream_start_s |
                                   ofm2ifm_stream_start_s |
-                                  m2_ofm2ifm_stream_start_s |
+                                  (((cur_cfg_s.mode == MODE2) && m2_ofm2ifm_stream_start_s) ? 1'b1 : 1'b0) |
                                   sm_stream_start_s;
   assign ofm_ifm_stream_row_base = trans_ifm_stream_start_s ? trans_ifm_stream_row_base_s :
                                    (ofm2ifm_stream_start_s ? ofm2ifm_row_q :
-                                   (m2_ofm2ifm_stream_start_s ? m2_ofm2ifm_row_q : sm_stream_row_base_s));
+                                   (((cur_cfg_s.mode == MODE2) && m2_ofm2ifm_stream_start_s) ? m2_ofm2ifm_row_q : sm_stream_row_base_s));
   assign ofm_ifm_stream_num_rows = trans_ifm_stream_start_s ? trans_ifm_stream_num_rows_s :
-                                   ((ofm2ifm_stream_start_s || m2_ofm2ifm_stream_start_s) ? ROW_W'(1) : sm_stream_num_rows_s);
+                                   ((ofm2ifm_stream_start_s || ((cur_cfg_s.mode == MODE2) && m2_ofm2ifm_stream_start_s)) ? ROW_W'(1) : sm_stream_num_rows_s);
   assign ofm_ifm_stream_col_base = trans_ifm_stream_start_s ? trans_ifm_stream_col_base_s :
                                    (ofm2ifm_stream_start_s ?
                                     (ofm2ifm_col_blk_q[COL_W-1:0] * ofm2ifm_pv_q[COL_W-1:0]) :
-                                   (m2_ofm2ifm_stream_start_s ?
-                                    (m2_ofm2ifm_col_blk_q[COL_W-1:0] * COL_W'(PC_MODE2)) :
+                                   (((cur_cfg_s.mode == MODE2) && m2_ofm2ifm_stream_start_s) ?
+                                    m2_ofm2ifm_col_blk_q[COL_W-1:0] :
                                     sm_stream_col_base_s));
   assign ofm_ifm_stream_m1_row_slot_l = trans_ifm_stream_start_s ? '0 :
                                         (ofm2ifm_stream_start_s ? ofm2ifm_row_slot_q : '0);
   assign ofm_ifm_stream_m1_ch_blk_g   = trans_ifm_stream_start_s ? '0 :
                                         (ofm2ifm_stream_start_s ? ofm2ifm_ch_blk_q : sm_stream_m1_ch_blk_g_s);
   assign ofm_ifm_stream_m2_cgrp_g     = trans_ifm_stream_start_s ? '0 :
-                                        (m2_ofm2ifm_stream_start_s ? m2_ofm2ifm_cgrp_q : sm_stream_m2_cgrp_g_s);
+                                        (((cur_cfg_s.mode == MODE2) && m2_ofm2ifm_stream_start_s) ? m2_ofm2ifm_cgrp_q : sm_stream_m2_cgrp_g_s);
 
   assign control_error_s = m1_sm_error_s |
                            m1q_overflow_q | m1f_overflow_q |
                            m1_sm_free_full_s | m1_sm_ready_full_s |
+                           m2t_ready_overflow_q | m2t_free_overflow_q |
                            (sm_m2_mgr_active_s ?
                             (m2_sm_error_s | m2q_overflow_q |
                              m2_sm_free_full_s | m2_sm_ready_full_s) : 1'b0);
@@ -1541,5 +1948,83 @@ module control_unit_top
     .dbg_layer_idx(dbg_layer_idx), .dbg_mode(dbg_mode),
     .dbg_weight_bank(dbg_weight_bank), .dbg_error_vec(dbg_error_vec)
   );
+
+  logic [31:0] dbg_m2t_cycle_q;
+always_ff @(posedge clk or negedge rst_n) begin
+  if (!rst_n) begin
+    dbg_m2t_cycle_q <= 32'd0;
+  end else begin
+    dbg_m2t_cycle_q <= dbg_m2t_cycle_q + 32'd1;
+
+    // Print every stream fire.
+    if (m2t_stream_fire_s) begin
+      $display("DBG_M2T_FIRE t=%0t cyc=%0d layer=%0d src=%0d dst=%0d row=%0d col=%0d cgrp=%0d runtime=%0b ready_cnt=%0d free_cnt=%0d",
+               $time,
+               dbg_m2t_cycle_q,
+               cur_cfg_s.layer_id,
+               m2_ofm2ifm_src_layer_id_q,
+               m2_ofm2ifm_dst_layer_id_q,
+               m2t_req_row_g_s,
+               m2t_req_col_g_s,
+               m2t_req_cgrp_g_s,
+               m2t_req_is_runtime_s,
+               m2t_ready_count_q,
+               m2t_free_count_q);
+    end
+
+    // Print when a ready token is captured from OFM buffer.
+    for (int ri = 0; ri < PF_MODE2; ri++) begin
+      if (m2_sm_ready_valid[ri]) begin
+        $display("DBG_M2T_READY_IN t=%0t cyc=%0d cur_layer=%0d ri=%0d row=%0d col=%0d cgrp=%0d ready_cnt_before=%0d",
+                 $time,
+                 dbg_m2t_cycle_q,
+                 cur_cfg_s.layer_id,
+                 ri,
+                 m2_sm_ready_row_g[ri],
+                 m2_sm_ready_colbase_g[ri],
+                 m2_sm_ready_bank[ri],
+                 m2t_ready_count_q);
+      end
+    end
+
+    // Print when control is requesting an entry but cannot find ready match.
+    if (m2_ofm2ifm_active_q &&
+        !m2_ofm2ifm_stream_busy_q &&
+        m2t_req_valid_s &&
+        !m2t_ready_match_s &&
+        ((dbg_m2t_cycle_q % 1000) == 0)) begin
+
+      $display("DBG_M2T_WAIT_MATCH t=%0t cyc=%0d cur_layer=%0d src=%0d dst=%0d ready=%0b seen_dst=%0b req_row=%0d req_col=%0d req_cgrp=%0d cursor_row=%0d cursor_col=%0d cursor_cgrp=%0d num_rows=%0d init_cols=%0d num_cgrps=%0d ready_cnt=%0d free_cnt=%0d",
+               $time,
+               dbg_m2t_cycle_q,
+               cur_cfg_s.layer_id,
+               m2_ofm2ifm_src_layer_id_q,
+               m2_ofm2ifm_dst_layer_id_q,
+               m2_ofm2ifm_ready_q,
+               m2_ofm2ifm_seen_dst_q,
+               m2t_req_row_g_s,
+               m2t_req_col_g_s,
+               m2t_req_cgrp_g_s,
+               m2_ofm2ifm_row_q,
+               m2_ofm2ifm_col_blk_q,
+               m2_ofm2ifm_cgrp_q,
+               m2_ofm2ifm_num_rows_q,
+               m2_ofm2ifm_initial_cols_q,
+               m2_ofm2ifm_num_cgrps_q,
+               m2t_ready_count_q,
+               m2t_free_count_q);
+
+      if (m2t_ready_count_q != 0) begin
+        $display("DBG_M2T_READY_HEAD t=%0t src=%0d row=%0d col=%0d cgrp=%0d",
+                 $time,
+                 m2t_ready_fifo[0].src_layer_id,
+                 m2t_ready_fifo[0].row_g,
+                 m2t_ready_fifo[0].col_g,
+                 m2t_ready_fifo[0].cgrp_g);
+      end
+    end
+  end
+end
+
 
 endmodule
