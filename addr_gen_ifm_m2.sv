@@ -116,6 +116,14 @@ module addr_gen_ifm_m2 #(
   logic [15:0] next_block_row;
   logic [15:0] next_block_col;
 
+  // Col-pair successor helpers for the updated Mode-2 traversal order.
+  // These affect only the prefetch target of the next output block; they do
+  // not change tuple order inside one output block or resident-tile validity.
+  logic [15:0] out_col_pair_base_s;
+  logic        out_col_pair_first_s;
+  logic        out_col_pair_has_second_s;
+  logic        out_col_pair_has_next_s;
+
   logic [15:0] block_row_q;
   logic [15:0] block_col_q;   // GLOBAL output column
   logic [15:0] issue_cgroup_q;
@@ -187,21 +195,43 @@ module addr_gen_ifm_m2 #(
     last_row    = (Hout_cur == 0) ? 1'b1 : (out_row == (Hout_cur - 1));
     last_fgroup = (num_fgroup == 0) ? 1'b1 : (f_group == (num_fgroup - 1));
 
+    // Match ce_controller_mode2 col-pair-major, row-inner traversal:
+    //   (row, pair+0) -> (row, pair+1 if valid)
+    //   then next row at pair+0
+    //   after the last row, advance to pair+2.
+    // This changes only successor prefetch order.  The resident-tile read
+    // validity below remains the fixed [tile_col_base_g, tile_col_base_g+PC)
+    // contract from the Test-A-passing design.
+    out_col_pair_base_s       = {out_col[15:1], 1'b0};
+    out_col_pair_first_s      = (out_col == out_col_pair_base_s);
+    out_col_pair_has_second_s = ((out_col_pair_base_s + 16'd1) < Wout_cur);
+    out_col_pair_has_next_s   = ((out_col_pair_base_s + 16'd2) < Wout_cur);
+
     have_next_block = !(last_col && last_row && last_fgroup);
 
     next_block_row = out_row;
     next_block_col = out_col;
-    if (!last_col) begin
-      next_block_col = out_col + 16'd1;
+
+    if (out_col_pair_first_s && out_col_pair_has_second_s) begin
+      // Same row, second column of the current pair.
+      next_block_col = out_col_pair_base_s + 16'd1;
+    end
+    else if (!last_row) begin
+      // Next row, restart at the first column of the same pair.
+      next_block_row = out_row + 16'd1;
+      next_block_col = out_col_pair_base_s;
+    end
+    else if (out_col_pair_has_next_s) begin
+      // Finished all rows of this pair; move to the next pair.
+      next_block_row = 16'd0;
+      next_block_col = out_col_pair_base_s + 16'd2;
     end
     else begin
+      // Finished the spatial raster for this f_group.  If another f_group
+      // remains, have_next_block is still true and the next block starts at
+      // row 0 / col 0, matching the CE controller.
+      next_block_row = 16'd0;
       next_block_col = 16'd0;
-      if (!last_row) begin
-        next_block_row = out_row + 16'd1;
-      end
-      else begin
-        next_block_row = 16'd0;
-      end
     end
   end
 
@@ -452,5 +482,160 @@ module addr_gen_ifm_m2 #(
       end
     end
   end
+
+
+always_ff @(posedge clk or negedge rst_n) begin
+  if (!rst_n) begin
+    // no-op
+  end else begin
+
+    // Print near the right boundary of resident PC window, and print all invalid issues.
+    if (issue_any &&
+        ((!issue_addr_valid) ||
+         (issue_abs_col_g16 + 16'd2 >= (tile_col_base_g + PC)))) begin
+
+      $display("DBG_M2_AG_ISSUE t=%0t start=%0b pass=%0b mac=%0b out_v=%0b fgrp=%0d block_row=%0d block_col=%0d issue_cgrp=%0d ky=%0d kx=%0d abs_row=%0d abs_col=%0d tile_base=%0d PC=%0d col_l_calc=%0d addr_valid=%0b ifm_rd_en=%0b ifm_rd_valid=%0b dr_wr=%0b",
+               $time,
+               start,
+               pass_start_pulse,
+               mac_en,
+               out_valid,
+               f_group,
+               issue_block_row,
+               issue_block_col,
+               issue_cgroup,
+               issue_ky,
+               issue_kx,
+               issue_abs_row16,
+               issue_abs_col_g16,
+               tile_col_base_g,
+               PC,
+               issue_col_sel_l16,
+               issue_addr_valid,
+               ifm_rd_en,
+               ifm_rd_valid,
+               dr_write_en);
+    end
+
+    if (issue_any && !issue_addr_valid) begin
+      if (!cfg_valid) begin
+        $display("DBG_M2_AG_INVALID_REASON t=%0t reason=CFG_INVALID K=%0d C=%0d F=%0d H_in=%0d W_in=%0d Hout=%0d Wout=%0d num_cgroup=%0d num_fgroup=%0d",
+                 $time, K_cur, C_cur, F_cur, H_in, W_in, Hout_cur, Wout_cur,
+                 num_cgroup, num_fgroup);
+      end
+
+      if (issue_bank_base16 >= C_MAX) begin
+        $display("DBG_M2_AG_INVALID_REASON t=%0t reason=BANK_BASE_RANGE bank_base=%0d C_MAX=%0d",
+                 $time, issue_bank_base16, C_MAX);
+      end
+
+      if (issue_abs_row16 >= H_in) begin
+        $display("DBG_M2_AG_INVALID_REASON t=%0t reason=ROW_RANGE abs_row=%0d H_in=%0d",
+                 $time, issue_abs_row16, H_in);
+      end
+
+      if (issue_abs_col_g16 >= W_in) begin
+        $display("DBG_M2_AG_INVALID_REASON t=%0t reason=COL_RANGE abs_col=%0d W_in=%0d",
+                 $time, issue_abs_col_g16, W_in);
+      end
+
+      if (tile_col_base_g >= W_in) begin
+        $display("DBG_M2_AG_INVALID_REASON t=%0t reason=TILE_BASE_RANGE tile_base=%0d W_in=%0d",
+                 $time, tile_col_base_g, W_in);
+      end
+
+      if ((PC == 0) || ((tile_col_base_g % PC) != 0)) begin
+        $display("DBG_M2_AG_INVALID_REASON t=%0t reason=TILE_BASE_ALIGN tile_base=%0d PC=%0d",
+                 $time, tile_col_base_g, PC);
+      end
+
+      if (issue_abs_col_g16 < tile_col_base_g) begin
+        $display("DBG_M2_AG_INVALID_REASON t=%0t reason=COL_BEFORE_TILE abs_col=%0d tile_base=%0d",
+                 $time, issue_abs_col_g16, tile_col_base_g);
+      end
+
+      if (issue_abs_col_g16 >= (tile_col_base_g + PC)) begin
+        $display("DBG_M2_AG_INVALID_REASON t=%0t reason=COL_AFTER_RESIDENT abs_col=%0d tile_base=%0d PC=%0d expected_col_l_mod=%0d",
+                 $time,
+                 issue_abs_col_g16,
+                 tile_col_base_g,
+                 PC,
+                 (PC == 0) ? 16'd0 : (issue_abs_col_g16 % PC));
+      end
+
+      if (issue_col_sel_l16 >= PC) begin
+        $display("DBG_M2_AG_INVALID_REASON t=%0t reason=LOCAL_COL_RANGE col_l=%0d PC=%0d",
+                 $time, issue_col_sel_l16, PC);
+      end
+    end
+
+    if (error) begin
+      $display("DBG_M2_AG_ERROR t=%0t block_row_q=%0d block_col_q=%0d issue_cgroup_q=%0d issue_ky_q=%0d issue_kx_q=%0d waiting=%0b",
+               $time,
+               block_row_q,
+               block_col_q,
+               issue_cgroup_q,
+               issue_ky_q,
+               issue_kx_q,
+               dbg_waiting_for_return);
+    end
+  end
+end
+
+// -----------------------------------------------------------------------------
+// DEBUG: Mode2 addr_gen focused issue monitor
+// Purpose:
+//   Show exact requested abs_col and whether addr_gen blocks it before IFM read.
+// -----------------------------------------------------------------------------
+// Enable with: +define+DBG_M2_ADDRGEN_FOCUS
+// -----------------------------------------------------------------------------
+
+always_ff @(posedge clk or negedge rst_n) begin
+  if (!rst_n) begin
+    // no-op
+  end else begin
+    if (issue_any &&
+        ((!issue_addr_valid) ||
+         (issue_abs_col_g16 >= 16'd28))) begin
+
+      $display("DBG_M2_AG_FOCUS t=%0t issue_any=%0b addr_valid=%0b out_block_row=%0d out_block_col=%0d issue_cgrp=%0d ky=%0d kx=%0d abs_row=%0d abs_col=%0d tile_base=%0d PC=%0d col_l_calc=%0d expected_bank_mod=%0d ifm_rd_en=%0b ifm_rd_valid=%0b dr_wr=%0b",
+               $time,
+               issue_any,
+               issue_addr_valid,
+               issue_block_row,
+               issue_block_col,
+               issue_cgroup,
+               issue_ky,
+               issue_kx,
+               issue_abs_row16,
+               issue_abs_col_g16,
+               tile_col_base_g,
+               PC,
+               issue_col_sel_l16,
+               (PC == 0) ? 16'd0 : (issue_abs_col_g16 % PC),
+               ifm_rd_en,
+               ifm_rd_valid,
+               dr_write_en);
+    end
+
+    if (issue_any && !issue_addr_valid) begin
+      if (issue_abs_col_g16 >= (tile_col_base_g + PC)) begin
+        $display("DBG_M2_AG_BLOCKED_AFTER_RESIDENT t=%0t abs_col=%0d tile_base=%0d PC=%0d expected_bank_mod=%0d",
+                 $time,
+                 issue_abs_col_g16,
+                 tile_col_base_g,
+                 PC,
+                 (PC == 0) ? 16'd0 : (issue_abs_col_g16 % PC));
+      end
+
+      if (issue_col_sel_l16 >= PC) begin
+        $display("DBG_M2_AG_BLOCKED_LOCAL_COL_RANGE t=%0t col_l_calc=%0d PC=%0d",
+                 $time,
+                 issue_col_sel_l16,
+                 PC);
+      end
+    end
+  end
+end
 
 endmodule

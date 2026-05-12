@@ -545,5 +545,51 @@ module ifm_buffer #(
             end
         end
     end
+    
+
+always_ff @(posedge clk or negedge rst_n) begin
+  if (!rst_n) begin
+    // no-op
+  end else begin
+    if (cfg_mode) begin
+
+      if (dma_wr_en && dma_wr_ready) begin
+        $display("DBG_IFM_M2_DMA_WR t=%0t bank_col_l=%0d row=%0d cgrp=%0d keep=%h data0=%0d data1=%0d",
+                 $time,
+                 dma_wr_bank,
+                 dma_wr_row_idx,
+                 dma_wr_col_idx,
+                 dma_wr_keep,
+                 $signed(dma_wr_data[0*DATA_W +: DATA_W]),
+                 $signed(dma_wr_data[1*DATA_W +: DATA_W]));
+      end
+
+      if (ofm_wr_en && ofm_wr_ready) begin
+        $display("DBG_IFM_M2_OFM_WR t=%0t bank_col_l=%0d row=%0d cgrp=%0d keep=%h data0=%0d data1=%0d",
+                 $time,
+                 ofm_wr_bank,
+                 ofm_wr_row_idx,
+                 ofm_wr_col_idx,
+                 ofm_wr_keep,
+                 $signed(ofm_wr_data[0*DATA_W +: DATA_W]),
+                 $signed(ofm_wr_data[1*DATA_W +: DATA_W]));
+      end
+
+      // Focus on reads near the problematic right edge of the resident PC window.
+      if (rd_en && ((rd_col_idx <= 2) || (rd_col_idx >= PC-2))) begin
+        $display("DBG_IFM_M2_RD t=%0t bank_base=%0d row=%0d col_l=%0d cgrp=%0d rd_valid=%0b data0=%0d data1=%0d",
+                 $time,
+                 rd_bank_base,
+                 rd_row_idx,
+                 rd_col_idx,
+                 (PC == 0) ? 0 : (rd_bank_base / PC),
+                 rd_valid,
+                 $signed(rd_data[0*DATA_W +: DATA_W]),
+                 $signed(rd_data[1*DATA_W +: DATA_W]));
+      end
+    end
+  end
+end
+
 
 endmodule

@@ -182,17 +182,27 @@ module local_dataflow_manager
   logic        m2_last_fgroup_s;
   logic        m2_have_next_block_s;
   logic [15:0] m2_next_block_col_s;
+
+  // Mode2 col-pair traversal helpers.  These mirror the spatial cursor
+  // order owned by ce_controller_mode2 and the successor order in
+  // addr_gen_ifm_m2.  They only affect metadata/free visibility; they do
+  // not change the IFM/OFM refill protocol or resident-window policy.
+  logic [15:0] m2_out_col_pair_base_l_s;
+  logic [15:0] m2_out_col_pair_base_g_s;
+  logic        m2_out_col_pair_first_s;
+  logic        m2_out_col_pair_has_second_s;
+  logic        m2_out_col_pair_has_next_s;
+
   logic [15:0] m2_issue_block_col_g_s;
   logic [15:0] m2_issue_block_tile_base_g_s;
   logic [15:0] m2_issue_block_col_mod_s;
   logic [15:0] m2_tile_col_end_g_s;
 
   // Local-view signals passed into addr_gen_ifm_m2.
-  // After ce_controller_mode2 was changed so one start computes only one
-  // resident tile, addr_gen_ifm_m2 must also see a tile-local column space.
-  // Otherwise its internal "next block after out_valid" logic would turn
-  // the last local column of a tile into global_col+1 and falsely prefetch
-  // the next horizontal tile instead of row+1,col_l=0 of the same tile.
+  // addr_gen_ifm_m2 sees a tile-local column space, while this manager keeps
+  // global metadata for free-token visibility.  With the Mode2 col-pair
+  // traversal, successor metadata must follow the same pair/row order, but
+  // the resident-window/read policy remains unchanged.
   logic [15:0] m2_tile_col_count_eff_s;
   logic [15:0] m2_out_col_l_s;
   logic [15:0] m2_ag_wout_cur_s;
@@ -285,8 +295,21 @@ module local_dataflow_manager
     m2_ag_wout_cur_s       = m2_tile_col_count_eff_s;
     m2_ag_tile_col_base_s  = 16'd0;
 
+    // Col-pair-major local position inside the resident tile.
+    // Pair base is always even in tile-local coordinates.
+    m2_out_col_pair_base_l_s   = {m2_out_col_l_s[15:1], 1'b0};
+    m2_out_col_pair_base_g_s   = m2_tile_col_base_g_s + m2_out_col_pair_base_l_s;
+    m2_out_col_pair_first_s    = (m2_out_col_l_s == m2_out_col_pair_base_l_s);
+    m2_out_col_pair_has_second_s =
+        ((m2_out_col_pair_base_l_s + 16'd1) < m2_tile_col_count_eff_s);
+    m2_out_col_pair_has_next_s =
+        ((m2_out_col_pair_base_l_s + 16'd2) < m2_tile_col_count_eff_s);
+
+    // "last_col" here means the current pixel is the last column-position
+    // in the col-pair-major spatial sequence for this resident tile.
     m2_last_col_s    = (m2_tile_col_count_eff_s == 0) ? 1'b1 :
-                       (m2_out_col_g_s >= (m2_tile_col_end_g_s - 16'd1));
+                       (((!m2_out_col_pair_first_s) || !m2_out_col_pair_has_second_s) &&
+                        !m2_out_col_pair_has_next_s);
     m2_last_row_s    = (cur_cfg.h_out == 0) ? 1'b1 : (m2_out_row_g_s == (cur_cfg.h_out - 1));
     m2_last_fgroup_s = (m2_num_fgroup_s == 0) ? 1'b1 : (m2_f_group == (m2_num_fgroup_s - 1));
     m2_have_next_block_s = !(m2_last_col_s && m2_last_row_s && m2_last_fgroup_s);
@@ -314,13 +337,29 @@ module local_dataflow_manager
                               (m2_num_cgrp_s != 16'd0) &&
                               (m2_free_refill_col_g_s < cur_cfg.w_in);
 
-    if (!m2_last_col_s) begin
+    // Col-pair-major successor metadata.  This mirrors the spatial
+    // order in ce_controller_mode2 after the loop-order change:
+    //   (row, pair+0) -> (row, pair+1) if present
+    //   then (row+1, pair+0)
+    //   after the last row, move to pair+2.
+    // This is metadata only.  It does not change the resident IFM window
+    // policy; addr_gen_ifm_m2 still receives tile-local coordinates and
+    // keeps its fixed resident-tile validity check.
+    if ((m2_tile_col_count_eff_s != 16'd0) &&
+        m2_out_col_pair_first_s &&
+        m2_out_col_pair_has_second_s) begin
       m2_next_block_col_s = m2_out_col_g_s + 16'd1;
     end
+    else if (!m2_last_row_s) begin
+      m2_next_block_col_s = m2_out_col_pair_base_g_s;
+    end
+    else if (m2_out_col_pair_has_next_s) begin
+      m2_next_block_col_s = m2_out_col_pair_base_g_s + 16'd2;
+    end
     else begin
-      // Next row of the SAME resident tile starts again at tile_col_base.
-      // Do not jump to the next global PC-wide tile here; the tile scheduler
-      // in control_unit_top starts a new CE tile only after this tile is done.
+      // Spatial sequence is complete for this resident tile.  Keep a safe
+      // in-tile value for debug metadata; m2_have_next_block_s will deassert
+      // once the last f_group also completes.
       m2_next_block_col_s = m2_tile_col_base_g_s;
     end
 
@@ -429,12 +468,10 @@ module local_dataflow_manager
   // m2_tile_col_base_g_s is the GLOBAL base column of the resident IFM tile.
   //
   // Important integration detail:
-  //   ce_controller_mode2 now computes exactly one resident tile per start.
-  //   addr_gen_ifm_m2 still owns a small prefetch FSM that computes the
-  //   successor block on out_valid.  To make that successor wrap from the last
-  //   local column of a tile to row+1,col_l=0, this module feeds addr_gen a
-  //   TILE-LOCAL view of out_col/Wout_cur while retaining GLOBAL metadata for
-  //   free-token visibility.
+  //   ce_controller_mode2 owns the spatial loop order.  After the col-pair
+  //   loop-order change, addr_gen_ifm_m2 is still fed a TILE-LOCAL view of
+  //   out_col/Wout_cur, while this module tracks GLOBAL metadata using the
+  //   same col-pair successor order for free-token/debug visibility.
   // --------------------------------------------------------------------------
   addr_gen_ifm_m2 #(
     .DATA_W (DATA_W),

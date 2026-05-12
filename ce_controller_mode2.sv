@@ -54,13 +54,19 @@ module ce_controller_mode2 #(
   // - Downstream addr_gen_ifm_m2 derives IFM local column as:
   //       ifm_col_l = out_col_global - tile_col_base_g
   //
-  // Mode 2 tile-local loop order per start, aligned with Mode 1:
-  //   for out_row_g
-  //     for out_col_l within resident tile
-  //       for f_group
-  //         for c_group
-  //           for ky
-  //             for kx
+  // Mode 2 tile-local loop order per start after the col-pair update:
+  //   for out_col_pair_l = 0, 2, 4, ... within resident tile
+  //     for out_row_g
+  //       compute out_col_pair_l
+  //       compute out_col_pair_l + 1 if it is still inside the tile
+  //         for f_group
+  //           for c_group
+  //             for ky
+  //               for kx
+  //
+  // This changes only the spatial traversal order.  It does not change
+  // the CE handshake, f_group/c_group order, K loops, resident-tile
+  // contract, IFM/OFM layout, or any refill/stream mechanism.
   //
   // In other words, CE is the single source of GLOBAL spatial
   // coordinates. Downstream ReLU/pooling/OFM write must use out_row/out_col
@@ -142,6 +148,13 @@ module ce_controller_mode2 #(
 
   logic block_start_fire;
 
+  // Col-pair traversal helpers.  These are local to the resident tile.
+  // pair_base_l is always even: 0, 2, 4, ...
+  logic [15:0] out_col_pair_base_l_s;
+  logic        out_col_pair_first_s;
+  logic        out_col_pair_has_second_s;
+  logic        out_col_pair_has_next_s;
+
   // =====================================================
   // Derived runtime values
   // =====================================================
@@ -193,6 +206,16 @@ module ce_controller_mode2 #(
                   (out_col_l_r == tile_col_count_eff - 1);
     last_row    = (out_row_g_r == Hout_cur - 1);
     last_fgroup = (f_group_r == num_fgroup - 1);
+  end
+
+  always_comb begin
+    // Floor current local column to an even column-pair base.
+    out_col_pair_base_l_s   = {out_col_l_r[15:1], 1'b0};
+    out_col_pair_first_s    = (out_col_l_r == out_col_pair_base_l_s);
+    out_col_pair_has_second_s =
+        ((out_col_pair_base_l_s + 16'd1) < tile_col_count_eff);
+    out_col_pair_has_next_s =
+        ((out_col_pair_base_l_s + 16'd2) < tile_col_count_eff);
   end
 
   assign block_start_fire = step_en && tuple_ready;
@@ -304,30 +327,45 @@ module ce_controller_mode2 #(
         end
 
         S_ADVANCE: begin
-          // Mode-1-style order after finishing one GLOBAL output pixel
-          // for the current filter group:
-          //   f_group -> out_col_l -> out_row_g
+          // Spatial order after finishing one GLOBAL output pixel for the
+          // current filter group:
+          //   f_group -> col inside current pair -> row -> next col pair
           //
-          // This keeps all Pf groups for the same spatial pixel adjacent,
-          // then advances to the next pixel. The exported out_col remains
-          // GLOBAL because it is tile_col_base_g + out_col_l_r.
+          // This keeps all PF groups for the same spatial pixel adjacent,
+          // preserves the existing f_group/c_group/K-loop semantics, and
+          // changes only the row/column traversal inside the resident tile.
+          //
+          // Example for one tile:
+          //   (row0,col0), (row0,col1), (row1,col0), (row1,col1), ...
+          //   (row0,col2), (row0,col3), ...
           if (!last_fgroup) begin
             f_group_r <= f_group_r + 1'b1;
           end
           else begin
             f_group_r <= 16'd0;
 
-            if (!last_col) begin
-              out_col_l_r <= out_col_l_r + 1'b1;
+            if (out_col_pair_first_s && out_col_pair_has_second_s) begin
+              // Finish the second column of the current column pair for
+              // the same row before moving to the next row.
+              out_col_l_r <= out_col_pair_base_l_s + 16'd1;
+            end
+            else if (!last_row) begin
+              // Move to the next row and return to the first column of
+              // the current pair.
+              out_row_g_r <= out_row_g_r + 1'b1;
+              out_col_l_r <= out_col_pair_base_l_s;
             end
             else begin
-              out_col_l_r <= 16'd0;
+              // Finished all rows for this column pair.  Move to the next
+              // pair if one exists; otherwise wrap to idle/done on the next
+              // FSM transition.
+              out_row_g_r <= 16'd0;
 
-              if (!last_row) begin
-                out_row_g_r <= out_row_g_r + 1'b1;
+              if (out_col_pair_has_next_s) begin
+                out_col_l_r <= out_col_pair_base_l_s + 16'd2;
               end
               else begin
-                out_row_g_r <= 16'd0;
+                out_col_l_r <= 16'd0;
               end
             end
           end
