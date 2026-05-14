@@ -174,16 +174,24 @@ module transition_manager
   assign cfg_src_mode  = (cur_cfg.mode == MODE2);
   assign cfg_next_mode = 1'b1;  // only mode1 -> mode2 handled here
 
-  assign cfg_h_out_s   = cur_cfg.h_out[ROW_W-1:0];
-  assign cfg_w_out_s   = cur_cfg.w_out[COL_W-1:0];
-  assign cfg_f_out_s   = cur_cfg.f_out[$clog2(F_MAX+1)-1:0];
+  // For M1->M2, the source OFM consumed by the transition is the
+  // completed/final producer feature map, which is exactly the destination
+  // Mode2 layer's IFM geometry.  Do not use raw cur_cfg.h_out/w_out here:
+  // when the Mode1 producer has pooling enabled, cur_cfg.* can describe the
+  // pre-pool convolution output while next_cfg.h_in/w_in/c_in describes the
+  // stored OFM that must be repacked into Mode2 IFM layout.
+  assign cfg_h_out_s   = next_cfg.h_in;
+  assign cfg_w_out_s   = next_cfg.w_in;
+  assign cfg_f_out_s   = next_cfg.c_in;
   assign cfg_pv_next_s = '0; // unused when next mode is mode2
 
-  // Continue across all horizontal mode-2 tiles of the requested row window.
+  // Continue across all horizontal Mode2 input columns of the final producer
+  // OFM / destination IFM.  Bound by cfg_w_out_s (= next_cfg.w_in), not by
+  // raw cur_cfg.w_out.
   always_comb begin
     more_tiles_after_done = 1'b0;
     if ((req_kind_q == REQ_M1_TO_M2) && sub_done) begin
-      more_tiles_after_done = ((active_col_q + PC[COL_W-1:0]) < cur_cfg.w_out[COL_W-1:0]);
+      more_tiles_after_done = ((active_col_q + PC[COL_W-1:0]) < cfg_w_out_s);
     end
   end
 

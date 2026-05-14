@@ -1,0 +1,908 @@
+{
+  "descriptor_schema_version": "cnn_v4_eval_layer_descriptor_v1",
+  "model_name": "efficientnet_b0_dcp18_blockconv_surrogate",
+  "benchmark_kind": "dcp_style_convolutional_workload_surrogate",
+  "dataset": "ImageNet",
+  "input_tensor_logical_layout": "HWC",
+  "input_size_hwc": [
+    224,
+    224,
+    3
+  ],
+  "layer_h_out_w_out_semantics": "conv_h_out/conv_w_out are convolution outputs before optional pooling; post_h/post_w are the next-layer IFM size after pooling",
+  "current_cnn_v4_mapping": {
+    "supported_directly": "standard dense conv2d with groups=1, ReLU, and 2x2 stride2 max-pooling; DSE fields are intentionally null in Step 1",
+    "needs_later_steps": [
+      "DSE fills mode/pv_m1/pf_m1/pc_m2/pf_m2",
+      "DDR address assignment",
+      "PyTorch/NumPy golden generation",
+      "DDR packing"
+    ]
+  },
+  "paper_reported_conv_layers": 18,
+  "num_layers_in_descriptor": 18,
+  "total_ops": 1099908096,
+  "total_gops": 1.099908096,
+  "notes": "EfficientNet-B0 is represented as 18 block-level convolutional workload descriptors to match the DCP-CNN Table I layer count. This is not the exact PyTorch EfficientNet-B0 graph; full MBConv would require expansion 1x1, depthwise, projection 1x1, SE, and skip handling.",
+  "layers": [
+    {
+      "id": 0,
+      "name": "stem_conv3x3",
+      "op_type": "conv2d",
+      "groups": 1,
+      "branch": null,
+      "input_from": null,
+      "h_in": 224,
+      "w_in": 224,
+      "c_in": 3,
+      "f_out": 32,
+      "k": 3,
+      "conv_stride": 2,
+      "pad_top": 1,
+      "pad_bottom": 1,
+      "pad_left": 1,
+      "pad_right": 1,
+      "conv_h_out": 112,
+      "conv_w_out": 112,
+      "relu_en": true,
+      "pool": {
+        "enable": false,
+        "k": 0,
+        "stride": 0,
+        "pad": 0
+      },
+      "post_h": 112,
+      "post_w": 112,
+      "post_c": 32,
+      "ops": 21676032,
+      "dse": {
+        "mode": null,
+        "pv_m1": null,
+        "pf_m1": null,
+        "pc_m2": null,
+        "pf_m2": null
+      },
+      "ddr": {
+        "ifm_ddr_base": null,
+        "wgt_ddr_base": null,
+        "ofm_ddr_base": null
+      },
+      "comment": "DCP-style block-level dense-conv surrogate for EfficientNet-B0; not a full MBConv/depthwise/SE graph.",
+      "cnn_v4_current_rtl_warnings": [
+        "conv stride != 1 may require RTL/source update or preprocessing",
+        "padding != 0 may require RTL/source update or padded input preprocessing"
+      ],
+      "cnn_v4_current_rtl_ready": false
+    },
+    {
+      "id": 1,
+      "name": "mbconv1_k3_block1_surrogate",
+      "op_type": "conv2d",
+      "groups": 1,
+      "branch": null,
+      "input_from": null,
+      "h_in": 112,
+      "w_in": 112,
+      "c_in": 32,
+      "f_out": 16,
+      "k": 3,
+      "conv_stride": 1,
+      "pad_top": 1,
+      "pad_bottom": 1,
+      "pad_left": 1,
+      "pad_right": 1,
+      "conv_h_out": 112,
+      "conv_w_out": 112,
+      "relu_en": true,
+      "pool": {
+        "enable": false,
+        "k": 0,
+        "stride": 0,
+        "pad": 0
+      },
+      "post_h": 112,
+      "post_w": 112,
+      "post_c": 16,
+      "ops": 115605504,
+      "dse": {
+        "mode": null,
+        "pv_m1": null,
+        "pf_m1": null,
+        "pc_m2": null,
+        "pf_m2": null
+      },
+      "ddr": {
+        "ifm_ddr_base": null,
+        "wgt_ddr_base": null,
+        "ofm_ddr_base": null
+      },
+      "comment": "DCP-style block-level dense-conv surrogate for EfficientNet-B0; not a full MBConv/depthwise/SE graph.",
+      "cnn_v4_current_rtl_warnings": [
+        "padding != 0 may require RTL/source update or padded input preprocessing"
+      ],
+      "cnn_v4_current_rtl_ready": false
+    },
+    {
+      "id": 2,
+      "name": "mbconv6_k3_block2_surrogate",
+      "op_type": "conv2d",
+      "groups": 1,
+      "branch": null,
+      "input_from": null,
+      "h_in": 112,
+      "w_in": 112,
+      "c_in": 16,
+      "f_out": 24,
+      "k": 3,
+      "conv_stride": 2,
+      "pad_top": 1,
+      "pad_bottom": 1,
+      "pad_left": 1,
+      "pad_right": 1,
+      "conv_h_out": 56,
+      "conv_w_out": 56,
+      "relu_en": true,
+      "pool": {
+        "enable": false,
+        "k": 0,
+        "stride": 0,
+        "pad": 0
+      },
+      "post_h": 56,
+      "post_w": 56,
+      "post_c": 24,
+      "ops": 21676032,
+      "dse": {
+        "mode": null,
+        "pv_m1": null,
+        "pf_m1": null,
+        "pc_m2": null,
+        "pf_m2": null
+      },
+      "ddr": {
+        "ifm_ddr_base": null,
+        "wgt_ddr_base": null,
+        "ofm_ddr_base": null
+      },
+      "comment": "DCP-style block-level dense-conv surrogate for EfficientNet-B0; not a full MBConv/depthwise/SE graph.",
+      "cnn_v4_current_rtl_warnings": [
+        "conv stride != 1 may require RTL/source update or preprocessing",
+        "padding != 0 may require RTL/source update or padded input preprocessing"
+      ],
+      "cnn_v4_current_rtl_ready": false
+    },
+    {
+      "id": 3,
+      "name": "mbconv6_k3_block3_surrogate",
+      "op_type": "conv2d",
+      "groups": 1,
+      "branch": null,
+      "input_from": null,
+      "h_in": 56,
+      "w_in": 56,
+      "c_in": 24,
+      "f_out": 24,
+      "k": 3,
+      "conv_stride": 1,
+      "pad_top": 1,
+      "pad_bottom": 1,
+      "pad_left": 1,
+      "pad_right": 1,
+      "conv_h_out": 56,
+      "conv_w_out": 56,
+      "relu_en": true,
+      "pool": {
+        "enable": false,
+        "k": 0,
+        "stride": 0,
+        "pad": 0
+      },
+      "post_h": 56,
+      "post_w": 56,
+      "post_c": 24,
+      "ops": 32514048,
+      "dse": {
+        "mode": null,
+        "pv_m1": null,
+        "pf_m1": null,
+        "pc_m2": null,
+        "pf_m2": null
+      },
+      "ddr": {
+        "ifm_ddr_base": null,
+        "wgt_ddr_base": null,
+        "ofm_ddr_base": null
+      },
+      "comment": "DCP-style block-level dense-conv surrogate for EfficientNet-B0; not a full MBConv/depthwise/SE graph.",
+      "cnn_v4_current_rtl_warnings": [
+        "padding != 0 may require RTL/source update or padded input preprocessing"
+      ],
+      "cnn_v4_current_rtl_ready": false
+    },
+    {
+      "id": 4,
+      "name": "mbconv6_k5_block4_surrogate",
+      "op_type": "conv2d",
+      "groups": 1,
+      "branch": null,
+      "input_from": null,
+      "h_in": 56,
+      "w_in": 56,
+      "c_in": 24,
+      "f_out": 40,
+      "k": 5,
+      "conv_stride": 2,
+      "pad_top": 2,
+      "pad_bottom": 2,
+      "pad_left": 2,
+      "pad_right": 2,
+      "conv_h_out": 28,
+      "conv_w_out": 28,
+      "relu_en": true,
+      "pool": {
+        "enable": false,
+        "k": 0,
+        "stride": 0,
+        "pad": 0
+      },
+      "post_h": 28,
+      "post_w": 28,
+      "post_c": 40,
+      "ops": 37632000,
+      "dse": {
+        "mode": null,
+        "pv_m1": null,
+        "pf_m1": null,
+        "pc_m2": null,
+        "pf_m2": null
+      },
+      "ddr": {
+        "ifm_ddr_base": null,
+        "wgt_ddr_base": null,
+        "ofm_ddr_base": null
+      },
+      "comment": "DCP-style block-level dense-conv surrogate for EfficientNet-B0; not a full MBConv/depthwise/SE graph.",
+      "cnn_v4_current_rtl_warnings": [
+        "conv stride != 1 may require RTL/source update or preprocessing",
+        "padding != 0 may require RTL/source update or padded input preprocessing"
+      ],
+      "cnn_v4_current_rtl_ready": false
+    },
+    {
+      "id": 5,
+      "name": "mbconv6_k5_block5_surrogate",
+      "op_type": "conv2d",
+      "groups": 1,
+      "branch": null,
+      "input_from": null,
+      "h_in": 28,
+      "w_in": 28,
+      "c_in": 40,
+      "f_out": 40,
+      "k": 5,
+      "conv_stride": 1,
+      "pad_top": 2,
+      "pad_bottom": 2,
+      "pad_left": 2,
+      "pad_right": 2,
+      "conv_h_out": 28,
+      "conv_w_out": 28,
+      "relu_en": true,
+      "pool": {
+        "enable": false,
+        "k": 0,
+        "stride": 0,
+        "pad": 0
+      },
+      "post_h": 28,
+      "post_w": 28,
+      "post_c": 40,
+      "ops": 62720000,
+      "dse": {
+        "mode": null,
+        "pv_m1": null,
+        "pf_m1": null,
+        "pc_m2": null,
+        "pf_m2": null
+      },
+      "ddr": {
+        "ifm_ddr_base": null,
+        "wgt_ddr_base": null,
+        "ofm_ddr_base": null
+      },
+      "comment": "DCP-style block-level dense-conv surrogate for EfficientNet-B0; not a full MBConv/depthwise/SE graph.",
+      "cnn_v4_current_rtl_warnings": [
+        "padding != 0 may require RTL/source update or padded input preprocessing"
+      ],
+      "cnn_v4_current_rtl_ready": false
+    },
+    {
+      "id": 6,
+      "name": "mbconv6_k3_block6_surrogate",
+      "op_type": "conv2d",
+      "groups": 1,
+      "branch": null,
+      "input_from": null,
+      "h_in": 28,
+      "w_in": 28,
+      "c_in": 40,
+      "f_out": 80,
+      "k": 3,
+      "conv_stride": 2,
+      "pad_top": 1,
+      "pad_bottom": 1,
+      "pad_left": 1,
+      "pad_right": 1,
+      "conv_h_out": 14,
+      "conv_w_out": 14,
+      "relu_en": true,
+      "pool": {
+        "enable": false,
+        "k": 0,
+        "stride": 0,
+        "pad": 0
+      },
+      "post_h": 14,
+      "post_w": 14,
+      "post_c": 80,
+      "ops": 11289600,
+      "dse": {
+        "mode": null,
+        "pv_m1": null,
+        "pf_m1": null,
+        "pc_m2": null,
+        "pf_m2": null
+      },
+      "ddr": {
+        "ifm_ddr_base": null,
+        "wgt_ddr_base": null,
+        "ofm_ddr_base": null
+      },
+      "comment": "DCP-style block-level dense-conv surrogate for EfficientNet-B0; not a full MBConv/depthwise/SE graph.",
+      "cnn_v4_current_rtl_warnings": [
+        "conv stride != 1 may require RTL/source update or preprocessing",
+        "padding != 0 may require RTL/source update or padded input preprocessing"
+      ],
+      "cnn_v4_current_rtl_ready": false
+    },
+    {
+      "id": 7,
+      "name": "mbconv6_k3_block7_surrogate",
+      "op_type": "conv2d",
+      "groups": 1,
+      "branch": null,
+      "input_from": null,
+      "h_in": 14,
+      "w_in": 14,
+      "c_in": 80,
+      "f_out": 80,
+      "k": 3,
+      "conv_stride": 1,
+      "pad_top": 1,
+      "pad_bottom": 1,
+      "pad_left": 1,
+      "pad_right": 1,
+      "conv_h_out": 14,
+      "conv_w_out": 14,
+      "relu_en": true,
+      "pool": {
+        "enable": false,
+        "k": 0,
+        "stride": 0,
+        "pad": 0
+      },
+      "post_h": 14,
+      "post_w": 14,
+      "post_c": 80,
+      "ops": 22579200,
+      "dse": {
+        "mode": null,
+        "pv_m1": null,
+        "pf_m1": null,
+        "pc_m2": null,
+        "pf_m2": null
+      },
+      "ddr": {
+        "ifm_ddr_base": null,
+        "wgt_ddr_base": null,
+        "ofm_ddr_base": null
+      },
+      "comment": "DCP-style block-level dense-conv surrogate for EfficientNet-B0; not a full MBConv/depthwise/SE graph.",
+      "cnn_v4_current_rtl_warnings": [
+        "padding != 0 may require RTL/source update or padded input preprocessing"
+      ],
+      "cnn_v4_current_rtl_ready": false
+    },
+    {
+      "id": 8,
+      "name": "mbconv6_k3_block8_surrogate",
+      "op_type": "conv2d",
+      "groups": 1,
+      "branch": null,
+      "input_from": null,
+      "h_in": 14,
+      "w_in": 14,
+      "c_in": 80,
+      "f_out": 80,
+      "k": 3,
+      "conv_stride": 1,
+      "pad_top": 1,
+      "pad_bottom": 1,
+      "pad_left": 1,
+      "pad_right": 1,
+      "conv_h_out": 14,
+      "conv_w_out": 14,
+      "relu_en": true,
+      "pool": {
+        "enable": false,
+        "k": 0,
+        "stride": 0,
+        "pad": 0
+      },
+      "post_h": 14,
+      "post_w": 14,
+      "post_c": 80,
+      "ops": 22579200,
+      "dse": {
+        "mode": null,
+        "pv_m1": null,
+        "pf_m1": null,
+        "pc_m2": null,
+        "pf_m2": null
+      },
+      "ddr": {
+        "ifm_ddr_base": null,
+        "wgt_ddr_base": null,
+        "ofm_ddr_base": null
+      },
+      "comment": "DCP-style block-level dense-conv surrogate for EfficientNet-B0; not a full MBConv/depthwise/SE graph.",
+      "cnn_v4_current_rtl_warnings": [
+        "padding != 0 may require RTL/source update or padded input preprocessing"
+      ],
+      "cnn_v4_current_rtl_ready": false
+    },
+    {
+      "id": 9,
+      "name": "mbconv6_k5_block9_surrogate",
+      "op_type": "conv2d",
+      "groups": 1,
+      "branch": null,
+      "input_from": null,
+      "h_in": 14,
+      "w_in": 14,
+      "c_in": 80,
+      "f_out": 112,
+      "k": 5,
+      "conv_stride": 1,
+      "pad_top": 2,
+      "pad_bottom": 2,
+      "pad_left": 2,
+      "pad_right": 2,
+      "conv_h_out": 14,
+      "conv_w_out": 14,
+      "relu_en": true,
+      "pool": {
+        "enable": false,
+        "k": 0,
+        "stride": 0,
+        "pad": 0
+      },
+      "post_h": 14,
+      "post_w": 14,
+      "post_c": 112,
+      "ops": 87808000,
+      "dse": {
+        "mode": null,
+        "pv_m1": null,
+        "pf_m1": null,
+        "pc_m2": null,
+        "pf_m2": null
+      },
+      "ddr": {
+        "ifm_ddr_base": null,
+        "wgt_ddr_base": null,
+        "ofm_ddr_base": null
+      },
+      "comment": "DCP-style block-level dense-conv surrogate for EfficientNet-B0; not a full MBConv/depthwise/SE graph.",
+      "cnn_v4_current_rtl_warnings": [
+        "padding != 0 may require RTL/source update or padded input preprocessing"
+      ],
+      "cnn_v4_current_rtl_ready": false
+    },
+    {
+      "id": 10,
+      "name": "mbconv6_k5_block10_surrogate",
+      "op_type": "conv2d",
+      "groups": 1,
+      "branch": null,
+      "input_from": null,
+      "h_in": 14,
+      "w_in": 14,
+      "c_in": 112,
+      "f_out": 112,
+      "k": 5,
+      "conv_stride": 1,
+      "pad_top": 2,
+      "pad_bottom": 2,
+      "pad_left": 2,
+      "pad_right": 2,
+      "conv_h_out": 14,
+      "conv_w_out": 14,
+      "relu_en": true,
+      "pool": {
+        "enable": false,
+        "k": 0,
+        "stride": 0,
+        "pad": 0
+      },
+      "post_h": 14,
+      "post_w": 14,
+      "post_c": 112,
+      "ops": 122931200,
+      "dse": {
+        "mode": null,
+        "pv_m1": null,
+        "pf_m1": null,
+        "pc_m2": null,
+        "pf_m2": null
+      },
+      "ddr": {
+        "ifm_ddr_base": null,
+        "wgt_ddr_base": null,
+        "ofm_ddr_base": null
+      },
+      "comment": "DCP-style block-level dense-conv surrogate for EfficientNet-B0; not a full MBConv/depthwise/SE graph.",
+      "cnn_v4_current_rtl_warnings": [
+        "padding != 0 may require RTL/source update or padded input preprocessing"
+      ],
+      "cnn_v4_current_rtl_ready": false
+    },
+    {
+      "id": 11,
+      "name": "mbconv6_k5_block11_surrogate",
+      "op_type": "conv2d",
+      "groups": 1,
+      "branch": null,
+      "input_from": null,
+      "h_in": 14,
+      "w_in": 14,
+      "c_in": 112,
+      "f_out": 112,
+      "k": 5,
+      "conv_stride": 1,
+      "pad_top": 2,
+      "pad_bottom": 2,
+      "pad_left": 2,
+      "pad_right": 2,
+      "conv_h_out": 14,
+      "conv_w_out": 14,
+      "relu_en": true,
+      "pool": {
+        "enable": false,
+        "k": 0,
+        "stride": 0,
+        "pad": 0
+      },
+      "post_h": 14,
+      "post_w": 14,
+      "post_c": 112,
+      "ops": 122931200,
+      "dse": {
+        "mode": null,
+        "pv_m1": null,
+        "pf_m1": null,
+        "pc_m2": null,
+        "pf_m2": null
+      },
+      "ddr": {
+        "ifm_ddr_base": null,
+        "wgt_ddr_base": null,
+        "ofm_ddr_base": null
+      },
+      "comment": "DCP-style block-level dense-conv surrogate for EfficientNet-B0; not a full MBConv/depthwise/SE graph.",
+      "cnn_v4_current_rtl_warnings": [
+        "padding != 0 may require RTL/source update or padded input preprocessing"
+      ],
+      "cnn_v4_current_rtl_ready": false
+    },
+    {
+      "id": 12,
+      "name": "mbconv6_k5_block12_surrogate",
+      "op_type": "conv2d",
+      "groups": 1,
+      "branch": null,
+      "input_from": null,
+      "h_in": 14,
+      "w_in": 14,
+      "c_in": 112,
+      "f_out": 192,
+      "k": 5,
+      "conv_stride": 2,
+      "pad_top": 2,
+      "pad_bottom": 2,
+      "pad_left": 2,
+      "pad_right": 2,
+      "conv_h_out": 7,
+      "conv_w_out": 7,
+      "relu_en": true,
+      "pool": {
+        "enable": false,
+        "k": 0,
+        "stride": 0,
+        "pad": 0
+      },
+      "post_h": 7,
+      "post_w": 7,
+      "post_c": 192,
+      "ops": 52684800,
+      "dse": {
+        "mode": null,
+        "pv_m1": null,
+        "pf_m1": null,
+        "pc_m2": null,
+        "pf_m2": null
+      },
+      "ddr": {
+        "ifm_ddr_base": null,
+        "wgt_ddr_base": null,
+        "ofm_ddr_base": null
+      },
+      "comment": "DCP-style block-level dense-conv surrogate for EfficientNet-B0; not a full MBConv/depthwise/SE graph.",
+      "cnn_v4_current_rtl_warnings": [
+        "conv stride != 1 may require RTL/source update or preprocessing",
+        "padding != 0 may require RTL/source update or padded input preprocessing",
+        "f_out exceeds current F_max=128 contract"
+      ],
+      "cnn_v4_current_rtl_ready": false
+    },
+    {
+      "id": 13,
+      "name": "mbconv6_k5_block13_surrogate",
+      "op_type": "conv2d",
+      "groups": 1,
+      "branch": null,
+      "input_from": null,
+      "h_in": 7,
+      "w_in": 7,
+      "c_in": 192,
+      "f_out": 192,
+      "k": 5,
+      "conv_stride": 1,
+      "pad_top": 2,
+      "pad_bottom": 2,
+      "pad_left": 2,
+      "pad_right": 2,
+      "conv_h_out": 7,
+      "conv_w_out": 7,
+      "relu_en": true,
+      "pool": {
+        "enable": false,
+        "k": 0,
+        "stride": 0,
+        "pad": 0
+      },
+      "post_h": 7,
+      "post_w": 7,
+      "post_c": 192,
+      "ops": 90316800,
+      "dse": {
+        "mode": null,
+        "pv_m1": null,
+        "pf_m1": null,
+        "pc_m2": null,
+        "pf_m2": null
+      },
+      "ddr": {
+        "ifm_ddr_base": null,
+        "wgt_ddr_base": null,
+        "ofm_ddr_base": null
+      },
+      "comment": "DCP-style block-level dense-conv surrogate for EfficientNet-B0; not a full MBConv/depthwise/SE graph.",
+      "cnn_v4_current_rtl_warnings": [
+        "padding != 0 may require RTL/source update or padded input preprocessing",
+        "c_in exceeds current C_max=128 contract",
+        "f_out exceeds current F_max=128 contract"
+      ],
+      "cnn_v4_current_rtl_ready": false
+    },
+    {
+      "id": 14,
+      "name": "mbconv6_k5_block14_surrogate",
+      "op_type": "conv2d",
+      "groups": 1,
+      "branch": null,
+      "input_from": null,
+      "h_in": 7,
+      "w_in": 7,
+      "c_in": 192,
+      "f_out": 192,
+      "k": 5,
+      "conv_stride": 1,
+      "pad_top": 2,
+      "pad_bottom": 2,
+      "pad_left": 2,
+      "pad_right": 2,
+      "conv_h_out": 7,
+      "conv_w_out": 7,
+      "relu_en": true,
+      "pool": {
+        "enable": false,
+        "k": 0,
+        "stride": 0,
+        "pad": 0
+      },
+      "post_h": 7,
+      "post_w": 7,
+      "post_c": 192,
+      "ops": 90316800,
+      "dse": {
+        "mode": null,
+        "pv_m1": null,
+        "pf_m1": null,
+        "pc_m2": null,
+        "pf_m2": null
+      },
+      "ddr": {
+        "ifm_ddr_base": null,
+        "wgt_ddr_base": null,
+        "ofm_ddr_base": null
+      },
+      "comment": "DCP-style block-level dense-conv surrogate for EfficientNet-B0; not a full MBConv/depthwise/SE graph.",
+      "cnn_v4_current_rtl_warnings": [
+        "padding != 0 may require RTL/source update or padded input preprocessing",
+        "c_in exceeds current C_max=128 contract",
+        "f_out exceeds current F_max=128 contract"
+      ],
+      "cnn_v4_current_rtl_ready": false
+    },
+    {
+      "id": 15,
+      "name": "mbconv6_k5_block15_surrogate",
+      "op_type": "conv2d",
+      "groups": 1,
+      "branch": null,
+      "input_from": null,
+      "h_in": 7,
+      "w_in": 7,
+      "c_in": 192,
+      "f_out": 192,
+      "k": 5,
+      "conv_stride": 1,
+      "pad_top": 2,
+      "pad_bottom": 2,
+      "pad_left": 2,
+      "pad_right": 2,
+      "conv_h_out": 7,
+      "conv_w_out": 7,
+      "relu_en": true,
+      "pool": {
+        "enable": false,
+        "k": 0,
+        "stride": 0,
+        "pad": 0
+      },
+      "post_h": 7,
+      "post_w": 7,
+      "post_c": 192,
+      "ops": 90316800,
+      "dse": {
+        "mode": null,
+        "pv_m1": null,
+        "pf_m1": null,
+        "pc_m2": null,
+        "pf_m2": null
+      },
+      "ddr": {
+        "ifm_ddr_base": null,
+        "wgt_ddr_base": null,
+        "ofm_ddr_base": null
+      },
+      "comment": "DCP-style block-level dense-conv surrogate for EfficientNet-B0; not a full MBConv/depthwise/SE graph.",
+      "cnn_v4_current_rtl_warnings": [
+        "padding != 0 may require RTL/source update or padded input preprocessing",
+        "c_in exceeds current C_max=128 contract",
+        "f_out exceeds current F_max=128 contract"
+      ],
+      "cnn_v4_current_rtl_ready": false
+    },
+    {
+      "id": 16,
+      "name": "mbconv6_k3_block16_surrogate",
+      "op_type": "conv2d",
+      "groups": 1,
+      "branch": null,
+      "input_from": null,
+      "h_in": 7,
+      "w_in": 7,
+      "c_in": 192,
+      "f_out": 320,
+      "k": 3,
+      "conv_stride": 1,
+      "pad_top": 1,
+      "pad_bottom": 1,
+      "pad_left": 1,
+      "pad_right": 1,
+      "conv_h_out": 7,
+      "conv_w_out": 7,
+      "relu_en": true,
+      "pool": {
+        "enable": false,
+        "k": 0,
+        "stride": 0,
+        "pad": 0
+      },
+      "post_h": 7,
+      "post_w": 7,
+      "post_c": 320,
+      "ops": 54190080,
+      "dse": {
+        "mode": null,
+        "pv_m1": null,
+        "pf_m1": null,
+        "pc_m2": null,
+        "pf_m2": null
+      },
+      "ddr": {
+        "ifm_ddr_base": null,
+        "wgt_ddr_base": null,
+        "ofm_ddr_base": null
+      },
+      "comment": "DCP-style block-level dense-conv surrogate for EfficientNet-B0; not a full MBConv/depthwise/SE graph.",
+      "cnn_v4_current_rtl_warnings": [
+        "padding != 0 may require RTL/source update or padded input preprocessing",
+        "c_in exceeds current C_max=128 contract",
+        "f_out exceeds current F_max=128 contract"
+      ],
+      "cnn_v4_current_rtl_ready": false
+    },
+    {
+      "id": 17,
+      "name": "top_conv1x1_surrogate",
+      "op_type": "conv2d",
+      "groups": 1,
+      "branch": null,
+      "input_from": null,
+      "h_in": 7,
+      "w_in": 7,
+      "c_in": 320,
+      "f_out": 1280,
+      "k": 1,
+      "conv_stride": 1,
+      "pad_top": 0,
+      "pad_bottom": 0,
+      "pad_left": 0,
+      "pad_right": 0,
+      "conv_h_out": 7,
+      "conv_w_out": 7,
+      "relu_en": true,
+      "pool": {
+        "enable": false,
+        "k": 0,
+        "stride": 0,
+        "pad": 0
+      },
+      "post_h": 7,
+      "post_w": 7,
+      "post_c": 1280,
+      "ops": 40140800,
+      "dse": {
+        "mode": null,
+        "pv_m1": null,
+        "pf_m1": null,
+        "pc_m2": null,
+        "pf_m2": null
+      },
+      "ddr": {
+        "ifm_ddr_base": null,
+        "wgt_ddr_base": null,
+        "ofm_ddr_base": null
+      },
+      "comment": "DCP-style block-level dense-conv surrogate for EfficientNet-B0; not a full MBConv/depthwise/SE graph.",
+      "cnn_v4_current_rtl_warnings": [
+        "c_in exceeds current C_max=128 contract",
+        "f_out exceeds current F_max=128 contract"
+      ],
+      "cnn_v4_current_rtl_ready": false
+    }
+  ]
+}

@@ -44,16 +44,16 @@ module local_dataflow_manager
   // --------------------------------------------------------------------------
   // Inputs from mode2_compute_top
   //
-  // UPDATED CONTRACT:
+  // FINAL ROLLING CONTRACT:
   // - m2_out_row / m2_out_col are GLOBAL output coordinates.
-  // - IFM buffer mode 2 only holds one WT=PC horizontal tile at a time.
-  // - m2_tile_col_base_g identifies the GLOBAL base column of the currently
-  //   resident tile.  The mode-2 IFM address generator must use this base to
-  //   form the local IFM bank/column address, rather than blindly using
-  //   global_col % PC.
-  //
-  // This keeps mode 1 untouched while making mode 2 tile-resident execution
-  // explicit at the local dataflow boundary.
+  // - Mode2 follows Mode1's scheduler model: layer-level compute scheduling
+  //   plus free-token-driven runtime refill.
+  // - m2_tile_col_base_g is retained only for interface compatibility/debug;
+  //   local dataflow no longer converts output columns into a resident-tile
+  //   local frame.
+  // - The physical IFM Mode2 column slot is rolling:
+  //     col_l = global_col % PC_MODE2.
+  // - Mode1 is intentionally untouched.
   // --------------------------------------------------------------------------
   input  logic [15:0] m2_tile_col_base_g,
 
@@ -244,6 +244,17 @@ module local_dataflow_manager
 
   // --------------------------------------------------------------------------
   // Mode2 follow-Mode1 free-slot metadata
+  //
+  // FINAL ROLLING CONTRACT:
+  // - Mode2 follows Mode1's scheduler model: layer-level compute scheduling and
+  //   free-token-driven runtime refill.
+  // - This manager therefore keeps GLOBAL output coordinates for addr_gen_ifm_m2
+  //   and does not translate them into a resident-tile-local frame.
+  // - The physical IFM Mode2 slot is derived by the rolling mapping
+  //     col_l = global_col % PC_MODE2
+  //   while all bounds are expressed in the consumer layer's IFM geometry
+  //     H_in / W_in / C_in.
+  // - Mode1 logic is intentionally untouched.
   // --------------------------------------------------------------------------
   always_comb begin
     if (PF_MODE2 != 0)
@@ -256,96 +267,66 @@ module local_dataflow_manager
     else
       m2_num_cgrp_s = 16'd0;
 
-    // Tile-window aware successor calculation.  After ce_controller_mode2 was
-    // changed so one start computes only one resident tile, local dataflow must
-    // treat the end of that tile as the end of the local column loop, not as a
-    // request to hold/reload.
-    if (cur_cfg.w_out == 0) begin
-      m2_tile_col_end_g_s = m2_tile_col_base_g_s;
-    end
-    else if ((m2_tile_col_base_g_s + PC_MODE2) < cur_cfg.w_out) begin
-      m2_tile_col_end_g_s = m2_tile_col_base_g_s + PC_MODE2;
-    end
-    else begin
-      m2_tile_col_end_g_s = cur_cfg.w_out;
-    end
+    // Rolling/full-layer view for Mode2.
+    // Control no longer splits Mode2 compute into resident horizontal tiles;
+    // ce_controller/addr_gen see the full output width of the current layer.
+    m2_tile_col_end_g_s       = cur_cfg.w_out;
+    m2_tile_col_count_eff_s   = cur_cfg.w_out;
+    m2_out_col_l_s            = m2_out_col_g_s;
+    m2_ag_wout_cur_s          = cur_cfg.w_out;
+    m2_ag_tile_col_base_s     = 16'd0;
 
-    if ((cur_cfg.w_out == 0) || (m2_tile_col_base_g_s >= cur_cfg.w_out)) begin
-      m2_tile_col_count_eff_s = 16'd0;
-    end
-    else begin
-      m2_tile_col_count_eff_s = m2_tile_col_end_g_s - m2_tile_col_base_g_s;
-    end
-
-    if (m2_out_col_g_s >= m2_tile_col_base_g_s) begin
-      m2_out_col_l_s = m2_out_col_g_s - m2_tile_col_base_g_s;
-    end
-    else begin
-      // Deliberately invalid; addr_gen/local assertions will expose a bad
-      // control/CE tile window instead of silently wrapping.
-      m2_out_col_l_s = 16'hffff;
-    end
-
-    // addr_gen_ifm_m2 is reused in a tile-local coordinate frame:
-    //   out_col      = local column inside current tile
-    //   Wout_cur     = number of output columns in this tile
-    //   tile base    = 0 for the local frame
-    // It still reads the same physical IFM banks, because IFM bank is col_l.
-    // Global tile-base metadata is tracked separately below for free tokens.
-    m2_ag_wout_cur_s       = m2_tile_col_count_eff_s;
-    m2_ag_tile_col_base_s  = 16'd0;
-
-    // Col-pair-major local position inside the resident tile.
-    // Pair base is always even in tile-local coordinates.
-    m2_out_col_pair_base_l_s   = {m2_out_col_l_s[15:1], 1'b0};
-    m2_out_col_pair_base_g_s   = m2_tile_col_base_g_s + m2_out_col_pair_base_l_s;
-    m2_out_col_pair_first_s    = (m2_out_col_l_s == m2_out_col_pair_base_l_s);
+    // Col-pair-major successor metadata, expressed in GLOBAL coordinates.
+    // This remains metadata/debug support only; it does not impose a resident
+    // tile policy on the data path.
+    m2_out_col_pair_base_l_s   = {m2_out_col_g_s[15:1], 1'b0};
+    m2_out_col_pair_base_g_s   = m2_out_col_pair_base_l_s;
+    m2_out_col_pair_first_s    = (m2_out_col_g_s == m2_out_col_pair_base_g_s);
     m2_out_col_pair_has_second_s =
-        ((m2_out_col_pair_base_l_s + 16'd1) < m2_tile_col_count_eff_s);
+        ((m2_out_col_pair_base_g_s + 16'd1) < cur_cfg.w_out);
     m2_out_col_pair_has_next_s =
-        ((m2_out_col_pair_base_l_s + 16'd2) < m2_tile_col_count_eff_s);
+        ((m2_out_col_pair_base_g_s + 16'd2) < cur_cfg.w_out);
 
-    // "last_col" here means the current pixel is the last column-position
-    // in the col-pair-major spatial sequence for this resident tile.
-    m2_last_col_s    = (m2_tile_col_count_eff_s == 0) ? 1'b1 :
+    // "last_col" follows the existing col-pair-major spatial sequence, but
+    // over the full output width instead of a resident tile.
+    m2_last_col_s    = (cur_cfg.w_out == 0) ? 1'b1 :
                        (((!m2_out_col_pair_first_s) || !m2_out_col_pair_has_second_s) &&
                         !m2_out_col_pair_has_next_s);
-    m2_last_row_s    = (cur_cfg.h_out == 0) ? 1'b1 : (m2_out_row_g_s == (cur_cfg.h_out - 1));
-    m2_last_fgroup_s = (m2_num_fgroup_s == 0) ? 1'b1 : (m2_f_group == (m2_num_fgroup_s - 1));
+    m2_last_row_s    = (cur_cfg.h_out == 0) ? 1'b1 :
+                       (m2_out_row_g_s == (cur_cfg.h_out - 1));
+    m2_last_fgroup_s = (m2_num_fgroup_s == 0) ? 1'b1 :
+                       (m2_f_group == (m2_num_fgroup_s - 1));
     m2_have_next_block_s = !(m2_last_col_s && m2_last_row_s && m2_last_fgroup_s);
 
-    // Mode2 free-token timing: the IFM entry is free only after the output
-    // pixel has completed the LAST PF/f-group.  This mirrors Mode1's row-slot
-    // free semantics, but uses Mode2's {row_g, col_g, col_l, cgrp} metadata.
+    // Mode2 free-token timing: emit after the output pixel has completed the
+    // LAST PF/f-group, matching Mode1's "free only after compute consumed"
+    // lifecycle.  The token requests the next global IFM column that reuses
+    // the same rolling physical col_l slot.
     m2_pixel_consumed_last_fgroup_s = (cur_mode == MODE2) &&
                                       m2_ce_out_valid &&
                                       m2_last_fgroup_s;
 
     m2_free_refill_col_g_s = m2_out_col_g_s + PC_MODE2;
-    m2_free_consumed_col_l_s = 16'd0;
-    m2_free_consumed_col_in_tile_s = 1'b0;
-    if ((m2_out_col_g_s >= m2_tile_col_base_g_s) &&
-        (m2_out_col_g_s <  (m2_tile_col_base_g_s + PC_MODE2))) begin
-      m2_free_consumed_col_l_s = m2_out_col_g_s - m2_tile_col_base_g_s;
+    if (PC_MODE2 != 0) begin
+      m2_free_consumed_col_l_s = m2_out_col_g_s % PC_MODE2;
       m2_free_consumed_col_in_tile_s = 1'b1;
     end
+    else begin
+      m2_free_consumed_col_l_s = 16'd0;
+      m2_free_consumed_col_in_tile_s = 1'b0;
+    end
 
-    // Refill is needed only if the same physical col_l slot maps to another
-    // valid consumer-IFM global column. Bounds are consumer IFM bounds.
+    // Refill bounds use consumer IFM geometry, not output geometry and not a
+    // resident tile window.  The compute output coordinate is already valid
+    // when m2_ce_out_valid is asserted; row is still bounded defensively here.
     m2_free_refill_needed_s = m2_pixel_consumed_last_fgroup_s &&
                               m2_free_consumed_col_in_tile_s &&
                               (m2_num_cgrp_s != 16'd0) &&
+                              (m2_out_row_g_s < cur_cfg.h_in) &&
                               (m2_free_refill_col_g_s < cur_cfg.w_in);
 
-    // Col-pair-major successor metadata.  This mirrors the spatial
-    // order in ce_controller_mode2 after the loop-order change:
-    //   (row, pair+0) -> (row, pair+1) if present
-    //   then (row+1, pair+0)
-    //   after the last row, move to pair+2.
-    // This is metadata only.  It does not change the resident IFM window
-    // policy; addr_gen_ifm_m2 still receives tile-local coordinates and
-    // keeps its fixed resident-tile validity check.
-    if ((m2_tile_col_count_eff_s != 16'd0) &&
+    // Col-pair-major successor metadata over the full output layer.
+    if ((cur_cfg.w_out != 0) &&
         m2_out_col_pair_first_s &&
         m2_out_col_pair_has_second_s) begin
       m2_next_block_col_s = m2_out_col_g_s + 16'd1;
@@ -357,19 +338,14 @@ module local_dataflow_manager
       m2_next_block_col_s = m2_out_col_pair_base_g_s + 16'd2;
     end
     else begin
-      // Spatial sequence is complete for this resident tile.  Keep a safe
-      // in-tile value for debug metadata; m2_have_next_block_s will deassert
-      // once the last f_group also completes.
-      m2_next_block_col_s = m2_tile_col_base_g_s;
+      m2_next_block_col_s = 16'd0;
     end
 
-    // Match the block-column used by addr_gen_ifm_m2 for the read issued
-    // in the current cycle:
-    // - first issue after start uses resident tile base
-    // - first issue after out_valid uses next_block_col within this tile
-    // - all other issues stay in the current block
+    // Debug/metadata reconstruction for the read issued in the current cycle.
+    // Under the rolling contract there is no resident tile base; the physical
+    // local IFM column is global_col % PC_MODE2.
     if (m2_start) begin
-      m2_issue_block_col_g_s = m2_tile_col_base_g_s;
+      m2_issue_block_col_g_s = 16'd0;
     end
     else if (m2_meta_stream_active_q && m2_ce_out_valid && m2_have_next_block_s) begin
       m2_issue_block_col_g_s = m2_next_block_col_s;
@@ -378,21 +354,14 @@ module local_dataflow_manager
       m2_issue_block_col_g_s = m2_meta_block_col_q;
     end
 
-    // The resident tile base comes from top-level control.  Do not infer it
-    // from the output column with /PC here; doing so hides bugs where compute
-    // advances beyond the tile actually loaded in IFM buffer.
-    m2_issue_block_tile_base_g_s = m2_tile_col_base_g_s;
-    m2_issue_block_in_tile_s     = 1'b0;
+    m2_issue_block_tile_base_g_s = 16'd0;
+    m2_issue_block_in_tile_s     = (PC_MODE2 != 0) &&
+                                   (m2_issue_block_col_g_s < cur_cfg.w_in);
 
-    if ((PC_MODE2 != 0) &&
-        (m2_issue_block_col_g_s >= m2_tile_col_base_g_s) &&
-        (m2_issue_block_col_g_s <  (m2_tile_col_base_g_s + PC_MODE2))) begin
-      m2_issue_block_col_mod_s = m2_issue_block_col_g_s - m2_tile_col_base_g_s;
-      m2_issue_block_in_tile_s = 1'b1;
-    end
-    else begin
+    if (PC_MODE2 != 0)
+      m2_issue_block_col_mod_s = m2_issue_block_col_g_s % PC_MODE2;
+    else
       m2_issue_block_col_mod_s = 16'd0;
-    end
   end
 
   // --------------------------------------------------------------------------
@@ -465,13 +434,9 @@ module local_dataflow_manager
   // Mode-2 local IFM feeder
   //
   // By contract, m2_out_row_g_s / m2_out_col_g_s are GLOBAL coordinates.
-  // m2_tile_col_base_g_s is the GLOBAL base column of the resident IFM tile.
-  //
-  // Important integration detail:
-  //   ce_controller_mode2 owns the spatial loop order.  After the col-pair
-  //   loop-order change, addr_gen_ifm_m2 is still fed a TILE-LOCAL view of
-  //   out_col/Wout_cur, while this module tracks GLOBAL metadata using the
-  //   same col-pair successor order for free-token/debug visibility.
+  // Mode2 now follows Mode1's scheduler model, so addr_gen_ifm_m2 is fed the
+  // full-layer/global output coordinate frame.  The rolling physical IFM slot
+  // is selected downstream as global_col % PC_MODE2.
   // --------------------------------------------------------------------------
   addr_gen_ifm_m2 #(
     .DATA_W (DATA_W),
@@ -621,13 +586,11 @@ module local_dataflow_manager
       m2_boundary_pending_col_q <= 16'd0;
 
       // Track the GLOBAL block-column currently being prefetched by
-      // addr_gen_ifm_m2 so that the returned local column can be lifted back
-      // to a GLOBAL IFM column.
+      // addr_gen_ifm_m2 for debug/metadata.  There is no resident tile base
+      // in the rolling contract.
       if (m2_start) begin
         m2_meta_stream_active_q <= 1'b1;
-        // GLOBAL metadata follows the resident tile base, even though the
-        // addr_gen instance below sees a tile-local out_col view.
-        m2_meta_block_col_q     <= m2_tile_col_base_g_s;
+        m2_meta_block_col_q     <= 16'd0;
       end
       else if (m2_meta_stream_active_q && m2_ce_out_valid) begin
         if (m2_have_next_block_s)
@@ -698,11 +661,9 @@ module local_dataflow_manager
   // --------------------------------------------------------------------------
   // Status / backpressure
   //
-  // In the current design, only mode 1 requires coarse hold of the compute
-  // path while addr_gen_ifm_m1 is busy refilling data_register for the next
-  // channel. Mode 2 now runs inside an explicit tile window selected by
-  // control_unit_top/ce_controller_mode2, so local dataflow must not hold the
-  // compute path at tile boundaries.
+  // Mode1 behavior is unchanged.  Mode2 follows the same lifecycle principle:
+  // hold only while a free-token event is being serialized so control_unit_top
+  // can observe every cgrp refill request.  There is no tile-boundary hold.
   // --------------------------------------------------------------------------
   // Mode1 behavior is unchanged.  Mode2 asserts a narrow hold only while
   // serializing cgrp free events so no compute-consumed slot is dropped.
@@ -736,22 +697,18 @@ module local_dataflow_manager
         $error("local_dataflow_manager: cur_cfg.pf_m2 (%0d) != PF_MODE2 parameter (%0d).",
                cur_cfg.pf_m2, PF_MODE2);
       end
-      if ((PC_MODE2 != 0) && ((m2_tile_col_base_g_s % PC_MODE2) != 0)) begin
-        $error("local_dataflow_manager: m2_tile_col_base_g (%0d) is not aligned to PC_MODE2 (%0d).",
-               m2_tile_col_base_g_s, PC_MODE2);
+      if ((cur_cfg.w_out != 0) && (m2_out_col_g_s >= cur_cfg.w_out)) begin
+        $error("local_dataflow_manager: mode-2 output col (%0d) is outside Wout_cur (%0d).",
+               m2_out_col_g_s, cur_cfg.w_out);
       end
-      if (m2_tile_col_base_g_s >= cur_cfg.w_in) begin
-        $error("local_dataflow_manager: m2_tile_col_base_g (%0d) is outside current W_in (%0d).",
-               m2_tile_col_base_g_s, cur_cfg.w_in);
+      if ((cur_cfg.h_out != 0) && (m2_out_row_g_s >= cur_cfg.h_out)) begin
+        $error("local_dataflow_manager: mode-2 output row (%0d) is outside Hout_cur (%0d).",
+               m2_out_row_g_s, cur_cfg.h_out);
       end
-      if (!m2_issue_block_in_tile_s) begin
-        $error("local_dataflow_manager: first mode-2 output col (%0d) is outside resident tile base=%0d width=%0d.",
-               m2_out_col_g_s, m2_tile_col_base_g_s, PC_MODE2);
+      if ((PC_MODE2 != 0) && (m2_free_consumed_col_l_s != (m2_out_col_g_s % PC_MODE2))) begin
+        $error("local_dataflow_manager: rolling col_l mismatch for out_col=%0d PC=%0d col_l=%0d.",
+               m2_out_col_g_s, PC_MODE2, m2_free_consumed_col_l_s);
       end
-      // Note: the Mode2 free-event timing is exact for the current K=1
-      // same-mode refill tests.  Wider kernels require halo-aware free-slot
-      // qualification because one IFM entry can be used by multiple output
-      // windows.  Do not turn this into a Mode1 check.
     end
   end
 `endif

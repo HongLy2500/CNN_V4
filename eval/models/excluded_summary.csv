@@ -1,0 +1,2 @@
+model_name,benchmark_kind,paper_reported_conv_layers,num_layers_in_descriptor,total_gops,max_h,max_w,max_c_in,max_f_out,num_current_rtl_ready_layers,num_layers_with_warnings,exclusion_reason
+mobilenet_v1_conv28_excluded_depthwise,excluded_depthwise_not_main_evaluation,28,28,1.137481,224,224,1024,1024,3,25,MobileNet-v1 requires native depthwise/grouped convolution support; excluded from main evaluation.

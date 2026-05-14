@@ -800,18 +800,48 @@ module ofm_buffer #(
                         end
 
                         STRM_M1_TO_M2: begin
-                            if (strm_row_q + 1 < strm_num_rows_q) begin
-                                strm_row_q <= strm_row_q + 1'b1;
+                            // M1->M2 transition repacks a completed Mode1 OFM
+                            // into Mode2 IFM entries.  Keep the Mode1/M2 direct
+                            // stream lifecycles untouched, but walk the M2
+                            // destination entry space here:
+                            //   {row_g, global_col_g, cgrp_g}
+                            // where strm_colgrp_q is the local column offset
+                            // from strm_col_base_q and strm_ch_q is cgrp_g.
+                            integer m1m2_num_cols;
+                            integer m1m2_num_cgrps;
+
+                            if (strm_col_base_q >= w_out_q)
+                                m1m2_num_cols = 0;
+                            else if ((strm_col_base_q + PC) <= w_out_q)
+                                m1m2_num_cols = PC;
+                            else
+                                m1m2_num_cols = w_out_q - strm_col_base_q;
+
+                            m1m2_num_cgrps = (PC == 0) ? 0 : ceil_div_u32(f_out_q, PC);
+
+                            if ((m1m2_num_cols <= 0) || (m1m2_num_cgrps <= 0)) begin
+                                strm_active_q   <= 1'b0;
+                                strm_mode_q     <= STRM_IDLE;
+                                ifm_stream_done <= 1'b1;
+                            end
+                            else if (strm_ch_q + 1 < m1m2_num_cgrps) begin
+                                strm_ch_q <= strm_ch_q + 1'b1;
                             end
                             else begin
-                                strm_row_q <= '0;
-                                if (strm_ch_q + 1 < f_out_q) begin
-                                    strm_ch_q <= strm_ch_q + 1'b1;
+                                strm_ch_q <= '0;
+                                if (strm_colgrp_q + 1 < m1m2_num_cols) begin
+                                    strm_colgrp_q <= strm_colgrp_q + 1'b1;
                                 end
                                 else begin
-                                    strm_active_q   <= 1'b0;
-                                    strm_mode_q     <= STRM_IDLE;
-                                    ifm_stream_done <= 1'b1;
+                                    strm_colgrp_q <= '0;
+                                    if (strm_row_q + 1 < strm_num_rows_q) begin
+                                        strm_row_q <= strm_row_q + 1'b1;
+                                    end
+                                    else begin
+                                        strm_active_q   <= 1'b0;
+                                        strm_mode_q     <= STRM_IDLE;
+                                        ifm_stream_done <= 1'b1;
+                                    end
                                 end
                             end
                         end
@@ -1284,22 +1314,63 @@ module ofm_buffer #(
                 end
 
                 STRM_M1_TO_M2: begin
-                    abs_row_v       = strm_row_base_q + strm_row_q;
-                    expected_keep_v = calc_keep_mask(PC, strm_col_base_q, w_out_q);
-                    stream_bank_v   = strm_ch_q[BANK_W-1:0];
+                    // M1->M2 transition layout conversion.
+                    // Source is completed Mode1 OFM storage:
+                    //   bank = output channel, lane = spatial pixel within source pack.
+                    // Destination is Mode2 IFM storage:
+                    //   bank = global_col % PC, col_idx = cgrp, lane = channel pc_l.
+                    // Therefore this path must transpose channel banks into data lanes
+                    // for one exact destination entry {row_g, global_col_g, cgrp_g}.
+                    abs_row_v      = strm_row_base_q + strm_row_q;
+                    abs_col_base_v = strm_col_base_q + strm_colgrp_q; // exact global col
+                    phys_grp_v     = (src_pack_q == 0) ? '0 : (abs_col_base_v / src_pack_q);
+                    phys_addr_v    = ofm_phys_addr(abs_row_v, phys_grp_v);
+                    stream_bank_v  = (PC == 0) ? '0 : (abs_col_base_v % PC); // dst IFM bank = col_l
 
-                    if ((strm_ch_q < f_out_q) &&
-                        (strm_row_q < strm_num_rows_q) &&
-                        (abs_row_v < h_out_q) &&
-                        layer_write_done_q) begin
-                        word_ready_v  = 1'b1;
-                        stream_word_v = build_special_m1_to_m2_word(stream_bank_v, abs_row_v, strm_col_base_q, w_out_q, src_pack_q, stored_groups_q, layer_tag_q);
+                    m2_chan_keep_v      = '0;
+                    m2_pack_word_v      = '0;
+                    m2_pack_ready_v     = 1'b1;
+                    m2_pack_have_lane_v = 1'b0;
+
+                    for (m2_lane_v = 0; m2_lane_v < PV_MAX; m2_lane_v++) begin
+                        if (m2_lane_v < PC) begin
+                            m2_ch_g_v     = (strm_ch_q * PC) + m2_lane_v; // src channel = cgrp*PC + lane
+                            m2_src_grp_v  = (src_pack_q == 0) ? 0 : (abs_col_base_v / src_pack_q);
+                            m2_src_lane_v = (src_pack_q == 0) ? 0 : (abs_col_base_v % src_pack_q);
+                            m2_src_addr_v = ofm_phys_addr(abs_row_v, m2_src_grp_v);
+
+                            if ((m2_ch_g_v < f_out_q) &&
+                                (strm_row_q < strm_num_rows_q) &&
+                                (abs_row_v < h_out_q) &&
+                                (abs_col_base_v < w_out_q)) begin
+                                m2_chan_keep_v[m2_lane_v] = 1'b1;
+                                m2_pack_have_lane_v = 1'b1;
+
+                                if ((m2_src_grp_v < stored_groups_q) &&
+                                    (m2_src_addr_v < DEPTH) &&
+                                    (m2_src_lane_v < PV_MAX) &&
+                                    (mem_tag[m2_ch_g_v][m2_src_addr_v] == layer_tag_q) &&
+                                    mem_fill[m2_ch_g_v][m2_src_addr_v][m2_src_lane_v]) begin
+                                    m2_pack_word_v[m2_lane_v*DATA_W +: DATA_W] =
+                                        mem_data[m2_ch_g_v][m2_src_addr_v][m2_src_lane_v*DATA_W +: DATA_W];
+                                end
+                                else begin
+                                    m2_pack_ready_v = 1'b0;
+                                end
+                            end
+                        end
+                    end
+
+                    if (layer_write_done_q && m2_pack_have_lane_v && m2_pack_ready_v) begin
+                        word_ready_v    = 1'b1;
+                        stream_word_v   = m2_pack_word_v;
+                        expected_keep_v = m2_chan_keep_v;
                     end
 
                     ifm_ofm_wr_en      = word_ready_v;
                     ifm_ofm_wr_bank    = stream_bank_v;
                     ifm_ofm_wr_row_idx = abs_row_v[ROW_W-1:0];
-                    ifm_ofm_wr_col_idx = '0;
+                    ifm_ofm_wr_col_idx = strm_ch_q[COLIDX_W-1:0]; // cgrp
                     ifm_ofm_wr_data    = stream_word_v;
                     ifm_ofm_wr_keep    = expected_keep_v;
                 end

@@ -14,15 +14,15 @@ module addr_gen_ifm_m2 #(
   // --------------------------------------------------
   // Runtime configuration for current mode-2 layer / tile
   //
-  // UPDATED CONTRACT:
+  // UPDATED ROLLING-BUFFER CONTRACT:
   // - ifm_buffer is configured in mode 2
   // - input out_row/out_col are GLOBAL output coordinates
-  // - local tile coordinate is derived from the explicit resident tile
-  //   base supplied by local_dataflow_manager/control:
-  //       col_l = global_input_col - tile_col_base_g
-  // - the generator rejects reads outside the currently resident WT=PC tile;
-  //   this prevents the old behavior where global_col % PC silently wrapped
-  //   to tile 0 when compute crossed a tile boundary.
+  // - Mode-2 IFM uses rolling physical column slots:
+  //       col_l = global_input_col % PC
+  // - address legality is bounded by the current layer IFM geometry
+  //   H_in/W_in/C_in, not by a resident horizontal tile window.
+  // - This mirrors Mode1's scheduler model: compute sees layer/global
+  //   coordinates while refill updates the reusable physical slots.
   // --------------------------------------------------
   input  logic [3:0] K_cur,
   input  logic [7:0] C_cur,
@@ -32,11 +32,10 @@ module addr_gen_ifm_m2 #(
   input  logic [15:0] Hout_cur,
   input  logic [15:0] Wout_cur,
 
-  // GLOBAL column base of the horizontal Mode-2 tile currently resident
-  // in IFM buffer. Mode 2 IFM buffer stores only one WT=PC tile at a time:
-  //   bank = local column col_l = global_col - tile_col_base_g
-  //   addr = row*C_GRP_MAX + cgrp
-  //   lane = channel within PC group
+  // Compatibility input from the previous resident-tile interface.
+  // The finalized Mode-2 rolling-buffer contract does not use this value
+  // for read legality or physical bank selection; physical column slot is
+  // derived from the global IFM column as (global_col % PC).
   input  logic [15:0] tile_col_base_g,
 
   // --------------------------------------------------
@@ -118,7 +117,7 @@ module addr_gen_ifm_m2 #(
 
   // Col-pair successor helpers for the updated Mode-2 traversal order.
   // These affect only the prefetch target of the next output block; they do
-  // not change tuple order inside one output block or resident-tile validity.
+  // not change tuple order inside one output block or rolling-slot legality.
   logic [15:0] out_col_pair_base_s;
   logic        out_col_pair_first_s;
   logic        out_col_pair_has_second_s;
@@ -150,7 +149,7 @@ module addr_gen_ifm_m2 #(
   logic [15:0] issue_abs_row16;
   logic [15:0] issue_abs_col_g16;    // GLOBAL IFM input column
   logic [15:0] issue_tile_base_g16;  // inferred tile base (GLOBAL)
-  logic [15:0] issue_col_sel_l16;    // LOCAL IFM column inside current tile
+  logic [15:0] issue_col_sel_l16;    // rolling IFM physical column slot
   logic        issue_addr_valid;
   logic        final_out_valid;
 
@@ -199,9 +198,9 @@ module addr_gen_ifm_m2 #(
     //   (row, pair+0) -> (row, pair+1 if valid)
     //   then next row at pair+0
     //   after the last row, advance to pair+2.
-    // This changes only successor prefetch order.  The resident-tile read
-    // validity below remains the fixed [tile_col_base_g, tile_col_base_g+PC)
-    // contract from the Test-A-passing design.
+    // This changes only successor prefetch order.  Read legality below is
+    // full-layer IFM legality; physical slot selection is rolling
+    // (abs_col % PC), not resident-tile based.
     out_col_pair_base_s       = {out_col[15:1], 1'b0};
     out_col_pair_first_s      = (out_col == out_col_pair_base_s);
     out_col_pair_has_second_s = ((out_col_pair_base_s + 16'd1) < Wout_cur);
@@ -324,48 +323,40 @@ module addr_gen_ifm_m2 #(
   //   bank_base      = c_group * PC
   //   abs_row_g      = out_row_g(block) + ky
   //   abs_col_g      = out_col_g(block) + kx
-  //   tile_base_g    = explicit tile_col_base_g from local_dataflow_manager
-  //   col_sel_local  = abs_col_g - tile_col_base_g
+  //   col_sel_local  = abs_col_g % PC
   //
-  // This keeps GLOBAL and LOCAL meanings separate:
-  // - abs_row_g / abs_col_g are feature-map coordinates
-  // - col_sel_local is the IFM-buffer physical bank index for mode 2
+  // This keeps GLOBAL and PHYSICAL meanings separate:
+  // - abs_row_g / abs_col_g are full feature-map coordinates
+  // - col_sel_local is the rolling IFM-buffer physical column slot
   //
-  // Tile-resident policy:
-  // - only columns inside [tile_col_base_g, tile_col_base_g + PC) may be read.
-  // - do NOT use abs_col_g % PC here, because that would silently read from
-  //   the wrong resident tile for W > PC.
-  // - K>1 halo/cross-tile behavior must be handled by tile scheduling/control;
-  //   this module intentionally flags such out-of-resident-tile accesses.
+  // Rolling-buffer policy:
+  // - legality is checked against H_in/W_in/C_in-derived bounds only
+  // - physical slot wraps by modulo PC, matching Mode2 OFM->IFM refill
+  // - tile_col_base_g is intentionally not used for read legality
   // --------------------------------------------------
   always_comb begin
     issue_bank_base16 = issue_cgroup * PC;
     issue_abs_row16   = issue_block_row + issue_ky;
     issue_abs_col_g16 = issue_block_col + issue_kx;
 
+    // Kept only for debug/interface compatibility with older tile-based code.
     issue_tile_base_g16 = tile_col_base_g;
 
-    if (issue_abs_col_g16 >= tile_col_base_g)
-      issue_col_sel_l16 = issue_abs_col_g16 - tile_col_base_g;
+    if (PC != 0)
+      issue_col_sel_l16 = issue_abs_col_g16 % PC;
     else
       issue_col_sel_l16 = 16'hffff;
 
     issue_addr_valid  = 1'b1;
     if (!issue_any)
       issue_addr_valid = 1'b0;
+    else if (PC == 0)
+      issue_addr_valid = 1'b0;
     else if (issue_bank_base16 >= C_MAX)
       issue_addr_valid = 1'b0;
     else if (issue_abs_row16 >= H_in)
       issue_addr_valid = 1'b0;
     else if (issue_abs_col_g16 >= W_in)
-      issue_addr_valid = 1'b0;
-    else if (tile_col_base_g >= W_in)
-      issue_addr_valid = 1'b0;
-    else if ((PC == 0) || ((tile_col_base_g % PC) != 0))
-      issue_addr_valid = 1'b0;
-    else if (issue_abs_col_g16 < tile_col_base_g)
-      issue_addr_valid = 1'b0;
-    else if (issue_abs_col_g16 >= (tile_col_base_g + PC))
       issue_addr_valid = 1'b0;
     else if (issue_col_sel_l16 >= PC)
       issue_addr_valid = 1'b0;
@@ -406,16 +397,12 @@ module addr_gen_ifm_m2 #(
   assign final_out_valid = stream_active_q && out_valid && !have_next_block;
 
 `ifndef SYNTHESIS
-  // Simulation-only sanity checks for the explicit resident tile contract.
+  // Simulation-only sanity check for the rolling-buffer contract.
+  // tile_col_base_g is kept as an interface-compatibility input only.
   always_ff @(posedge clk) begin
     if (rst_n && cfg_valid && start) begin
-      if ((PC != 0) && ((tile_col_base_g % PC) != 0)) begin
-        $display("ERROR: addr_gen_ifm_m2 tile_col_base_g=%0d is not PC-aligned PC=%0d at t=%0t",
-                 tile_col_base_g, PC, $time);
-      end
-      if (tile_col_base_g >= W_in) begin
-        $display("ERROR: addr_gen_ifm_m2 tile_col_base_g=%0d outside W_in=%0d at t=%0t",
-                 tile_col_base_g, W_in, $time);
+      if (PC == 0) begin
+        $display("ERROR: addr_gen_ifm_m2 PC is zero at t=%0t", $time);
       end
     end
   end
@@ -489,12 +476,12 @@ always_ff @(posedge clk or negedge rst_n) begin
     // no-op
   end else begin
 
-    // Print near the right boundary of resident PC window, and print all invalid issues.
+    // Print near the rolling PC-slot wrap boundary, and print all invalid issues.
     if (issue_any &&
         ((!issue_addr_valid) ||
-         (issue_abs_col_g16 + 16'd2 >= (tile_col_base_g + PC)))) begin
+         (issue_col_sel_l16 + 16'd2 >= PC))) begin
 
-      $display("DBG_M2_AG_ISSUE t=%0t start=%0b pass=%0b mac=%0b out_v=%0b fgrp=%0d block_row=%0d block_col=%0d issue_cgrp=%0d ky=%0d kx=%0d abs_row=%0d abs_col=%0d tile_base=%0d PC=%0d col_l_calc=%0d addr_valid=%0b ifm_rd_en=%0b ifm_rd_valid=%0b dr_wr=%0b",
+      $display("DBG_M2_AG_ISSUE t=%0t start=%0b pass=%0b mac=%0b out_v=%0b fgrp=%0d block_row=%0d block_col=%0d issue_cgrp=%0d ky=%0d kx=%0d abs_row=%0d abs_col=%0d compat_tile_base=%0d PC=%0d rolling_col_l=%0d addr_valid=%0b ifm_rd_en=%0b ifm_rd_valid=%0b dr_wr=%0b",
                $time,
                start,
                pass_start_pulse,
@@ -539,28 +526,8 @@ always_ff @(posedge clk or negedge rst_n) begin
                  $time, issue_abs_col_g16, W_in);
       end
 
-      if (tile_col_base_g >= W_in) begin
-        $display("DBG_M2_AG_INVALID_REASON t=%0t reason=TILE_BASE_RANGE tile_base=%0d W_in=%0d",
-                 $time, tile_col_base_g, W_in);
-      end
-
-      if ((PC == 0) || ((tile_col_base_g % PC) != 0)) begin
-        $display("DBG_M2_AG_INVALID_REASON t=%0t reason=TILE_BASE_ALIGN tile_base=%0d PC=%0d",
-                 $time, tile_col_base_g, PC);
-      end
-
-      if (issue_abs_col_g16 < tile_col_base_g) begin
-        $display("DBG_M2_AG_INVALID_REASON t=%0t reason=COL_BEFORE_TILE abs_col=%0d tile_base=%0d",
-                 $time, issue_abs_col_g16, tile_col_base_g);
-      end
-
-      if (issue_abs_col_g16 >= (tile_col_base_g + PC)) begin
-        $display("DBG_M2_AG_INVALID_REASON t=%0t reason=COL_AFTER_RESIDENT abs_col=%0d tile_base=%0d PC=%0d expected_col_l_mod=%0d",
-                 $time,
-                 issue_abs_col_g16,
-                 tile_col_base_g,
-                 PC,
-                 (PC == 0) ? 16'd0 : (issue_abs_col_g16 % PC));
+      if (PC == 0) begin
+        $display("DBG_M2_AG_INVALID_REASON t=%0t reason=PC_ZERO", $time);
       end
 
       if (issue_col_sel_l16 >= PC) begin
@@ -598,38 +565,10 @@ always_ff @(posedge clk or negedge rst_n) begin
         ((!issue_addr_valid) ||
          (issue_abs_col_g16 >= 16'd28))) begin
 
-      $display("DBG_M2_AG_FOCUS t=%0t issue_any=%0b addr_valid=%0b out_block_row=%0d out_block_col=%0d issue_cgrp=%0d ky=%0d kx=%0d abs_row=%0d abs_col=%0d tile_base=%0d PC=%0d col_l_calc=%0d expected_bank_mod=%0d ifm_rd_en=%0b ifm_rd_valid=%0b dr_wr=%0b",
-               $time,
-               issue_any,
-               issue_addr_valid,
-               issue_block_row,
-               issue_block_col,
-               issue_cgroup,
-               issue_ky,
-               issue_kx,
-               issue_abs_row16,
-               issue_abs_col_g16,
-               tile_col_base_g,
-               PC,
-               issue_col_sel_l16,
-               (PC == 0) ? 16'd0 : (issue_abs_col_g16 % PC),
-               ifm_rd_en,
-               ifm_rd_valid,
-               dr_write_en);
-    end
 
     if (issue_any && !issue_addr_valid) begin
-      if (issue_abs_col_g16 >= (tile_col_base_g + PC)) begin
-        $display("DBG_M2_AG_BLOCKED_AFTER_RESIDENT t=%0t abs_col=%0d tile_base=%0d PC=%0d expected_bank_mod=%0d",
-                 $time,
-                 issue_abs_col_g16,
-                 tile_col_base_g,
-                 PC,
-                 (PC == 0) ? 16'd0 : (issue_abs_col_g16 % PC));
-      end
-
       if (issue_col_sel_l16 >= PC) begin
-        $display("DBG_M2_AG_BLOCKED_LOCAL_COL_RANGE t=%0t col_l_calc=%0d PC=%0d",
+        $display("DBG_M2_AG_BLOCKED_LOCAL_COL_RANGE t=%0t rolling_col_l=%0d PC=%0d",
                  $time,
                  issue_col_sel_l16,
                  PC);

@@ -1,0 +1,670 @@
+{
+  "descriptor_schema_version": "cnn_v4_eval_layer_descriptor_v1",
+  "model_name": "vgg16_conv13",
+  "benchmark_kind": "canonical_convolutional_workload",
+  "dataset": "ImageNet",
+  "input_tensor_logical_layout": "HWC",
+  "input_size_hwc": [
+    224,
+    224,
+    3
+  ],
+  "layer_h_out_w_out_semantics": "conv_h_out/conv_w_out are convolution outputs before optional pooling; post_h/post_w are the next-layer IFM size after pooling",
+  "current_cnn_v4_mapping": {
+    "supported_directly": "standard dense conv2d with groups=1, ReLU, and 2x2 stride2 max-pooling; DSE fields are intentionally null in Step 1",
+    "needs_later_steps": [
+      "DSE fills mode/pv_m1/pf_m1/pc_m2/pf_m2",
+      "DDR address assignment",
+      "PyTorch/NumPy golden generation",
+      "DDR packing"
+    ]
+  },
+  "paper_reported_conv_layers": 13,
+  "num_layers_in_descriptor": 13,
+  "total_ops": 30693261312,
+  "total_gops": 30.693261312,
+  "notes": "Canonical VGG16 convolutional feature extractor with 13 3x3 conv layers and 2x2 max-pooling after each block. DCP-CNN Table I reports VGG16 as 13 conv layers, all 3x3.",
+  "layers": [
+    {
+      "id": 0,
+      "name": "conv1_1",
+      "op_type": "conv2d",
+      "groups": 1,
+      "branch": null,
+      "input_from": null,
+      "h_in": 224,
+      "w_in": 224,
+      "c_in": 3,
+      "f_out": 64,
+      "k": 3,
+      "conv_stride": 1,
+      "pad_top": 1,
+      "pad_bottom": 1,
+      "pad_left": 1,
+      "pad_right": 1,
+      "conv_h_out": 224,
+      "conv_w_out": 224,
+      "relu_en": true,
+      "pool": {
+        "enable": false,
+        "k": 0,
+        "stride": 0,
+        "pad": 0
+      },
+      "post_h": 224,
+      "post_w": 224,
+      "post_c": 64,
+      "ops": 173408256,
+      "dse": {
+        "mode": null,
+        "pv_m1": null,
+        "pf_m1": null,
+        "pc_m2": null,
+        "pf_m2": null
+      },
+      "ddr": {
+        "ifm_ddr_base": null,
+        "wgt_ddr_base": null,
+        "ofm_ddr_base": null
+      },
+      "comment": "Canonical VGG16 conv layer with same padding",
+      "cnn_v4_current_rtl_warnings": [
+        "padding != 0 may require RTL/source update or padded input preprocessing"
+      ],
+      "cnn_v4_current_rtl_ready": false
+    },
+    {
+      "id": 1,
+      "name": "conv1_2",
+      "op_type": "conv2d",
+      "groups": 1,
+      "branch": null,
+      "input_from": null,
+      "h_in": 224,
+      "w_in": 224,
+      "c_in": 64,
+      "f_out": 64,
+      "k": 3,
+      "conv_stride": 1,
+      "pad_top": 1,
+      "pad_bottom": 1,
+      "pad_left": 1,
+      "pad_right": 1,
+      "conv_h_out": 224,
+      "conv_w_out": 224,
+      "relu_en": true,
+      "pool": {
+        "enable": true,
+        "k": 2,
+        "stride": 2,
+        "pad": 0
+      },
+      "post_h": 112,
+      "post_w": 112,
+      "post_c": 64,
+      "ops": 3699376128,
+      "dse": {
+        "mode": null,
+        "pv_m1": null,
+        "pf_m1": null,
+        "pc_m2": null,
+        "pf_m2": null
+      },
+      "ddr": {
+        "ifm_ddr_base": null,
+        "wgt_ddr_base": null,
+        "ofm_ddr_base": null
+      },
+      "comment": "Canonical VGG16 conv layer with same padding",
+      "cnn_v4_current_rtl_warnings": [
+        "padding != 0 may require RTL/source update or padded input preprocessing"
+      ],
+      "cnn_v4_current_rtl_ready": false
+    },
+    {
+      "id": 2,
+      "name": "conv2_1",
+      "op_type": "conv2d",
+      "groups": 1,
+      "branch": null,
+      "input_from": null,
+      "h_in": 112,
+      "w_in": 112,
+      "c_in": 64,
+      "f_out": 128,
+      "k": 3,
+      "conv_stride": 1,
+      "pad_top": 1,
+      "pad_bottom": 1,
+      "pad_left": 1,
+      "pad_right": 1,
+      "conv_h_out": 112,
+      "conv_w_out": 112,
+      "relu_en": true,
+      "pool": {
+        "enable": false,
+        "k": 0,
+        "stride": 0,
+        "pad": 0
+      },
+      "post_h": 112,
+      "post_w": 112,
+      "post_c": 128,
+      "ops": 1849688064,
+      "dse": {
+        "mode": null,
+        "pv_m1": null,
+        "pf_m1": null,
+        "pc_m2": null,
+        "pf_m2": null
+      },
+      "ddr": {
+        "ifm_ddr_base": null,
+        "wgt_ddr_base": null,
+        "ofm_ddr_base": null
+      },
+      "comment": "Canonical VGG16 conv layer with same padding",
+      "cnn_v4_current_rtl_warnings": [
+        "padding != 0 may require RTL/source update or padded input preprocessing"
+      ],
+      "cnn_v4_current_rtl_ready": false
+    },
+    {
+      "id": 3,
+      "name": "conv2_2",
+      "op_type": "conv2d",
+      "groups": 1,
+      "branch": null,
+      "input_from": null,
+      "h_in": 112,
+      "w_in": 112,
+      "c_in": 128,
+      "f_out": 128,
+      "k": 3,
+      "conv_stride": 1,
+      "pad_top": 1,
+      "pad_bottom": 1,
+      "pad_left": 1,
+      "pad_right": 1,
+      "conv_h_out": 112,
+      "conv_w_out": 112,
+      "relu_en": true,
+      "pool": {
+        "enable": true,
+        "k": 2,
+        "stride": 2,
+        "pad": 0
+      },
+      "post_h": 56,
+      "post_w": 56,
+      "post_c": 128,
+      "ops": 3699376128,
+      "dse": {
+        "mode": null,
+        "pv_m1": null,
+        "pf_m1": null,
+        "pc_m2": null,
+        "pf_m2": null
+      },
+      "ddr": {
+        "ifm_ddr_base": null,
+        "wgt_ddr_base": null,
+        "ofm_ddr_base": null
+      },
+      "comment": "Canonical VGG16 conv layer with same padding",
+      "cnn_v4_current_rtl_warnings": [
+        "padding != 0 may require RTL/source update or padded input preprocessing"
+      ],
+      "cnn_v4_current_rtl_ready": false
+    },
+    {
+      "id": 4,
+      "name": "conv3_1",
+      "op_type": "conv2d",
+      "groups": 1,
+      "branch": null,
+      "input_from": null,
+      "h_in": 56,
+      "w_in": 56,
+      "c_in": 128,
+      "f_out": 256,
+      "k": 3,
+      "conv_stride": 1,
+      "pad_top": 1,
+      "pad_bottom": 1,
+      "pad_left": 1,
+      "pad_right": 1,
+      "conv_h_out": 56,
+      "conv_w_out": 56,
+      "relu_en": true,
+      "pool": {
+        "enable": false,
+        "k": 0,
+        "stride": 0,
+        "pad": 0
+      },
+      "post_h": 56,
+      "post_w": 56,
+      "post_c": 256,
+      "ops": 1849688064,
+      "dse": {
+        "mode": null,
+        "pv_m1": null,
+        "pf_m1": null,
+        "pc_m2": null,
+        "pf_m2": null
+      },
+      "ddr": {
+        "ifm_ddr_base": null,
+        "wgt_ddr_base": null,
+        "ofm_ddr_base": null
+      },
+      "comment": "Canonical VGG16 conv layer with same padding",
+      "cnn_v4_current_rtl_warnings": [
+        "padding != 0 may require RTL/source update or padded input preprocessing",
+        "f_out exceeds current F_max=128 contract"
+      ],
+      "cnn_v4_current_rtl_ready": false
+    },
+    {
+      "id": 5,
+      "name": "conv3_2",
+      "op_type": "conv2d",
+      "groups": 1,
+      "branch": null,
+      "input_from": null,
+      "h_in": 56,
+      "w_in": 56,
+      "c_in": 256,
+      "f_out": 256,
+      "k": 3,
+      "conv_stride": 1,
+      "pad_top": 1,
+      "pad_bottom": 1,
+      "pad_left": 1,
+      "pad_right": 1,
+      "conv_h_out": 56,
+      "conv_w_out": 56,
+      "relu_en": true,
+      "pool": {
+        "enable": false,
+        "k": 0,
+        "stride": 0,
+        "pad": 0
+      },
+      "post_h": 56,
+      "post_w": 56,
+      "post_c": 256,
+      "ops": 3699376128,
+      "dse": {
+        "mode": null,
+        "pv_m1": null,
+        "pf_m1": null,
+        "pc_m2": null,
+        "pf_m2": null
+      },
+      "ddr": {
+        "ifm_ddr_base": null,
+        "wgt_ddr_base": null,
+        "ofm_ddr_base": null
+      },
+      "comment": "Canonical VGG16 conv layer with same padding",
+      "cnn_v4_current_rtl_warnings": [
+        "padding != 0 may require RTL/source update or padded input preprocessing",
+        "c_in exceeds current C_max=128 contract",
+        "f_out exceeds current F_max=128 contract"
+      ],
+      "cnn_v4_current_rtl_ready": false
+    },
+    {
+      "id": 6,
+      "name": "conv3_3",
+      "op_type": "conv2d",
+      "groups": 1,
+      "branch": null,
+      "input_from": null,
+      "h_in": 56,
+      "w_in": 56,
+      "c_in": 256,
+      "f_out": 256,
+      "k": 3,
+      "conv_stride": 1,
+      "pad_top": 1,
+      "pad_bottom": 1,
+      "pad_left": 1,
+      "pad_right": 1,
+      "conv_h_out": 56,
+      "conv_w_out": 56,
+      "relu_en": true,
+      "pool": {
+        "enable": true,
+        "k": 2,
+        "stride": 2,
+        "pad": 0
+      },
+      "post_h": 28,
+      "post_w": 28,
+      "post_c": 256,
+      "ops": 3699376128,
+      "dse": {
+        "mode": null,
+        "pv_m1": null,
+        "pf_m1": null,
+        "pc_m2": null,
+        "pf_m2": null
+      },
+      "ddr": {
+        "ifm_ddr_base": null,
+        "wgt_ddr_base": null,
+        "ofm_ddr_base": null
+      },
+      "comment": "Canonical VGG16 conv layer with same padding",
+      "cnn_v4_current_rtl_warnings": [
+        "padding != 0 may require RTL/source update or padded input preprocessing",
+        "c_in exceeds current C_max=128 contract",
+        "f_out exceeds current F_max=128 contract"
+      ],
+      "cnn_v4_current_rtl_ready": false
+    },
+    {
+      "id": 7,
+      "name": "conv4_1",
+      "op_type": "conv2d",
+      "groups": 1,
+      "branch": null,
+      "input_from": null,
+      "h_in": 28,
+      "w_in": 28,
+      "c_in": 256,
+      "f_out": 512,
+      "k": 3,
+      "conv_stride": 1,
+      "pad_top": 1,
+      "pad_bottom": 1,
+      "pad_left": 1,
+      "pad_right": 1,
+      "conv_h_out": 28,
+      "conv_w_out": 28,
+      "relu_en": true,
+      "pool": {
+        "enable": false,
+        "k": 0,
+        "stride": 0,
+        "pad": 0
+      },
+      "post_h": 28,
+      "post_w": 28,
+      "post_c": 512,
+      "ops": 1849688064,
+      "dse": {
+        "mode": null,
+        "pv_m1": null,
+        "pf_m1": null,
+        "pc_m2": null,
+        "pf_m2": null
+      },
+      "ddr": {
+        "ifm_ddr_base": null,
+        "wgt_ddr_base": null,
+        "ofm_ddr_base": null
+      },
+      "comment": "Canonical VGG16 conv layer with same padding",
+      "cnn_v4_current_rtl_warnings": [
+        "padding != 0 may require RTL/source update or padded input preprocessing",
+        "c_in exceeds current C_max=128 contract",
+        "f_out exceeds current F_max=128 contract"
+      ],
+      "cnn_v4_current_rtl_ready": false
+    },
+    {
+      "id": 8,
+      "name": "conv4_2",
+      "op_type": "conv2d",
+      "groups": 1,
+      "branch": null,
+      "input_from": null,
+      "h_in": 28,
+      "w_in": 28,
+      "c_in": 512,
+      "f_out": 512,
+      "k": 3,
+      "conv_stride": 1,
+      "pad_top": 1,
+      "pad_bottom": 1,
+      "pad_left": 1,
+      "pad_right": 1,
+      "conv_h_out": 28,
+      "conv_w_out": 28,
+      "relu_en": true,
+      "pool": {
+        "enable": false,
+        "k": 0,
+        "stride": 0,
+        "pad": 0
+      },
+      "post_h": 28,
+      "post_w": 28,
+      "post_c": 512,
+      "ops": 3699376128,
+      "dse": {
+        "mode": null,
+        "pv_m1": null,
+        "pf_m1": null,
+        "pc_m2": null,
+        "pf_m2": null
+      },
+      "ddr": {
+        "ifm_ddr_base": null,
+        "wgt_ddr_base": null,
+        "ofm_ddr_base": null
+      },
+      "comment": "Canonical VGG16 conv layer with same padding",
+      "cnn_v4_current_rtl_warnings": [
+        "padding != 0 may require RTL/source update or padded input preprocessing",
+        "c_in exceeds current C_max=128 contract",
+        "f_out exceeds current F_max=128 contract"
+      ],
+      "cnn_v4_current_rtl_ready": false
+    },
+    {
+      "id": 9,
+      "name": "conv4_3",
+      "op_type": "conv2d",
+      "groups": 1,
+      "branch": null,
+      "input_from": null,
+      "h_in": 28,
+      "w_in": 28,
+      "c_in": 512,
+      "f_out": 512,
+      "k": 3,
+      "conv_stride": 1,
+      "pad_top": 1,
+      "pad_bottom": 1,
+      "pad_left": 1,
+      "pad_right": 1,
+      "conv_h_out": 28,
+      "conv_w_out": 28,
+      "relu_en": true,
+      "pool": {
+        "enable": true,
+        "k": 2,
+        "stride": 2,
+        "pad": 0
+      },
+      "post_h": 14,
+      "post_w": 14,
+      "post_c": 512,
+      "ops": 3699376128,
+      "dse": {
+        "mode": null,
+        "pv_m1": null,
+        "pf_m1": null,
+        "pc_m2": null,
+        "pf_m2": null
+      },
+      "ddr": {
+        "ifm_ddr_base": null,
+        "wgt_ddr_base": null,
+        "ofm_ddr_base": null
+      },
+      "comment": "Canonical VGG16 conv layer with same padding",
+      "cnn_v4_current_rtl_warnings": [
+        "padding != 0 may require RTL/source update or padded input preprocessing",
+        "c_in exceeds current C_max=128 contract",
+        "f_out exceeds current F_max=128 contract"
+      ],
+      "cnn_v4_current_rtl_ready": false
+    },
+    {
+      "id": 10,
+      "name": "conv5_1",
+      "op_type": "conv2d",
+      "groups": 1,
+      "branch": null,
+      "input_from": null,
+      "h_in": 14,
+      "w_in": 14,
+      "c_in": 512,
+      "f_out": 512,
+      "k": 3,
+      "conv_stride": 1,
+      "pad_top": 1,
+      "pad_bottom": 1,
+      "pad_left": 1,
+      "pad_right": 1,
+      "conv_h_out": 14,
+      "conv_w_out": 14,
+      "relu_en": true,
+      "pool": {
+        "enable": false,
+        "k": 0,
+        "stride": 0,
+        "pad": 0
+      },
+      "post_h": 14,
+      "post_w": 14,
+      "post_c": 512,
+      "ops": 924844032,
+      "dse": {
+        "mode": null,
+        "pv_m1": null,
+        "pf_m1": null,
+        "pc_m2": null,
+        "pf_m2": null
+      },
+      "ddr": {
+        "ifm_ddr_base": null,
+        "wgt_ddr_base": null,
+        "ofm_ddr_base": null
+      },
+      "comment": "Canonical VGG16 conv layer with same padding",
+      "cnn_v4_current_rtl_warnings": [
+        "padding != 0 may require RTL/source update or padded input preprocessing",
+        "c_in exceeds current C_max=128 contract",
+        "f_out exceeds current F_max=128 contract"
+      ],
+      "cnn_v4_current_rtl_ready": false
+    },
+    {
+      "id": 11,
+      "name": "conv5_2",
+      "op_type": "conv2d",
+      "groups": 1,
+      "branch": null,
+      "input_from": null,
+      "h_in": 14,
+      "w_in": 14,
+      "c_in": 512,
+      "f_out": 512,
+      "k": 3,
+      "conv_stride": 1,
+      "pad_top": 1,
+      "pad_bottom": 1,
+      "pad_left": 1,
+      "pad_right": 1,
+      "conv_h_out": 14,
+      "conv_w_out": 14,
+      "relu_en": true,
+      "pool": {
+        "enable": false,
+        "k": 0,
+        "stride": 0,
+        "pad": 0
+      },
+      "post_h": 14,
+      "post_w": 14,
+      "post_c": 512,
+      "ops": 924844032,
+      "dse": {
+        "mode": null,
+        "pv_m1": null,
+        "pf_m1": null,
+        "pc_m2": null,
+        "pf_m2": null
+      },
+      "ddr": {
+        "ifm_ddr_base": null,
+        "wgt_ddr_base": null,
+        "ofm_ddr_base": null
+      },
+      "comment": "Canonical VGG16 conv layer with same padding",
+      "cnn_v4_current_rtl_warnings": [
+        "padding != 0 may require RTL/source update or padded input preprocessing",
+        "c_in exceeds current C_max=128 contract",
+        "f_out exceeds current F_max=128 contract"
+      ],
+      "cnn_v4_current_rtl_ready": false
+    },
+    {
+      "id": 12,
+      "name": "conv5_3",
+      "op_type": "conv2d",
+      "groups": 1,
+      "branch": null,
+      "input_from": null,
+      "h_in": 14,
+      "w_in": 14,
+      "c_in": 512,
+      "f_out": 512,
+      "k": 3,
+      "conv_stride": 1,
+      "pad_top": 1,
+      "pad_bottom": 1,
+      "pad_left": 1,
+      "pad_right": 1,
+      "conv_h_out": 14,
+      "conv_w_out": 14,
+      "relu_en": true,
+      "pool": {
+        "enable": true,
+        "k": 2,
+        "stride": 2,
+        "pad": 0
+      },
+      "post_h": 7,
+      "post_w": 7,
+      "post_c": 512,
+      "ops": 924844032,
+      "dse": {
+        "mode": null,
+        "pv_m1": null,
+        "pf_m1": null,
+        "pc_m2": null,
+        "pf_m2": null
+      },
+      "ddr": {
+        "ifm_ddr_base": null,
+        "wgt_ddr_base": null,
+        "ofm_ddr_base": null
+      },
+      "comment": "Canonical VGG16 conv layer with same padding",
+      "cnn_v4_current_rtl_warnings": [
+        "padding != 0 may require RTL/source update or padded input preprocessing",
+        "c_in exceeds current C_max=128 contract",
+        "f_out exceeds current F_max=128 contract"
+      ],
+      "cnn_v4_current_rtl_ready": false
+    }
+  ]
+}

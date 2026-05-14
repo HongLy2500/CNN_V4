@@ -1,0 +1,1415 @@
+{
+  "descriptor_schema_version": "cnn_v4_eval_layer_descriptor_v1",
+  "model_name": "mobilenet_v1_conv28",
+  "benchmark_kind": "canonical_convolutional_workload_with_depthwise_excluded_depthwise",
+  "dataset": "ImageNet",
+  "input_tensor_logical_layout": "HWC",
+  "input_size_hwc": [
+    224,
+    224,
+    3
+  ],
+  "layer_h_out_w_out_semantics": "conv_h_out/conv_w_out are convolution outputs before optional pooling; post_h/post_w are the next-layer IFM size after pooling",
+  "current_cnn_v4_mapping": {
+    "supported_directly": "standard dense conv2d with groups=1, ReLU, and 2x2 stride2 max-pooling; DSE fields are intentionally null in Step 1",
+    "needs_later_steps": [
+      "DSE fills mode/pv_m1/pf_m1/pc_m2/pf_m2",
+      "DDR address assignment",
+      "PyTorch/NumPy golden generation",
+      "DDR packing"
+    ]
+  },
+  "paper_reported_conv_layers": 28,
+  "num_layers_in_descriptor": 28,
+  "total_ops": 1137480704,
+  "total_gops": 1.137480704,
+  "notes": "MobileNet-v1 descriptor contains depthwise and pointwise convolutions plus a final classifier represented as 1x1 conv. Direct execution on current CNN_V4 needs depthwise/group-conv support or dense-conv emulation.",
+  "layers": [
+    {
+      "id": 0,
+      "name": "conv0_3x3",
+      "op_type": "conv2d",
+      "groups": 1,
+      "branch": null,
+      "input_from": null,
+      "h_in": 224,
+      "w_in": 224,
+      "c_in": 3,
+      "f_out": 32,
+      "k": 3,
+      "conv_stride": 2,
+      "pad_top": 1,
+      "pad_bottom": 1,
+      "pad_left": 1,
+      "pad_right": 1,
+      "conv_h_out": 112,
+      "conv_w_out": 112,
+      "relu_en": true,
+      "pool": {
+        "enable": false,
+        "k": 0,
+        "stride": 0,
+        "pad": 0
+      },
+      "post_h": 112,
+      "post_w": 112,
+      "post_c": 32,
+      "ops": 21676032,
+      "dse": {
+        "mode": null,
+        "pv_m1": null,
+        "pf_m1": null,
+        "pc_m2": null,
+        "pf_m2": null
+      },
+      "ddr": {
+        "ifm_ddr_base": null,
+        "wgt_ddr_base": null,
+        "ofm_ddr_base": null
+      },
+      "comment": "Depthwise layers need groups=C; current CNN_V4 RTL does not directly implement groups/depthwise.",
+      "cnn_v4_current_rtl_warnings": [
+        "conv stride != 1 may require RTL/source update or preprocessing",
+        "padding != 0 may require RTL/source update or padded input preprocessing"
+      ],
+      "cnn_v4_current_rtl_ready": false
+    },
+    {
+      "id": 1,
+      "name": "dw1_3x3",
+      "op_type": "depthwise_conv2d",
+      "groups": 32,
+      "branch": null,
+      "input_from": null,
+      "h_in": 112,
+      "w_in": 112,
+      "c_in": 32,
+      "f_out": 32,
+      "k": 3,
+      "conv_stride": 1,
+      "pad_top": 1,
+      "pad_bottom": 1,
+      "pad_left": 1,
+      "pad_right": 1,
+      "conv_h_out": 112,
+      "conv_w_out": 112,
+      "relu_en": true,
+      "pool": {
+        "enable": false,
+        "k": 0,
+        "stride": 0,
+        "pad": 0
+      },
+      "post_h": 112,
+      "post_w": 112,
+      "post_c": 32,
+      "ops": 7225344,
+      "dse": {
+        "mode": null,
+        "pv_m1": null,
+        "pf_m1": null,
+        "pc_m2": null,
+        "pf_m2": null
+      },
+      "ddr": {
+        "ifm_ddr_base": null,
+        "wgt_ddr_base": null,
+        "ofm_ddr_base": null
+      },
+      "comment": "Depthwise layers need groups=C; current CNN_V4 RTL does not directly implement groups/depthwise.",
+      "cnn_v4_current_rtl_warnings": [
+        "groups/depthwise conv not directly supported by current CNN_V4 RTL",
+        "padding != 0 may require RTL/source update or padded input preprocessing"
+      ],
+      "cnn_v4_current_rtl_ready": false
+    },
+    {
+      "id": 2,
+      "name": "pw1_1x1",
+      "op_type": "pointwise_conv2d",
+      "groups": 1,
+      "branch": null,
+      "input_from": null,
+      "h_in": 112,
+      "w_in": 112,
+      "c_in": 32,
+      "f_out": 64,
+      "k": 1,
+      "conv_stride": 1,
+      "pad_top": 0,
+      "pad_bottom": 0,
+      "pad_left": 0,
+      "pad_right": 0,
+      "conv_h_out": 112,
+      "conv_w_out": 112,
+      "relu_en": true,
+      "pool": {
+        "enable": false,
+        "k": 0,
+        "stride": 0,
+        "pad": 0
+      },
+      "post_h": 112,
+      "post_w": 112,
+      "post_c": 64,
+      "ops": 51380224,
+      "dse": {
+        "mode": null,
+        "pv_m1": null,
+        "pf_m1": null,
+        "pc_m2": null,
+        "pf_m2": null
+      },
+      "ddr": {
+        "ifm_ddr_base": null,
+        "wgt_ddr_base": null,
+        "ofm_ddr_base": null
+      },
+      "comment": "Depthwise layers need groups=C; current CNN_V4 RTL does not directly implement groups/depthwise.",
+      "cnn_v4_current_rtl_warnings": [],
+      "cnn_v4_current_rtl_ready": true
+    },
+    {
+      "id": 3,
+      "name": "dw2_3x3",
+      "op_type": "depthwise_conv2d",
+      "groups": 64,
+      "branch": null,
+      "input_from": null,
+      "h_in": 112,
+      "w_in": 112,
+      "c_in": 64,
+      "f_out": 64,
+      "k": 3,
+      "conv_stride": 2,
+      "pad_top": 1,
+      "pad_bottom": 1,
+      "pad_left": 1,
+      "pad_right": 1,
+      "conv_h_out": 56,
+      "conv_w_out": 56,
+      "relu_en": true,
+      "pool": {
+        "enable": false,
+        "k": 0,
+        "stride": 0,
+        "pad": 0
+      },
+      "post_h": 56,
+      "post_w": 56,
+      "post_c": 64,
+      "ops": 3612672,
+      "dse": {
+        "mode": null,
+        "pv_m1": null,
+        "pf_m1": null,
+        "pc_m2": null,
+        "pf_m2": null
+      },
+      "ddr": {
+        "ifm_ddr_base": null,
+        "wgt_ddr_base": null,
+        "ofm_ddr_base": null
+      },
+      "comment": "Depthwise layers need groups=C; current CNN_V4 RTL does not directly implement groups/depthwise.",
+      "cnn_v4_current_rtl_warnings": [
+        "groups/depthwise conv not directly supported by current CNN_V4 RTL",
+        "conv stride != 1 may require RTL/source update or preprocessing",
+        "padding != 0 may require RTL/source update or padded input preprocessing"
+      ],
+      "cnn_v4_current_rtl_ready": false
+    },
+    {
+      "id": 4,
+      "name": "pw2_1x1",
+      "op_type": "pointwise_conv2d",
+      "groups": 1,
+      "branch": null,
+      "input_from": null,
+      "h_in": 56,
+      "w_in": 56,
+      "c_in": 64,
+      "f_out": 128,
+      "k": 1,
+      "conv_stride": 1,
+      "pad_top": 0,
+      "pad_bottom": 0,
+      "pad_left": 0,
+      "pad_right": 0,
+      "conv_h_out": 56,
+      "conv_w_out": 56,
+      "relu_en": true,
+      "pool": {
+        "enable": false,
+        "k": 0,
+        "stride": 0,
+        "pad": 0
+      },
+      "post_h": 56,
+      "post_w": 56,
+      "post_c": 128,
+      "ops": 51380224,
+      "dse": {
+        "mode": null,
+        "pv_m1": null,
+        "pf_m1": null,
+        "pc_m2": null,
+        "pf_m2": null
+      },
+      "ddr": {
+        "ifm_ddr_base": null,
+        "wgt_ddr_base": null,
+        "ofm_ddr_base": null
+      },
+      "comment": "Depthwise layers need groups=C; current CNN_V4 RTL does not directly implement groups/depthwise.",
+      "cnn_v4_current_rtl_warnings": [],
+      "cnn_v4_current_rtl_ready": true
+    },
+    {
+      "id": 5,
+      "name": "dw3_3x3",
+      "op_type": "depthwise_conv2d",
+      "groups": 128,
+      "branch": null,
+      "input_from": null,
+      "h_in": 56,
+      "w_in": 56,
+      "c_in": 128,
+      "f_out": 128,
+      "k": 3,
+      "conv_stride": 1,
+      "pad_top": 1,
+      "pad_bottom": 1,
+      "pad_left": 1,
+      "pad_right": 1,
+      "conv_h_out": 56,
+      "conv_w_out": 56,
+      "relu_en": true,
+      "pool": {
+        "enable": false,
+        "k": 0,
+        "stride": 0,
+        "pad": 0
+      },
+      "post_h": 56,
+      "post_w": 56,
+      "post_c": 128,
+      "ops": 7225344,
+      "dse": {
+        "mode": null,
+        "pv_m1": null,
+        "pf_m1": null,
+        "pc_m2": null,
+        "pf_m2": null
+      },
+      "ddr": {
+        "ifm_ddr_base": null,
+        "wgt_ddr_base": null,
+        "ofm_ddr_base": null
+      },
+      "comment": "Depthwise layers need groups=C; current CNN_V4 RTL does not directly implement groups/depthwise.",
+      "cnn_v4_current_rtl_warnings": [
+        "groups/depthwise conv not directly supported by current CNN_V4 RTL",
+        "padding != 0 may require RTL/source update or padded input preprocessing"
+      ],
+      "cnn_v4_current_rtl_ready": false
+    },
+    {
+      "id": 6,
+      "name": "pw3_1x1",
+      "op_type": "pointwise_conv2d",
+      "groups": 1,
+      "branch": null,
+      "input_from": null,
+      "h_in": 56,
+      "w_in": 56,
+      "c_in": 128,
+      "f_out": 128,
+      "k": 1,
+      "conv_stride": 1,
+      "pad_top": 0,
+      "pad_bottom": 0,
+      "pad_left": 0,
+      "pad_right": 0,
+      "conv_h_out": 56,
+      "conv_w_out": 56,
+      "relu_en": true,
+      "pool": {
+        "enable": false,
+        "k": 0,
+        "stride": 0,
+        "pad": 0
+      },
+      "post_h": 56,
+      "post_w": 56,
+      "post_c": 128,
+      "ops": 102760448,
+      "dse": {
+        "mode": null,
+        "pv_m1": null,
+        "pf_m1": null,
+        "pc_m2": null,
+        "pf_m2": null
+      },
+      "ddr": {
+        "ifm_ddr_base": null,
+        "wgt_ddr_base": null,
+        "ofm_ddr_base": null
+      },
+      "comment": "Depthwise layers need groups=C; current CNN_V4 RTL does not directly implement groups/depthwise.",
+      "cnn_v4_current_rtl_warnings": [],
+      "cnn_v4_current_rtl_ready": true
+    },
+    {
+      "id": 7,
+      "name": "dw4_3x3",
+      "op_type": "depthwise_conv2d",
+      "groups": 128,
+      "branch": null,
+      "input_from": null,
+      "h_in": 56,
+      "w_in": 56,
+      "c_in": 128,
+      "f_out": 128,
+      "k": 3,
+      "conv_stride": 2,
+      "pad_top": 1,
+      "pad_bottom": 1,
+      "pad_left": 1,
+      "pad_right": 1,
+      "conv_h_out": 28,
+      "conv_w_out": 28,
+      "relu_en": true,
+      "pool": {
+        "enable": false,
+        "k": 0,
+        "stride": 0,
+        "pad": 0
+      },
+      "post_h": 28,
+      "post_w": 28,
+      "post_c": 128,
+      "ops": 1806336,
+      "dse": {
+        "mode": null,
+        "pv_m1": null,
+        "pf_m1": null,
+        "pc_m2": null,
+        "pf_m2": null
+      },
+      "ddr": {
+        "ifm_ddr_base": null,
+        "wgt_ddr_base": null,
+        "ofm_ddr_base": null
+      },
+      "comment": "Depthwise layers need groups=C; current CNN_V4 RTL does not directly implement groups/depthwise.",
+      "cnn_v4_current_rtl_warnings": [
+        "groups/depthwise conv not directly supported by current CNN_V4 RTL",
+        "conv stride != 1 may require RTL/source update or preprocessing",
+        "padding != 0 may require RTL/source update or padded input preprocessing"
+      ],
+      "cnn_v4_current_rtl_ready": false
+    },
+    {
+      "id": 8,
+      "name": "pw4_1x1",
+      "op_type": "pointwise_conv2d",
+      "groups": 1,
+      "branch": null,
+      "input_from": null,
+      "h_in": 28,
+      "w_in": 28,
+      "c_in": 128,
+      "f_out": 256,
+      "k": 1,
+      "conv_stride": 1,
+      "pad_top": 0,
+      "pad_bottom": 0,
+      "pad_left": 0,
+      "pad_right": 0,
+      "conv_h_out": 28,
+      "conv_w_out": 28,
+      "relu_en": true,
+      "pool": {
+        "enable": false,
+        "k": 0,
+        "stride": 0,
+        "pad": 0
+      },
+      "post_h": 28,
+      "post_w": 28,
+      "post_c": 256,
+      "ops": 51380224,
+      "dse": {
+        "mode": null,
+        "pv_m1": null,
+        "pf_m1": null,
+        "pc_m2": null,
+        "pf_m2": null
+      },
+      "ddr": {
+        "ifm_ddr_base": null,
+        "wgt_ddr_base": null,
+        "ofm_ddr_base": null
+      },
+      "comment": "Depthwise layers need groups=C; current CNN_V4 RTL does not directly implement groups/depthwise.",
+      "cnn_v4_current_rtl_warnings": [
+        "f_out exceeds current F_max=128 contract"
+      ],
+      "cnn_v4_current_rtl_ready": false
+    },
+    {
+      "id": 9,
+      "name": "dw5_3x3",
+      "op_type": "depthwise_conv2d",
+      "groups": 256,
+      "branch": null,
+      "input_from": null,
+      "h_in": 28,
+      "w_in": 28,
+      "c_in": 256,
+      "f_out": 256,
+      "k": 3,
+      "conv_stride": 1,
+      "pad_top": 1,
+      "pad_bottom": 1,
+      "pad_left": 1,
+      "pad_right": 1,
+      "conv_h_out": 28,
+      "conv_w_out": 28,
+      "relu_en": true,
+      "pool": {
+        "enable": false,
+        "k": 0,
+        "stride": 0,
+        "pad": 0
+      },
+      "post_h": 28,
+      "post_w": 28,
+      "post_c": 256,
+      "ops": 3612672,
+      "dse": {
+        "mode": null,
+        "pv_m1": null,
+        "pf_m1": null,
+        "pc_m2": null,
+        "pf_m2": null
+      },
+      "ddr": {
+        "ifm_ddr_base": null,
+        "wgt_ddr_base": null,
+        "ofm_ddr_base": null
+      },
+      "comment": "Depthwise layers need groups=C; current CNN_V4 RTL does not directly implement groups/depthwise.",
+      "cnn_v4_current_rtl_warnings": [
+        "groups/depthwise conv not directly supported by current CNN_V4 RTL",
+        "padding != 0 may require RTL/source update or padded input preprocessing",
+        "c_in exceeds current C_max=128 contract",
+        "f_out exceeds current F_max=128 contract"
+      ],
+      "cnn_v4_current_rtl_ready": false
+    },
+    {
+      "id": 10,
+      "name": "pw5_1x1",
+      "op_type": "pointwise_conv2d",
+      "groups": 1,
+      "branch": null,
+      "input_from": null,
+      "h_in": 28,
+      "w_in": 28,
+      "c_in": 256,
+      "f_out": 256,
+      "k": 1,
+      "conv_stride": 1,
+      "pad_top": 0,
+      "pad_bottom": 0,
+      "pad_left": 0,
+      "pad_right": 0,
+      "conv_h_out": 28,
+      "conv_w_out": 28,
+      "relu_en": true,
+      "pool": {
+        "enable": false,
+        "k": 0,
+        "stride": 0,
+        "pad": 0
+      },
+      "post_h": 28,
+      "post_w": 28,
+      "post_c": 256,
+      "ops": 102760448,
+      "dse": {
+        "mode": null,
+        "pv_m1": null,
+        "pf_m1": null,
+        "pc_m2": null,
+        "pf_m2": null
+      },
+      "ddr": {
+        "ifm_ddr_base": null,
+        "wgt_ddr_base": null,
+        "ofm_ddr_base": null
+      },
+      "comment": "Depthwise layers need groups=C; current CNN_V4 RTL does not directly implement groups/depthwise.",
+      "cnn_v4_current_rtl_warnings": [
+        "c_in exceeds current C_max=128 contract",
+        "f_out exceeds current F_max=128 contract"
+      ],
+      "cnn_v4_current_rtl_ready": false
+    },
+    {
+      "id": 11,
+      "name": "dw6_3x3",
+      "op_type": "depthwise_conv2d",
+      "groups": 256,
+      "branch": null,
+      "input_from": null,
+      "h_in": 28,
+      "w_in": 28,
+      "c_in": 256,
+      "f_out": 256,
+      "k": 3,
+      "conv_stride": 2,
+      "pad_top": 1,
+      "pad_bottom": 1,
+      "pad_left": 1,
+      "pad_right": 1,
+      "conv_h_out": 14,
+      "conv_w_out": 14,
+      "relu_en": true,
+      "pool": {
+        "enable": false,
+        "k": 0,
+        "stride": 0,
+        "pad": 0
+      },
+      "post_h": 14,
+      "post_w": 14,
+      "post_c": 256,
+      "ops": 903168,
+      "dse": {
+        "mode": null,
+        "pv_m1": null,
+        "pf_m1": null,
+        "pc_m2": null,
+        "pf_m2": null
+      },
+      "ddr": {
+        "ifm_ddr_base": null,
+        "wgt_ddr_base": null,
+        "ofm_ddr_base": null
+      },
+      "comment": "Depthwise layers need groups=C; current CNN_V4 RTL does not directly implement groups/depthwise.",
+      "cnn_v4_current_rtl_warnings": [
+        "groups/depthwise conv not directly supported by current CNN_V4 RTL",
+        "conv stride != 1 may require RTL/source update or preprocessing",
+        "padding != 0 may require RTL/source update or padded input preprocessing",
+        "c_in exceeds current C_max=128 contract",
+        "f_out exceeds current F_max=128 contract"
+      ],
+      "cnn_v4_current_rtl_ready": false
+    },
+    {
+      "id": 12,
+      "name": "pw6_1x1",
+      "op_type": "pointwise_conv2d",
+      "groups": 1,
+      "branch": null,
+      "input_from": null,
+      "h_in": 14,
+      "w_in": 14,
+      "c_in": 256,
+      "f_out": 512,
+      "k": 1,
+      "conv_stride": 1,
+      "pad_top": 0,
+      "pad_bottom": 0,
+      "pad_left": 0,
+      "pad_right": 0,
+      "conv_h_out": 14,
+      "conv_w_out": 14,
+      "relu_en": true,
+      "pool": {
+        "enable": false,
+        "k": 0,
+        "stride": 0,
+        "pad": 0
+      },
+      "post_h": 14,
+      "post_w": 14,
+      "post_c": 512,
+      "ops": 51380224,
+      "dse": {
+        "mode": null,
+        "pv_m1": null,
+        "pf_m1": null,
+        "pc_m2": null,
+        "pf_m2": null
+      },
+      "ddr": {
+        "ifm_ddr_base": null,
+        "wgt_ddr_base": null,
+        "ofm_ddr_base": null
+      },
+      "comment": "Depthwise layers need groups=C; current CNN_V4 RTL does not directly implement groups/depthwise.",
+      "cnn_v4_current_rtl_warnings": [
+        "c_in exceeds current C_max=128 contract",
+        "f_out exceeds current F_max=128 contract"
+      ],
+      "cnn_v4_current_rtl_ready": false
+    },
+    {
+      "id": 13,
+      "name": "dw512_repeat1_3x3",
+      "op_type": "depthwise_conv2d",
+      "groups": 512,
+      "branch": null,
+      "input_from": null,
+      "h_in": 14,
+      "w_in": 14,
+      "c_in": 512,
+      "f_out": 512,
+      "k": 3,
+      "conv_stride": 1,
+      "pad_top": 1,
+      "pad_bottom": 1,
+      "pad_left": 1,
+      "pad_right": 1,
+      "conv_h_out": 14,
+      "conv_w_out": 14,
+      "relu_en": true,
+      "pool": {
+        "enable": false,
+        "k": 0,
+        "stride": 0,
+        "pad": 0
+      },
+      "post_h": 14,
+      "post_w": 14,
+      "post_c": 512,
+      "ops": 1806336,
+      "dse": {
+        "mode": null,
+        "pv_m1": null,
+        "pf_m1": null,
+        "pc_m2": null,
+        "pf_m2": null
+      },
+      "ddr": {
+        "ifm_ddr_base": null,
+        "wgt_ddr_base": null,
+        "ofm_ddr_base": null
+      },
+      "comment": "Depthwise layers need groups=C; current CNN_V4 RTL does not directly implement groups/depthwise.",
+      "cnn_v4_current_rtl_warnings": [
+        "groups/depthwise conv not directly supported by current CNN_V4 RTL",
+        "padding != 0 may require RTL/source update or padded input preprocessing",
+        "c_in exceeds current C_max=128 contract",
+        "f_out exceeds current F_max=128 contract"
+      ],
+      "cnn_v4_current_rtl_ready": false
+    },
+    {
+      "id": 14,
+      "name": "pw512_repeat1_1x1",
+      "op_type": "pointwise_conv2d",
+      "groups": 1,
+      "branch": null,
+      "input_from": null,
+      "h_in": 14,
+      "w_in": 14,
+      "c_in": 512,
+      "f_out": 512,
+      "k": 1,
+      "conv_stride": 1,
+      "pad_top": 0,
+      "pad_bottom": 0,
+      "pad_left": 0,
+      "pad_right": 0,
+      "conv_h_out": 14,
+      "conv_w_out": 14,
+      "relu_en": true,
+      "pool": {
+        "enable": false,
+        "k": 0,
+        "stride": 0,
+        "pad": 0
+      },
+      "post_h": 14,
+      "post_w": 14,
+      "post_c": 512,
+      "ops": 102760448,
+      "dse": {
+        "mode": null,
+        "pv_m1": null,
+        "pf_m1": null,
+        "pc_m2": null,
+        "pf_m2": null
+      },
+      "ddr": {
+        "ifm_ddr_base": null,
+        "wgt_ddr_base": null,
+        "ofm_ddr_base": null
+      },
+      "comment": "Depthwise layers need groups=C; current CNN_V4 RTL does not directly implement groups/depthwise.",
+      "cnn_v4_current_rtl_warnings": [
+        "c_in exceeds current C_max=128 contract",
+        "f_out exceeds current F_max=128 contract"
+      ],
+      "cnn_v4_current_rtl_ready": false
+    },
+    {
+      "id": 15,
+      "name": "dw512_repeat2_3x3",
+      "op_type": "depthwise_conv2d",
+      "groups": 512,
+      "branch": null,
+      "input_from": null,
+      "h_in": 14,
+      "w_in": 14,
+      "c_in": 512,
+      "f_out": 512,
+      "k": 3,
+      "conv_stride": 1,
+      "pad_top": 1,
+      "pad_bottom": 1,
+      "pad_left": 1,
+      "pad_right": 1,
+      "conv_h_out": 14,
+      "conv_w_out": 14,
+      "relu_en": true,
+      "pool": {
+        "enable": false,
+        "k": 0,
+        "stride": 0,
+        "pad": 0
+      },
+      "post_h": 14,
+      "post_w": 14,
+      "post_c": 512,
+      "ops": 1806336,
+      "dse": {
+        "mode": null,
+        "pv_m1": null,
+        "pf_m1": null,
+        "pc_m2": null,
+        "pf_m2": null
+      },
+      "ddr": {
+        "ifm_ddr_base": null,
+        "wgt_ddr_base": null,
+        "ofm_ddr_base": null
+      },
+      "comment": "Depthwise layers need groups=C; current CNN_V4 RTL does not directly implement groups/depthwise.",
+      "cnn_v4_current_rtl_warnings": [
+        "groups/depthwise conv not directly supported by current CNN_V4 RTL",
+        "padding != 0 may require RTL/source update or padded input preprocessing",
+        "c_in exceeds current C_max=128 contract",
+        "f_out exceeds current F_max=128 contract"
+      ],
+      "cnn_v4_current_rtl_ready": false
+    },
+    {
+      "id": 16,
+      "name": "pw512_repeat2_1x1",
+      "op_type": "pointwise_conv2d",
+      "groups": 1,
+      "branch": null,
+      "input_from": null,
+      "h_in": 14,
+      "w_in": 14,
+      "c_in": 512,
+      "f_out": 512,
+      "k": 1,
+      "conv_stride": 1,
+      "pad_top": 0,
+      "pad_bottom": 0,
+      "pad_left": 0,
+      "pad_right": 0,
+      "conv_h_out": 14,
+      "conv_w_out": 14,
+      "relu_en": true,
+      "pool": {
+        "enable": false,
+        "k": 0,
+        "stride": 0,
+        "pad": 0
+      },
+      "post_h": 14,
+      "post_w": 14,
+      "post_c": 512,
+      "ops": 102760448,
+      "dse": {
+        "mode": null,
+        "pv_m1": null,
+        "pf_m1": null,
+        "pc_m2": null,
+        "pf_m2": null
+      },
+      "ddr": {
+        "ifm_ddr_base": null,
+        "wgt_ddr_base": null,
+        "ofm_ddr_base": null
+      },
+      "comment": "Depthwise layers need groups=C; current CNN_V4 RTL does not directly implement groups/depthwise.",
+      "cnn_v4_current_rtl_warnings": [
+        "c_in exceeds current C_max=128 contract",
+        "f_out exceeds current F_max=128 contract"
+      ],
+      "cnn_v4_current_rtl_ready": false
+    },
+    {
+      "id": 17,
+      "name": "dw512_repeat3_3x3",
+      "op_type": "depthwise_conv2d",
+      "groups": 512,
+      "branch": null,
+      "input_from": null,
+      "h_in": 14,
+      "w_in": 14,
+      "c_in": 512,
+      "f_out": 512,
+      "k": 3,
+      "conv_stride": 1,
+      "pad_top": 1,
+      "pad_bottom": 1,
+      "pad_left": 1,
+      "pad_right": 1,
+      "conv_h_out": 14,
+      "conv_w_out": 14,
+      "relu_en": true,
+      "pool": {
+        "enable": false,
+        "k": 0,
+        "stride": 0,
+        "pad": 0
+      },
+      "post_h": 14,
+      "post_w": 14,
+      "post_c": 512,
+      "ops": 1806336,
+      "dse": {
+        "mode": null,
+        "pv_m1": null,
+        "pf_m1": null,
+        "pc_m2": null,
+        "pf_m2": null
+      },
+      "ddr": {
+        "ifm_ddr_base": null,
+        "wgt_ddr_base": null,
+        "ofm_ddr_base": null
+      },
+      "comment": "Depthwise layers need groups=C; current CNN_V4 RTL does not directly implement groups/depthwise.",
+      "cnn_v4_current_rtl_warnings": [
+        "groups/depthwise conv not directly supported by current CNN_V4 RTL",
+        "padding != 0 may require RTL/source update or padded input preprocessing",
+        "c_in exceeds current C_max=128 contract",
+        "f_out exceeds current F_max=128 contract"
+      ],
+      "cnn_v4_current_rtl_ready": false
+    },
+    {
+      "id": 18,
+      "name": "pw512_repeat3_1x1",
+      "op_type": "pointwise_conv2d",
+      "groups": 1,
+      "branch": null,
+      "input_from": null,
+      "h_in": 14,
+      "w_in": 14,
+      "c_in": 512,
+      "f_out": 512,
+      "k": 1,
+      "conv_stride": 1,
+      "pad_top": 0,
+      "pad_bottom": 0,
+      "pad_left": 0,
+      "pad_right": 0,
+      "conv_h_out": 14,
+      "conv_w_out": 14,
+      "relu_en": true,
+      "pool": {
+        "enable": false,
+        "k": 0,
+        "stride": 0,
+        "pad": 0
+      },
+      "post_h": 14,
+      "post_w": 14,
+      "post_c": 512,
+      "ops": 102760448,
+      "dse": {
+        "mode": null,
+        "pv_m1": null,
+        "pf_m1": null,
+        "pc_m2": null,
+        "pf_m2": null
+      },
+      "ddr": {
+        "ifm_ddr_base": null,
+        "wgt_ddr_base": null,
+        "ofm_ddr_base": null
+      },
+      "comment": "Depthwise layers need groups=C; current CNN_V4 RTL does not directly implement groups/depthwise.",
+      "cnn_v4_current_rtl_warnings": [
+        "c_in exceeds current C_max=128 contract",
+        "f_out exceeds current F_max=128 contract"
+      ],
+      "cnn_v4_current_rtl_ready": false
+    },
+    {
+      "id": 19,
+      "name": "dw512_repeat4_3x3",
+      "op_type": "depthwise_conv2d",
+      "groups": 512,
+      "branch": null,
+      "input_from": null,
+      "h_in": 14,
+      "w_in": 14,
+      "c_in": 512,
+      "f_out": 512,
+      "k": 3,
+      "conv_stride": 1,
+      "pad_top": 1,
+      "pad_bottom": 1,
+      "pad_left": 1,
+      "pad_right": 1,
+      "conv_h_out": 14,
+      "conv_w_out": 14,
+      "relu_en": true,
+      "pool": {
+        "enable": false,
+        "k": 0,
+        "stride": 0,
+        "pad": 0
+      },
+      "post_h": 14,
+      "post_w": 14,
+      "post_c": 512,
+      "ops": 1806336,
+      "dse": {
+        "mode": null,
+        "pv_m1": null,
+        "pf_m1": null,
+        "pc_m2": null,
+        "pf_m2": null
+      },
+      "ddr": {
+        "ifm_ddr_base": null,
+        "wgt_ddr_base": null,
+        "ofm_ddr_base": null
+      },
+      "comment": "Depthwise layers need groups=C; current CNN_V4 RTL does not directly implement groups/depthwise.",
+      "cnn_v4_current_rtl_warnings": [
+        "groups/depthwise conv not directly supported by current CNN_V4 RTL",
+        "padding != 0 may require RTL/source update or padded input preprocessing",
+        "c_in exceeds current C_max=128 contract",
+        "f_out exceeds current F_max=128 contract"
+      ],
+      "cnn_v4_current_rtl_ready": false
+    },
+    {
+      "id": 20,
+      "name": "pw512_repeat4_1x1",
+      "op_type": "pointwise_conv2d",
+      "groups": 1,
+      "branch": null,
+      "input_from": null,
+      "h_in": 14,
+      "w_in": 14,
+      "c_in": 512,
+      "f_out": 512,
+      "k": 1,
+      "conv_stride": 1,
+      "pad_top": 0,
+      "pad_bottom": 0,
+      "pad_left": 0,
+      "pad_right": 0,
+      "conv_h_out": 14,
+      "conv_w_out": 14,
+      "relu_en": true,
+      "pool": {
+        "enable": false,
+        "k": 0,
+        "stride": 0,
+        "pad": 0
+      },
+      "post_h": 14,
+      "post_w": 14,
+      "post_c": 512,
+      "ops": 102760448,
+      "dse": {
+        "mode": null,
+        "pv_m1": null,
+        "pf_m1": null,
+        "pc_m2": null,
+        "pf_m2": null
+      },
+      "ddr": {
+        "ifm_ddr_base": null,
+        "wgt_ddr_base": null,
+        "ofm_ddr_base": null
+      },
+      "comment": "Depthwise layers need groups=C; current CNN_V4 RTL does not directly implement groups/depthwise.",
+      "cnn_v4_current_rtl_warnings": [
+        "c_in exceeds current C_max=128 contract",
+        "f_out exceeds current F_max=128 contract"
+      ],
+      "cnn_v4_current_rtl_ready": false
+    },
+    {
+      "id": 21,
+      "name": "dw512_repeat5_3x3",
+      "op_type": "depthwise_conv2d",
+      "groups": 512,
+      "branch": null,
+      "input_from": null,
+      "h_in": 14,
+      "w_in": 14,
+      "c_in": 512,
+      "f_out": 512,
+      "k": 3,
+      "conv_stride": 1,
+      "pad_top": 1,
+      "pad_bottom": 1,
+      "pad_left": 1,
+      "pad_right": 1,
+      "conv_h_out": 14,
+      "conv_w_out": 14,
+      "relu_en": true,
+      "pool": {
+        "enable": false,
+        "k": 0,
+        "stride": 0,
+        "pad": 0
+      },
+      "post_h": 14,
+      "post_w": 14,
+      "post_c": 512,
+      "ops": 1806336,
+      "dse": {
+        "mode": null,
+        "pv_m1": null,
+        "pf_m1": null,
+        "pc_m2": null,
+        "pf_m2": null
+      },
+      "ddr": {
+        "ifm_ddr_base": null,
+        "wgt_ddr_base": null,
+        "ofm_ddr_base": null
+      },
+      "comment": "Depthwise layers need groups=C; current CNN_V4 RTL does not directly implement groups/depthwise.",
+      "cnn_v4_current_rtl_warnings": [
+        "groups/depthwise conv not directly supported by current CNN_V4 RTL",
+        "padding != 0 may require RTL/source update or padded input preprocessing",
+        "c_in exceeds current C_max=128 contract",
+        "f_out exceeds current F_max=128 contract"
+      ],
+      "cnn_v4_current_rtl_ready": false
+    },
+    {
+      "id": 22,
+      "name": "pw512_repeat5_1x1",
+      "op_type": "pointwise_conv2d",
+      "groups": 1,
+      "branch": null,
+      "input_from": null,
+      "h_in": 14,
+      "w_in": 14,
+      "c_in": 512,
+      "f_out": 512,
+      "k": 1,
+      "conv_stride": 1,
+      "pad_top": 0,
+      "pad_bottom": 0,
+      "pad_left": 0,
+      "pad_right": 0,
+      "conv_h_out": 14,
+      "conv_w_out": 14,
+      "relu_en": true,
+      "pool": {
+        "enable": false,
+        "k": 0,
+        "stride": 0,
+        "pad": 0
+      },
+      "post_h": 14,
+      "post_w": 14,
+      "post_c": 512,
+      "ops": 102760448,
+      "dse": {
+        "mode": null,
+        "pv_m1": null,
+        "pf_m1": null,
+        "pc_m2": null,
+        "pf_m2": null
+      },
+      "ddr": {
+        "ifm_ddr_base": null,
+        "wgt_ddr_base": null,
+        "ofm_ddr_base": null
+      },
+      "comment": "Depthwise layers need groups=C; current CNN_V4 RTL does not directly implement groups/depthwise.",
+      "cnn_v4_current_rtl_warnings": [
+        "c_in exceeds current C_max=128 contract",
+        "f_out exceeds current F_max=128 contract"
+      ],
+      "cnn_v4_current_rtl_ready": false
+    },
+    {
+      "id": 23,
+      "name": "dw12_3x3",
+      "op_type": "depthwise_conv2d",
+      "groups": 512,
+      "branch": null,
+      "input_from": null,
+      "h_in": 14,
+      "w_in": 14,
+      "c_in": 512,
+      "f_out": 512,
+      "k": 3,
+      "conv_stride": 2,
+      "pad_top": 1,
+      "pad_bottom": 1,
+      "pad_left": 1,
+      "pad_right": 1,
+      "conv_h_out": 7,
+      "conv_w_out": 7,
+      "relu_en": true,
+      "pool": {
+        "enable": false,
+        "k": 0,
+        "stride": 0,
+        "pad": 0
+      },
+      "post_h": 7,
+      "post_w": 7,
+      "post_c": 512,
+      "ops": 451584,
+      "dse": {
+        "mode": null,
+        "pv_m1": null,
+        "pf_m1": null,
+        "pc_m2": null,
+        "pf_m2": null
+      },
+      "ddr": {
+        "ifm_ddr_base": null,
+        "wgt_ddr_base": null,
+        "ofm_ddr_base": null
+      },
+      "comment": "Depthwise layers need groups=C; current CNN_V4 RTL does not directly implement groups/depthwise.",
+      "cnn_v4_current_rtl_warnings": [
+        "groups/depthwise conv not directly supported by current CNN_V4 RTL",
+        "conv stride != 1 may require RTL/source update or preprocessing",
+        "padding != 0 may require RTL/source update or padded input preprocessing",
+        "c_in exceeds current C_max=128 contract",
+        "f_out exceeds current F_max=128 contract"
+      ],
+      "cnn_v4_current_rtl_ready": false
+    },
+    {
+      "id": 24,
+      "name": "pw12_1x1",
+      "op_type": "pointwise_conv2d",
+      "groups": 1,
+      "branch": null,
+      "input_from": null,
+      "h_in": 7,
+      "w_in": 7,
+      "c_in": 512,
+      "f_out": 1024,
+      "k": 1,
+      "conv_stride": 1,
+      "pad_top": 0,
+      "pad_bottom": 0,
+      "pad_left": 0,
+      "pad_right": 0,
+      "conv_h_out": 7,
+      "conv_w_out": 7,
+      "relu_en": true,
+      "pool": {
+        "enable": false,
+        "k": 0,
+        "stride": 0,
+        "pad": 0
+      },
+      "post_h": 7,
+      "post_w": 7,
+      "post_c": 1024,
+      "ops": 51380224,
+      "dse": {
+        "mode": null,
+        "pv_m1": null,
+        "pf_m1": null,
+        "pc_m2": null,
+        "pf_m2": null
+      },
+      "ddr": {
+        "ifm_ddr_base": null,
+        "wgt_ddr_base": null,
+        "ofm_ddr_base": null
+      },
+      "comment": "Depthwise layers need groups=C; current CNN_V4 RTL does not directly implement groups/depthwise.",
+      "cnn_v4_current_rtl_warnings": [
+        "c_in exceeds current C_max=128 contract",
+        "f_out exceeds current F_max=128 contract"
+      ],
+      "cnn_v4_current_rtl_ready": false
+    },
+    {
+      "id": 25,
+      "name": "dw13_3x3",
+      "op_type": "depthwise_conv2d",
+      "groups": 1024,
+      "branch": null,
+      "input_from": null,
+      "h_in": 7,
+      "w_in": 7,
+      "c_in": 1024,
+      "f_out": 1024,
+      "k": 3,
+      "conv_stride": 1,
+      "pad_top": 1,
+      "pad_bottom": 1,
+      "pad_left": 1,
+      "pad_right": 1,
+      "conv_h_out": 7,
+      "conv_w_out": 7,
+      "relu_en": true,
+      "pool": {
+        "enable": false,
+        "k": 0,
+        "stride": 0,
+        "pad": 0
+      },
+      "post_h": 7,
+      "post_w": 7,
+      "post_c": 1024,
+      "ops": 903168,
+      "dse": {
+        "mode": null,
+        "pv_m1": null,
+        "pf_m1": null,
+        "pc_m2": null,
+        "pf_m2": null
+      },
+      "ddr": {
+        "ifm_ddr_base": null,
+        "wgt_ddr_base": null,
+        "ofm_ddr_base": null
+      },
+      "comment": "Depthwise layers need groups=C; current CNN_V4 RTL does not directly implement groups/depthwise.",
+      "cnn_v4_current_rtl_warnings": [
+        "groups/depthwise conv not directly supported by current CNN_V4 RTL",
+        "padding != 0 may require RTL/source update or padded input preprocessing",
+        "c_in exceeds current C_max=128 contract",
+        "f_out exceeds current F_max=128 contract"
+      ],
+      "cnn_v4_current_rtl_ready": false
+    },
+    {
+      "id": 26,
+      "name": "pw13_1x1",
+      "op_type": "pointwise_conv2d",
+      "groups": 1,
+      "branch": null,
+      "input_from": null,
+      "h_in": 7,
+      "w_in": 7,
+      "c_in": 1024,
+      "f_out": 1024,
+      "k": 1,
+      "conv_stride": 1,
+      "pad_top": 0,
+      "pad_bottom": 0,
+      "pad_left": 0,
+      "pad_right": 0,
+      "conv_h_out": 7,
+      "conv_w_out": 7,
+      "relu_en": true,
+      "pool": {
+        "enable": false,
+        "k": 0,
+        "stride": 0,
+        "pad": 0
+      },
+      "post_h": 7,
+      "post_w": 7,
+      "post_c": 1024,
+      "ops": 102760448,
+      "dse": {
+        "mode": null,
+        "pv_m1": null,
+        "pf_m1": null,
+        "pc_m2": null,
+        "pf_m2": null
+      },
+      "ddr": {
+        "ifm_ddr_base": null,
+        "wgt_ddr_base": null,
+        "ofm_ddr_base": null
+      },
+      "comment": "Depthwise layers need groups=C; current CNN_V4 RTL does not directly implement groups/depthwise.",
+      "cnn_v4_current_rtl_warnings": [
+        "c_in exceeds current C_max=128 contract",
+        "f_out exceeds current F_max=128 contract"
+      ],
+      "cnn_v4_current_rtl_ready": false
+    },
+    {
+      "id": 27,
+      "name": "classifier_as_1x1_after_global_avgpool",
+      "op_type": "linear_as_1x1_conv",
+      "groups": 1,
+      "branch": null,
+      "input_from": null,
+      "h_in": 1,
+      "w_in": 1,
+      "c_in": 1024,
+      "f_out": 1000,
+      "k": 1,
+      "conv_stride": 1,
+      "pad_top": 0,
+      "pad_bottom": 0,
+      "pad_left": 0,
+      "pad_right": 0,
+      "conv_h_out": 1,
+      "conv_w_out": 1,
+      "relu_en": true,
+      "pool": {
+        "enable": false,
+        "k": 0,
+        "stride": 0,
+        "pad": 0
+      },
+      "post_h": 1,
+      "post_w": 1,
+      "post_c": 1000,
+      "ops": 2048000,
+      "dse": {
+        "mode": null,
+        "pv_m1": null,
+        "pf_m1": null,
+        "pc_m2": null,
+        "pf_m2": null
+      },
+      "ddr": {
+        "ifm_ddr_base": null,
+        "wgt_ddr_base": null,
+        "ofm_ddr_base": null
+      },
+      "comment": "Added so descriptor has 28 conv-like layers as DCP-CNN Table I reports; requires global average pool before this layer.",
+      "cnn_v4_current_rtl_warnings": [
+        "c_in exceeds current C_max=128 contract",
+        "f_out exceeds current F_max=128 contract"
+      ],
+      "cnn_v4_current_rtl_ready": false
+    }
+  ],
+  "excluded_from_main_evaluation": true,
+  "exclusion_reason": "Excluded from the main CNN_V4 evaluation plan because MobileNet-v1 uses depthwise separable convolution. The current canonical CNN_V4 RTL is treated as dense Conv/ReLU/Pooling without native depthwise/grouped-conv support."
+}
