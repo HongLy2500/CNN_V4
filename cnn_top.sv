@@ -299,6 +299,7 @@ module cnn_top
   logic [$clog2(H_MAX+1)-1:0]  ofm_ifm_stream_row_base_s;
   logic [$clog2(H_MAX+1)-1:0]  ofm_ifm_stream_num_rows_s;
   logic [$clog2(W_MAX+1)-1:0]  ofm_ifm_stream_col_base_s;
+  logic [1:0]                  ofm_ifm_stream_kind_s;
   logic [$clog2(H_MAX)-1:0]     ofm_ifm_stream_m1_row_slot_l_s;
   logic [15:0]                  ofm_ifm_stream_m1_ch_blk_g_s;
   logic [15:0]                  ofm_ifm_stream_m2_cgrp_g_s;
@@ -514,6 +515,7 @@ module cnn_top
     .ofm_ifm_stream_row_base(ofm_ifm_stream_row_base_s),
     .ofm_ifm_stream_num_rows(ofm_ifm_stream_num_rows_s),
     .ofm_ifm_stream_col_base(ofm_ifm_stream_col_base_s),
+    .ofm_ifm_stream_kind    (ofm_ifm_stream_kind_s),
     .ofm_ifm_stream_m1_row_slot_l(ofm_ifm_stream_m1_row_slot_l_s),
     .ofm_ifm_stream_m1_ch_blk_g(ofm_ifm_stream_m1_ch_blk_g_s),
     .ofm_ifm_stream_m2_cgrp_g(ofm_ifm_stream_m2_cgrp_g_s),
@@ -900,6 +902,7 @@ module cnn_top
     .ifm_stream_row_base(ofm_ifm_stream_row_base_s),
     .ifm_stream_num_rows(ofm_ifm_stream_num_rows_s),
     .ifm_stream_col_base(ofm_ifm_stream_col_base_s),
+    .ifm_stream_kind    (ofm_ifm_stream_kind_s),
     .ifm_stream_m1_row_slot_l(ofm_ifm_stream_m1_row_slot_l_s),
     .ifm_stream_m1_ch_blk_g(ofm_ifm_stream_m1_ch_blk_g_s),
     .ifm_stream_m2_cgrp_g(ofm_ifm_stream_m2_cgrp_g_s),

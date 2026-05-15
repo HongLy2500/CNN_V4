@@ -98,6 +98,13 @@ module ofm_buffer #(
     input logic [$clog2(H_MAX+1)-1:0]   ifm_stream_num_rows,
     input logic [$clog2(W_MAX+1)-1:0]   ifm_stream_col_base,
     input  logic                        ifm_stream_start,
+    // Explicit stream command identity from control_unit_top.
+    // Do not infer stream type from the current layer cfg_src_mode/cfg_next_mode:
+    // a same-mode runtime refill from the previous layer may still be active
+    // while the current layer's next mode is already different.
+    // Encoding matches strm_mode_t below:
+    //   0: idle/invalid, 1: M1 direct, 2: M2 direct, 3: M1->M2 transition
+    input  logic [1:0]                  ifm_stream_kind,
     input  logic [$clog2(H_MAX)-1:0]    ifm_stream_m1_row_slot_l,
     input  logic [15:0]                 ifm_stream_m1_ch_blk_g,
     input  logic [15:0]                 ifm_stream_m2_cgrp_g,
@@ -177,6 +184,13 @@ module ofm_buffer #(
         STRM_M2_DIRECT,
         STRM_M1_TO_M2
     } strm_mode_t;
+
+    // Input stream-kind encoding. Keep these equal to strm_mode_t encodings
+    // and to control_unit_top's OFM_STRM_* constants.
+    localparam logic [1:0] IFM_KIND_IDLE      = 2'd0;
+    localparam logic [1:0] IFM_KIND_M1_DIRECT = 2'd1;
+    localparam logic [1:0] IFM_KIND_M2_DIRECT = 2'd2;
+    localparam logic [1:0] IFM_KIND_M1_TO_M2  = 2'd3;
 
     // ============================================================
     // Physical storage
@@ -705,20 +719,26 @@ module ofm_buffer #(
                     strm_m1_ch_blk_q   <= ifm_stream_m1_ch_blk_g;
                     strm_m2_cgrp_q     <= ifm_stream_m2_cgrp_g;
 
-                    
-                    if (!src_mode_q && !next_mode_q) begin
-                        strm_mode_q <= STRM_M1_DIRECT;
-                    end
-                    else if (src_mode_q && next_mode_q) begin
-                        strm_mode_q <= STRM_M2_DIRECT;
-                    end
-                    else if (!src_mode_q && next_mode_q) begin
-                        strm_mode_q <= STRM_M1_TO_M2;
-                    end
-                    else begin
-                        strm_mode_q   <= STRM_IDLE;
-                        strm_active_q <= 1'b0;
-                    end
+                    // Stream kind is part of the command contract.
+                    // The OFM buffer must not infer it from the current layer's
+                    // cfg_src_mode/cfg_next_mode because a previous->current
+                    // same-mode runtime refill can still be in flight after the
+                    // current layer has advanced and its next mode has changed.
+                    case (ifm_stream_kind)
+                        IFM_KIND_M1_DIRECT: begin
+                            strm_mode_q <= STRM_M1_DIRECT;
+                        end
+                        IFM_KIND_M2_DIRECT: begin
+                            strm_mode_q <= STRM_M2_DIRECT;
+                        end
+                        IFM_KIND_M1_TO_M2: begin
+                            strm_mode_q <= STRM_M1_TO_M2;
+                        end
+                        default: begin
+                            strm_mode_q   <= STRM_IDLE;
+                            strm_active_q <= 1'b0;
+                        end
+                    endcase
                 end
                 else if (strm_active_q && ifm_ofm_wr_en && ifm_ofm_wr_ready) begin
                     // Once a same-mode stream word has been accepted by IFM buffer,
@@ -1373,6 +1393,28 @@ module ofm_buffer #(
                     ifm_ofm_wr_col_idx = strm_ch_q[COLIDX_W-1:0]; // cgrp
                     ifm_ofm_wr_data    = stream_word_v;
                     ifm_ofm_wr_keep    = expected_keep_v;
+                    
+if (strm_active_q && (strm_mode_q == STRM_M1_TO_M2)) begin
+  $display("DBG_OFM_M1M2_WORD t=%0t done_q=%0b have_lane=%0b ready=%0b wr_en=%0b wr_ready=%0b row=%0d gcol=%0d cgrp=%0d f=%0d w=%0d h=%0d src_pack=%0d stored_groups=%0d tag=%0d src_addr0=%0d tag0=%0d fill0=%0b",
+           $time,
+           layer_write_done_q,
+           m2_pack_have_lane_v,
+           m2_pack_ready_v,
+           ifm_ofm_wr_en,
+           ifm_ofm_wr_ready,
+           abs_row_v,
+           abs_col_base_v,
+           strm_ch_q,
+           f_out_q,
+           w_out_q,
+           h_out_q,
+           src_pack_q,
+           stored_groups_q,
+           layer_tag_q,
+           m2_src_addr_v,
+           mem_tag[0][m2_src_addr_v],
+           mem_fill[0][m2_src_addr_v][m2_src_lane_v]);
+end
                 end
 
                 default: begin
@@ -1423,5 +1465,81 @@ module ofm_buffer #(
             end
         end
     end
+    
+
+
+always_ff @(posedge clk) begin
+  if (rst_n) begin
+    if (strm_active_q && (strm_mode_q == STRM_M1_TO_M2)) begin
+      $display("DBG_OFM_M1M2_STATE t=%0t active=%0b mode=%0d row_base=%0d num_rows=%0d row=%0d col_base=%0d colgrp=%0d ch_or_cgrp=%0d w=%0d h=%0d f=%0d src_pack=%0d stored_groups=%0d layer_done=%0b wr_en=%0b wr_ready=%0b wr_bank=%0d wr_row=%0d wr_colidx=%0d keep=%h done=%0b",
+               $time,
+               strm_active_q,
+               strm_mode_q,
+               strm_row_base_q,
+               strm_num_rows_q,
+               strm_row_q,
+               strm_col_base_q,
+               strm_colgrp_q,
+               strm_ch_q,
+               w_out_q,
+               h_out_q,
+               f_out_q,
+               src_pack_q,
+               stored_groups_q,
+               layer_write_done_q,
+               ifm_ofm_wr_en,
+               ifm_ofm_wr_ready,
+               ifm_ofm_wr_bank,
+               ifm_ofm_wr_row_idx,
+               ifm_ofm_wr_col_idx,
+               ifm_ofm_wr_keep,
+               ifm_stream_done);
+    end
+  end
+end
+
+
+
+logic dbg_prev_layer_done_q;
+logic dbg_prev_layer_start_q;
+
+always_ff @(posedge clk or negedge rst_n) begin
+  if (!rst_n) begin
+    dbg_prev_layer_done_q  <= 1'b0;
+    dbg_prev_layer_start_q <= 1'b0;
+  end
+  else begin
+    dbg_prev_layer_done_q  <= layer_write_done_q;
+    dbg_prev_layer_start_q <= layer_start;
+
+    if (layer_start || (layer_write_done_q != dbg_prev_layer_done_q) ||
+        (strm_active_q && (strm_mode_q == STRM_M1_TO_M2))) begin
+      $display("DBG_OFM_DONE_LIFE t=%0t layer_start=%0b done_q=%0b prev_done=%0b tag=%0d prev_tag=%0d pix=%0d total=%0d src_mode=%0b next_mode=%0b strm_active=%0b strm_mode=%0d row_base=%0d num_rows=%0d row=%0d col_base=%0d colgrp=%0d cgrp=%0d wr_en=%0b wr_ready=%0b ifm_done=%0b",
+               $time,
+               layer_start,
+               layer_write_done_q,
+               dbg_prev_layer_done_q,
+               layer_tag_q,
+               prev_layer_tag_q,
+               pixels_written_q,
+               total_pixels_q,
+               src_mode_q,
+               next_mode_q,
+               strm_active_q,
+               strm_mode_q,
+               strm_row_base_q,
+               strm_num_rows_q,
+               strm_row_q,
+               strm_col_base_q,
+               strm_colgrp_q,
+               strm_ch_q,
+               ifm_ofm_wr_en,
+               ifm_ofm_wr_ready,
+               ifm_stream_done);
+    end
+  end
+end
+
+
 
 endmodule

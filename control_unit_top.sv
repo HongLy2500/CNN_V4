@@ -190,6 +190,7 @@ module control_unit_top
   output logic [$clog2(H_MAX)-1:0]      ofm_ifm_stream_m1_row_slot_l,
   output logic [15:0]                   ofm_ifm_stream_m1_ch_blk_g,
   output logic [15:0]                   ofm_ifm_stream_m2_cgrp_g,
+  output logic [1:0]                    ofm_ifm_stream_kind,
 
   input  logic                          ofm_ifm_stream_busy,
   input  logic                          ofm_ifm_stream_done,
@@ -241,6 +242,14 @@ module control_unit_top
   localparam int M1Q_AW    = (SM_M1_RDY_Q_DEPTH <= 1) ? 1 : $clog2(SM_M1_RDY_Q_DEPTH+1);
   localparam int M2Q_AW    = (SM_M2_RDY_Q_DEPTH <= 1) ? 1 : $clog2(SM_M2_RDY_Q_DEPTH+1);
   localparam int M1FQ_AW   = (HT <= 1) ? 1 : $clog2(HT+1);
+
+  // OFM->IFM stream command kind. Metadata only; payload/stream priority
+  // remains unchanged. This prevents ofm_buffer from inferring stream type
+  // from the current layer's next-mode context.
+  localparam logic [1:0] OFM_STRM_IDLE      = 2'd0;
+  localparam logic [1:0] OFM_STRM_M1_DIRECT = 2'd1;
+  localparam logic [1:0] OFM_STRM_M2_DIRECT = 2'd2;
+  localparam logic [1:0] OFM_STRM_M1_TO_M2  = 2'd3;
 
   typedef struct packed {
     logic [15:0] row_g;
@@ -536,6 +545,7 @@ module control_unit_top
   logic [COL_W-1:0]      trans_ifm_stream_col_base_s;
 
   logic                  sm_stream_start_s;
+  logic [1:0]            sm_stream_kind_s;
   logic [ROW_W-1:0]      sm_stream_row_base_s;
   logic [ROW_W-1:0]      sm_stream_num_rows_s;
   logic [COL_W-1:0]      sm_stream_col_base_s;
@@ -1490,6 +1500,7 @@ module control_unit_top
   // --------------------------------------------------------------------------
   always_comb begin
     sm_stream_start_s         = 1'b0;
+    sm_stream_kind_s          = OFM_STRM_IDLE;
     sm_stream_row_base_s      = '0;
     sm_stream_num_rows_s      = '0;
     sm_stream_col_base_s      = '0;
@@ -1500,6 +1511,7 @@ module control_unit_top
     if (!sm_exec_active_q && !transition_busy_s && !trans_ifm_stream_start_s && !ofm_ifm_stream_busy) begin
       if (sm_m1_mgr_active_s && m1_sm_req_valid_i) begin
         sm_stream_start_s         = 1'b1;
+        sm_stream_kind_s          = OFM_STRM_M1_DIRECT;
         sm_stream_row_base_s      = m1_sm_row_g_i[ROW_W-1:0];
         sm_stream_num_rows_s      = ROW_W'(1);
         sm_stream_col_base_s = m1_sm_col_blk_g_i * ((next_cfg_s.pv_m1 == 0) ? 16'd1 : next_cfg_s.pv_m1);
@@ -1508,6 +1520,7 @@ module control_unit_top
       end
       else if (sm_m2_mgr_active_s && sm_m2_active && m2_sm_req_valid_i) begin
         sm_stream_start_s         = 1'b1;
+        sm_stream_kind_s          = OFM_STRM_M2_DIRECT;
         sm_stream_row_base_s      = m2_sm_row_g_i[ROW_W-1:0];
         sm_stream_num_rows_s      = ROW_W'(1);
         sm_stream_col_base_s      = m2_sm_col_g_i[COL_W-1:0];
@@ -1813,6 +1826,14 @@ module control_unit_top
                                   ofm2ifm_stream_start_s |
                                   (((cur_cfg_s.mode == MODE2) && m2_ofm2ifm_stream_start_s) ? 1'b1 : 1'b0) |
                                   sm_stream_start_s;
+
+  // Stream-kind mux uses the exact same priority as the stream payload mux.
+  assign ofm_ifm_stream_kind = trans_ifm_stream_start_s ? OFM_STRM_M1_TO_M2 :
+                               (ofm2ifm_stream_start_s ? OFM_STRM_M1_DIRECT :
+                               (((cur_cfg_s.mode == MODE2) && m2_ofm2ifm_stream_start_s) ?
+                                  OFM_STRM_M2_DIRECT :
+                                  (sm_stream_start_s ? sm_stream_kind_s : OFM_STRM_IDLE)));
+
   assign ofm_ifm_stream_row_base = trans_ifm_stream_start_s ? trans_ifm_stream_row_base_s :
                                    (ofm2ifm_stream_start_s ? ofm2ifm_row_q :
                                    (((cur_cfg_s.mode == MODE2) && m2_ofm2ifm_stream_start_s) ? m2_ofm2ifm_row_q : sm_stream_row_base_s));

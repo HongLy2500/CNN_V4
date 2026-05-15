@@ -48,15 +48,18 @@ module global_scheduler_fsm (
   output logic sched_error
 );
 
-  typedef enum logic [2:0] {
-    S_IDLE       = 3'd0,
-    S_PREP       = 3'd1,
-    S_COMPUTE    = 3'd2,
-    S_WAIT_NEXT  = 3'd3,
-    S_WAIT_STORE = 3'd4,
-    S_ADVANCE    = 3'd5,
-    S_DONE       = 3'd6,
-    S_ERROR      = 3'd7
+  typedef enum logic [3:0] {
+    S_IDLE           = 4'd0,
+    S_PREP           = 4'd1,
+    S_COMPUTE        = 4'd2,
+    S_WAIT_NEXT      = 4'd3,
+    S_WAIT_STORE     = 4'd4,
+    S_ADVANCE        = 4'd5,
+    S_DONE           = 4'd6,
+    S_ERROR          = 4'd7,
+    // M1->M2 transition must not be kicked at compute_done alone.
+    // Wait here until the producer OFM layer is actually closed.
+    S_WAIT_TRANS_OFM = 4'd8
   } sched_state_t;
 
   sched_state_t state_q, state_d;
@@ -70,6 +73,13 @@ module global_scheduler_fsm (
 
   logic transition_req_sent_q, transition_req_sent_d;
   logic store_req_sent_q,      store_req_sent_d;
+
+  // M1->M2 transition must wait for an OFM-done event that belongs to
+  // the current producer layer, not a stale high level from the previous
+  // layer.  This flag is reset when a new compute transaction is kicked
+  // and is set only after ofm_layer_write_done has been observed low
+  // during that transaction/wait phase.
+  logic trans_ofm_seen_low_q, trans_ofm_seen_low_d;
 
   logic need_initial_ifm;
   logic need_same_mode_refill;
@@ -91,6 +101,7 @@ module global_scheduler_fsm (
       next_wgt_ready_q       <= 1'b0;
       transition_req_sent_q  <= 1'b0;
       store_req_sent_q       <= 1'b0;
+      trans_ofm_seen_low_q   <= 1'b0;
     end
     else begin
       state_q                <= state_d;
@@ -101,6 +112,7 @@ module global_scheduler_fsm (
       next_wgt_ready_q       <= next_wgt_ready_d;
       transition_req_sent_q  <= transition_req_sent_d;
       store_req_sent_q       <= store_req_sent_d;
+      trans_ofm_seen_low_q   <= trans_ofm_seen_low_d;
     end
   end
 
@@ -114,6 +126,7 @@ module global_scheduler_fsm (
     next_wgt_ready_d      = next_wgt_ready_q;
     transition_req_sent_d = transition_req_sent_q;
     store_req_sent_d      = store_req_sent_q;
+    trans_ofm_seen_low_d  = trans_ofm_seen_low_q;
 
     kick_ifm_load          = 1'b0;
     kick_wgt_preload       = 1'b0;
@@ -140,6 +153,7 @@ module global_scheduler_fsm (
       next_wgt_ready_d      = 1'b0;
       transition_req_sent_d = 1'b0;
       store_req_sent_d      = 1'b0;
+      trans_ofm_seen_low_d  = 1'b0;
 
       hold_compute          = 1'b1;
       sched_busy            = 1'b0;
@@ -166,6 +180,7 @@ module global_scheduler_fsm (
           next_wgt_ready_d      = 1'b0;
           transition_req_sent_d = 1'b0;
           store_req_sent_d      = 1'b0;
+          trans_ofm_seen_low_d  = 1'b0;
 
           if (start) begin
             state_d = S_PREP;
@@ -192,8 +207,9 @@ module global_scheduler_fsm (
 
               if (((!need_initial_ifm) || (cur_ifm_ready_q === 1'b1)) &&
                   (bank_compute_ready === 1'b1)) begin
-                kick_compute = 1'b1;
-                state_d      = S_COMPUTE;
+                kick_compute          = 1'b1;
+                trans_ofm_seen_low_d = 1'b0;
+                state_d               = S_COMPUTE;
               end
             end
           end
@@ -209,6 +225,14 @@ module global_scheduler_fsm (
             if (next_valid && !next_wgt_req_sent_q) begin
               kick_wgt_preload    = 1'b1;
               next_wgt_req_sent_d = 1'b1;
+            end
+
+            // For M1->M2, qualify the producer OFM-done level by first
+            // observing it low during the current compute/wait phase.
+            // This prevents a stale high from the previous layer from
+            // authorizing an early transition.
+            if (need_transition_stream && !ofm_layer_write_done) begin
+              trans_ofm_seen_low_d = 1'b1;
             end
 
             if (compute_done) begin
@@ -228,11 +252,16 @@ module global_scheduler_fsm (
                 state_d = S_ERROR;
               end
               else if (need_transition_stream) begin
-                if (!transition_req_sent_q) begin
-                  kick_transition_stream = 1'b1;
-                  transition_req_sent_d  = 1'b1;
+                // M1->M2 is a layout-changing transition.  compute_done only
+                // ends the compute phase; the transition must be kicked from
+                // S_WAIT_TRANS_OFM after a current-layer OFM-done event is
+                // observed.  Do not sample raw ofm_layer_write_done here,
+                // because it may still be a stale level from the previous
+                // layer in the compute_done cycle.
+                if (!ofm_layer_write_done) begin
+                  trans_ofm_seen_low_d = 1'b1;
                 end
-                state_d = S_WAIT_NEXT;
+                state_d = S_WAIT_TRANS_OFM;
               end
               else if (need_same_mode_refill) begin
                 state_d = S_WAIT_NEXT;
@@ -240,6 +269,33 @@ module global_scheduler_fsm (
               else begin
                 state_d = S_ERROR;
               end
+            end
+          end
+        end
+
+        S_WAIT_TRANS_OFM: begin
+          hold_compute = 1'b1;
+
+          if (abort || any_error) begin
+            state_d = S_ERROR;
+          end
+          else if (!need_transition_stream) begin
+            state_d = S_ERROR;
+          end
+          else begin
+            if (!ofm_layer_write_done) begin
+              trans_ofm_seen_low_d = 1'b1;
+            end
+
+            // Accept OFM done only after it has been observed low in this
+            // producer layer.  A high level seen before that may belong to
+            // the previous layer and must not kick M1->M2 transition.
+            if (trans_ofm_seen_low_q && ofm_layer_write_done) begin
+              if (!transition_req_sent_q) begin
+                kick_transition_stream = 1'b1;
+                transition_req_sent_d  = 1'b1;
+              end
+              state_d = S_WAIT_NEXT;
             end
           end
         end
@@ -290,6 +346,7 @@ module global_scheduler_fsm (
           next_wgt_ready_d      = 1'b0;
           transition_req_sent_d = 1'b0;
           store_req_sent_d      = 1'b0;
+          trans_ofm_seen_low_d  = 1'b0;
 
           state_d = S_PREP;
         end
