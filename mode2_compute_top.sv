@@ -301,5 +301,74 @@ always_ff @(posedge clk or negedge rst_n) begin
   end
 end
 
+`ifndef SYNTHESIS
+
+logic [31:0] dbg_m2_pipe_evt_q;
+
+logic dbg_m2_pipe_l5_s;
+assign dbg_m2_pipe_l5_s =
+       (K_cur     == 4'd3)  &&
+       (C_cur     == 8'd24) &&
+       (F_cur     == 8'd24) &&
+       (Hout_cur  == 16'd52) &&
+       (Wout_cur  == 16'd84);
+
+function automatic logic dbg_m2_pipe_col_focus(input logic [15:0] col_g);
+begin
+  dbg_m2_pipe_col_focus =
+      (col_g < 16'd4) ||
+      ((col_g >= 16'd30) && (col_g <= 16'd34)) ||
+      ((col_g >= 16'd62) && (col_g <= 16'd66)) ||
+      ((col_g >= 16'd80) && (col_g <= 16'd83));
+end
+endfunction
+
+always_ff @(posedge clk or negedge rst_n) begin
+  if (!rst_n) begin
+    dbg_m2_pipe_evt_q <= 32'd0;
+  end else begin
+    if (dbg_m2_pipe_l5_s &&
+        (dr_write_en || mac_en || ce_mac_data_out_valid || relu_data_out_valid || ofm_wr_en) &&
+        (dbg_m2_pipe_col_focus(ce_out_col_g) ||
+         dbg_m2_pipe_col_focus(relu_col_g) ||
+         dbg_m2_pipe_col_focus(ofm_wr_col) ||
+         (ce_mac_data_out_valid && (ce_mac_data_out[0*PSUM_W +: PSUM_W] == '0)) ||
+         (relu_data_out_valid && (relu_data_out[0*PSUM_W +: PSUM_W] == '0)) ||
+         (ofm_wr_en && (ofm_wr_data[0*DATA_W +: DATA_W] == '0)))) begin
+
+      dbg_m2_pipe_evt_q <= dbg_m2_pipe_evt_q + 32'd1;
+
+      $display("DBG_M2_PIPE_L5 t=%0t evt=%0d start=%0b busy=%0b done=%0b pool=%0b tile_base=%0d tile_count=%0d dr_wr=%0b dr_row=%0d dr0=%0d mac_en=%0b clr=%0b ce_v=%0b row=%0d col=%0d cgrp=%0d fgrp=%0d ky=%0d kx=%0d ifm0=%0d w0=%0d mac0=%0d relu_v=%0b relu_row=%0d relu_col=%0d relu_fbase=%0d relu0=%0d wr=%0b wr_row=%0d wr_col=%0d wr_fbase=%0d wr0=%0d", $time, dbg_m2_pipe_evt_q + 32'd1, start, busy, done, pool_en, tile_col_base_g, tile_col_count, dr_write_en, dr_write_row_idx, $signed(dr_write_data[0*DATA_W +: DATA_W]), mac_en, clear_psum, ce_mac_data_out_valid, ce_out_row_g, ce_out_col_g, c_group, f_group, ky, kx, $signed(ce_data_out_logic[0*DATA_W +: DATA_W]), $signed(ce_weight_out[0*DATA_W +: DATA_W]), $signed(ce_mac_data_out[0*PSUM_W +: PSUM_W]), relu_data_out_valid, relu_row_g, relu_col_g, relu_f_base, $signed(relu_data_out[0*PSUM_W +: PSUM_W]), ofm_wr_en, ofm_wr_row, ofm_wr_col, ofm_wr_f_base, $signed(ofm_wr_data[0*DATA_W +: DATA_W]));
+    end
+  end
+end
+
+`endif
+
+`ifndef SYNTHESIS
+
+logic [31:0] dbg_l8_pipe_evt_q;
+
+function automatic logic dbg_l8_focus_coord(input logic [15:0] row_g, input logic [15:0] col_g, input logic [15:0] fbase_g);
+begin
+  dbg_l8_focus_coord = (fbase_g == 16'd0) && (row_g < 16'd4) && ((col_g < 16'd40) || ((col_g >= 16'd60) && (col_g < 16'd78)));
+end
+endfunction
+
+logic dbg_l8_layer_s;
+assign dbg_l8_layer_s = (K_cur == 4'd3) && (F_cur == 8'd16) && (Hout_cur == 16'd46) && (Wout_cur == 16'd78);
+
+always_ff @(posedge clk or negedge rst_n) begin
+  if (!rst_n) begin
+    dbg_l8_pipe_evt_q <= 32'd0;
+  end else begin
+    if (dbg_l8_layer_s && ((ce_mac_data_out_valid && dbg_l8_focus_coord(ce_out_row_g, ce_out_col_g, ce_mac_f_base)) || (relu_data_out_valid && dbg_l8_focus_coord(relu_row_g, relu_col_g, relu_f_base)) || (ofm_wr_en && dbg_l8_focus_coord(ofm_wr_row, ofm_wr_col, ofm_wr_f_base)))) begin
+      dbg_l8_pipe_evt_q <= dbg_l8_pipe_evt_q + 32'd1;
+      $display("DBG_L8_PIPE_ALIGN t=%0t evt=%0d pool=%0b tile_base=%0d tile_count=%0d mac=%0b clr=%0b ky=%0d kx=%0d cg=%0d fg=%0d ce_v=%0b ce_row=%0d ce_col=%0d ce_fbase=%0d ce0=%0d ce1=%0d ce2=%0d ce3=%0d relu_v=%0b relu_row=%0d relu_col=%0d relu_fbase=%0d relu0=%0d relu1=%0d relu2=%0d relu3=%0d wr=%0b wr_row=%0d wr_col=%0d wr_fbase=%0d wr0=%0d wr1=%0d wr2=%0d wr3=%0d", $time, dbg_l8_pipe_evt_q + 32'd1, pool_en, tile_col_base_g, tile_col_count, mac_en, clear_psum, ky, kx, c_group, f_group, ce_mac_data_out_valid, ce_out_row_g, ce_out_col_g, ce_mac_f_base, $signed(ce_mac_data_out[0*PSUM_W +: PSUM_W]), $signed(ce_mac_data_out[1*PSUM_W +: PSUM_W]), $signed(ce_mac_data_out[2*PSUM_W +: PSUM_W]), $signed(ce_mac_data_out[3*PSUM_W +: PSUM_W]), relu_data_out_valid, relu_row_g, relu_col_g, relu_f_base, $signed(relu_data_out[0*PSUM_W +: PSUM_W]), $signed(relu_data_out[1*PSUM_W +: PSUM_W]), $signed(relu_data_out[2*PSUM_W +: PSUM_W]), $signed(relu_data_out[3*PSUM_W +: PSUM_W]), ofm_wr_en, ofm_wr_row, ofm_wr_col, ofm_wr_f_base, $signed(ofm_wr_data[0*DATA_W +: DATA_W]), $signed(ofm_wr_data[1*DATA_W +: DATA_W]), $signed(ofm_wr_data[2*DATA_W +: DATA_W]), $signed(ofm_wr_data[3*DATA_W +: DATA_W]));
+    end
+  end
+end
+
+`endif
 
 endmodule

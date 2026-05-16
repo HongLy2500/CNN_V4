@@ -591,5 +591,65 @@ always_ff @(posedge clk or negedge rst_n) begin
   end
 end
 
+`ifndef SYNTHESIS
+
+logic        dbg_ifm_m2_rd_q;
+logic        dbg_ifm_m2_rd_focus_q;
+logic [$clog2(C_MAX)-1:0] dbg_ifm_m2_bank_base_q;
+logic [$clog2(H_MAX)-1:0] dbg_ifm_m2_row_q;
+logic [$clog2(W_MAX)-1:0] dbg_ifm_m2_col_l_q;
+logic [31:0] dbg_ifm_m2_cgrp_q;
+logic [31:0] dbg_ifm_m2_addr_q;
+
+function automatic logic dbg_ifm_m2_col_focus(input logic [31:0] col_l);
+begin
+  dbg_ifm_m2_col_focus = (col_l <= 32'd2) || ((PC > 2) && ((col_l + 32'd2) >= PC));
+end
+endfunction
+
+always_ff @(posedge clk or negedge rst_n) begin
+  if (!rst_n) begin
+    dbg_ifm_m2_rd_q         <= 1'b0;
+    dbg_ifm_m2_rd_focus_q   <= 1'b0;
+    dbg_ifm_m2_bank_base_q  <= '0;
+    dbg_ifm_m2_row_q        <= '0;
+    dbg_ifm_m2_col_l_q      <= '0;
+    dbg_ifm_m2_cgrp_q       <= 32'd0;
+    dbg_ifm_m2_addr_q       <= 32'd0;
+  end else begin
+
+    if (cfg_mode_q) begin
+
+      if (ofm_wr_en && ofm_wr_ready && ((ofm_wr_bank <= 2) || ((PC > 2) && ((ofm_wr_bank + 16'd2) >= PC)) || (ofm_wr_row_idx < 4))) begin
+        $display("DBG_IFM_M2_OFM_WR_X t=%0t bank_col_l=%0d row=%0d cgrp=%0d keep=%h wr_addr_valid=%0b wr_addr=%0d data0=%0d data1=%0d", $time, ofm_wr_bank, ofm_wr_row_idx, ofm_wr_col_idx, ofm_wr_keep, wr_addr_valid, wr_addr, $signed(ofm_wr_data[0*DATA_W +: DATA_W]), $signed(ofm_wr_data[1*DATA_W +: DATA_W]));
+      end
+
+      if (rd_en && dbg_ifm_m2_col_focus(rd_col_idx)) begin
+        $display("DBG_IFM_M2_RD_REQ t=%0t bank_base=%0d row=%0d col_l=%0d cgrp=%0d rd_addr_u32=%0d rd_addr=%0d cfg_C=%0d cfg_H=%0d cfg_W=%0d", $time, rd_bank_base, rd_row_idx, rd_col_idx, rd_m2_cgrp_u32, rd_addr_m2_u32, rd_addr_m2, cfg_c_in_q, cfg_h_in_q, cfg_w_in_q);
+      end
+
+      if (dbg_ifm_m2_rd_q && dbg_ifm_m2_rd_focus_q) begin
+        $display("DBG_IFM_M2_RD_RET t=%0t bank_base=%0d row=%0d col_l=%0d cgrp=%0d addr=%0d rd_valid=%0b data0=%0d data1=%0d cfg_C=%0d", $time, dbg_ifm_m2_bank_base_q, dbg_ifm_m2_row_q, dbg_ifm_m2_col_l_q, dbg_ifm_m2_cgrp_q, dbg_ifm_m2_addr_q, rd_valid_q, $signed(rd_data_q[0*DATA_W +: DATA_W]), $signed(rd_data_q[1*DATA_W +: DATA_W]), cfg_c_in_q);
+      end
+
+    end
+
+    dbg_ifm_m2_rd_q <= cfg_mode_q && rd_en;
+
+    if (cfg_mode_q && rd_en) begin
+      dbg_ifm_m2_bank_base_q <= rd_bank_base;
+      dbg_ifm_m2_row_q       <= rd_row_idx;
+      dbg_ifm_m2_col_l_q     <= rd_col_idx;
+      dbg_ifm_m2_cgrp_q      <= rd_m2_cgrp_u32;
+      dbg_ifm_m2_addr_q      <= rd_addr_m2_u32;
+      dbg_ifm_m2_rd_focus_q  <= dbg_ifm_m2_col_focus(rd_col_idx) || (rd_row_idx < 4);
+    end else begin
+      dbg_ifm_m2_rd_focus_q <= 1'b0;
+    end
+
+  end
+end
+
+`endif
 
 endmodule

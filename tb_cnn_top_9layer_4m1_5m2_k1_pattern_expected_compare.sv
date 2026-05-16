@@ -206,6 +206,53 @@ module tb_cnn_top_9layer_4m1_5m2_k1_pattern_expected_compare;
   initial clk = 1'b0;
   always #(CLK_PERIOD_NS/2) clk = ~clk;
 
+`ifndef SYNTHESIS
+always_ff @(posedge clk) begin
+  if (rst_n) begin
+    if ((dbg_layer_idx >= 4) && (m2_sm_refill_req_valid || m2_sm_refill_req_ready)) begin
+      $display("DBG_TB_M2_REFILL_REQ t=%0t cycle=%0d layer=%0d mode=%0b valid=%0b ready=%0b take=%0b row=%0d col_g=%0d col_l=%0d cgrp=%0d stream_start_cnt=%0d stream_done_cnt=%0d busy=%0b done=%0b err=%0b vec=%b", $time, cycle_count, dbg_layer_idx, dbg_mode, m2_sm_refill_req_valid, m2_sm_refill_req_ready, m2_sm_refill_req_valid && m2_sm_refill_req_ready, m2_sm_refill_row_g, m2_sm_refill_col_g, m2_sm_refill_col_l, m2_sm_refill_cgrp_g, ofm_ifm_stream_start_count, ofm_ifm_stream_done_count, busy, done, error, dbg_error_vec);
+    end
+  end
+end
+`endif
+
+
+task automatic dbg_tb_decode_final_word(input int word_idx, input logic [DDR_WORD_W-1:0] got_word, input logic [DDR_WORD_W-1:0] exp_word);
+  int words_per_ch;
+  int ch;
+  int rem;
+  int row;
+  int grp;
+  int col_g;
+  int src_row;
+  int src_col;
+  int src_ch;
+  logic [DATA_W-1:0] got_b;
+  logic [DATA_W-1:0] exp_b;
+begin
+  words_per_ch = L8_H_OUT * L8_STORED_GROUPS;
+  ch = word_idx / words_per_ch;
+  rem = word_idx % words_per_ch;
+  row = rem / L8_STORED_GROUPS;
+  grp = rem % L8_STORED_GROUPS;
+
+  $display("DBG_TB_FINAL_WORD_DECODE word=%0d ch=%0d row=%0d grp=%0d got=%h exp=%h words_per_ch=%0d", word_idx, ch, row, grp, got_word, exp_word, words_per_ch);
+
+  for (int lane = 0; lane < DDR_LANES; lane++) begin
+    col_g = grp * PC + lane;
+    got_b = got_word[lane*DATA_W +: DATA_W];
+    exp_b = exp_word[lane*DATA_W +: DATA_W];
+    src_row = row + SUM_KY;
+    src_col = col_g + SUM_KX;
+    src_ch = trace_final_to_input_ch(ch);
+
+    if ((lane < PC) && (col_g < L8_W_OUT)) begin
+      $display("DBG_TB_FINAL_LANE word=%0d lane=%0d ch=%0d row=%0d col=%0d got=%0d exp=%0d src_row=%0d src_col=%0d src_ch=%0d match=%0b", word_idx, lane, ch, row, col_g, got_b, exp_b, src_row, src_col, src_ch, (got_b === exp_b));
+    end
+  end
+end
+endtask
+
   function automatic int layer_c_in(input int layer_id);
     begin
       case (layer_id)
@@ -580,6 +627,9 @@ module tb_cnn_top_9layer_4m1_5m2_k1_pattern_expected_compare;
         if (got_word !== exp_word) begin
           if (mismatch < 16) begin
             $display("TB_MISMATCH_FINAL word=%0d got=0x%0h exp=0x%0h", j, got_word, exp_word);
+            if (j < 16) begin
+                dbg_tb_decode_final_word(j, got_word, exp_word);
+            end
           end
           mismatch++;
         end

@@ -15,9 +15,12 @@ module ce_controller_mode2 #(
   input  logic step_en,
 
   // Operand readiness from ce_mode2_top.
-  // This is used only to prime the first tuple of a new output block.
-  // Once S_RUN starts, the existing Mode-2 prefetch pipeline advances
-  // with step_en/mac_en exactly as before.
+  //
+  // After the Mode2 consume-qualified fix, step_en is no longer a raw
+  // free-running cadence.  ce_mode2_top must drive step_en only when the
+  // current IFM tuple and current weight tuple are both valid in their
+  // registers.  tuple_ready is kept as the block-start readiness guard for
+  // S_CLEAR; in S_RUN, all loop counters advance only on qualified step_en.
   input  logic tuple_ready,
 
   // =====================================================
@@ -218,6 +221,8 @@ module ce_controller_mode2 #(
         ((out_col_pair_base_l_s + 16'd2) < tile_col_count_eff);
   end
 
+  // step_en is consume-qualified by ce_mode2_top.  In S_CLEAR this also
+  // means the first tuple is ready to leave the clear phase.
   assign block_start_fire = step_en && tuple_ready;
 
   // =====================================================
@@ -243,7 +248,10 @@ module ce_controller_mode2 #(
       end
 
       S_CLEAR: begin
-        // Wait only for the first IFM/weight tuple of this output block.
+        // Wait for the first IFM/weight tuple of this output block.
+        // block_start_fire is qualified by ce_mode2_top's consume-ready
+        // contract, so S_RUN never starts before the first weight is
+        // registered and visible to the MAC.
         if (block_start_fire)
           next_state = S_RUN;
       end
@@ -394,8 +402,10 @@ module ce_controller_mode2 #(
     // Kept for interface symmetry/debug. mac_array_mode2 clears internally.
     clear_psum = (state == S_CLEAR);
 
-    // Accumulate in RUN cycles as in the original Mode-2 pipeline.
-    // tuple_ready only gates the transition out of S_CLEAR.
+    // Accumulate only on consume-qualified RUN cycles.  step_en is supplied
+    // by ce_mode2_top as the Mode2 equivalent of Mode1's ctrl_step_en.
+    // Therefore mac_en and loop-counter advance are aligned to a real
+    // data+weight consume event, not to raw controller cadence.
     mac_en = (state == S_RUN) && step_en;
 
     // Separate flush cycle so the last MAC accumulation is not lost.

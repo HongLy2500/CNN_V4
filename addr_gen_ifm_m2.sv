@@ -577,4 +577,191 @@ always_ff @(posedge clk or negedge rst_n) begin
   end
 end
 end
+
+`ifndef SYNTHESIS
+
+logic        dbg_m2_ag_req_q;
+logic [15:0] dbg_m2_ag_block_row_q;
+logic [15:0] dbg_m2_ag_block_col_q;
+logic [15:0] dbg_m2_ag_cgrp_q;
+logic [15:0] dbg_m2_ag_abs_row_q;
+logic [15:0] dbg_m2_ag_abs_col_q;
+logic [15:0] dbg_m2_ag_col_l_q;
+logic [15:0] dbg_m2_ag_fgrp_q;
+logic [K_ROW_W-1:0] dbg_m2_ag_ky_q;
+logic [K_ROW_W-1:0] dbg_m2_ag_kx_q;
+
+logic dbg_m2_ag_l5_s;
+
+assign dbg_m2_ag_l5_s =
+       (K_cur     == 4'd3)   &&
+       (C_cur     == 8'd24)  &&
+       (H_in      == 16'd54) &&
+       (W_in      == 16'd86) &&
+       (Hout_cur  == 16'd52) &&
+       (Wout_cur  == 16'd84);
+
+function automatic logic dbg_m2_ag_col_focus(
+  input logic [15:0] col_g,
+  input logic [15:0] col_l
+);
+begin
+  dbg_m2_ag_col_focus =
+      (col_g < 16'd4) ||
+      ((col_g >= 16'd30) && (col_g <= 16'd34)) ||
+      ((col_g >= 16'd62) && (col_g <= 16'd66)) ||
+      ((PC > 2) && ((col_l <= 16'd2) || ((col_l + 16'd2) >= PC)));
+end
+endfunction
+
+always_ff @(posedge clk or negedge rst_n) begin
+  if (!rst_n) begin
+    dbg_m2_ag_req_q       <= 1'b0;
+    dbg_m2_ag_block_row_q <= 16'd0;
+    dbg_m2_ag_block_col_q <= 16'd0;
+    dbg_m2_ag_cgrp_q      <= 16'd0;
+    dbg_m2_ag_abs_row_q   <= 16'd0;
+    dbg_m2_ag_abs_col_q   <= 16'd0;
+    dbg_m2_ag_col_l_q     <= 16'd0;
+    dbg_m2_ag_fgrp_q      <= 16'd0;
+    dbg_m2_ag_ky_q        <= '0;
+    dbg_m2_ag_kx_q        <= '0;
+  end else begin
+
+    // Return-side monitor: metadata delayed by 1 cycle to match IFM read latency.
+    if (dbg_m2_ag_req_q && dbg_m2_ag_l5_s) begin
+      $display({"DBG_M2_AG_RET_L5 t=%0t ",
+                "blk_row=%0d blk_col=%0d cgrp=%0d ky=%0d kx=%0d ",
+                "abs_row=%0d abs_col=%0d col_l=%0d fgrp=%0d ",
+                "ifm_rd_valid=%0b ifm_data0=%0d ifm_data1=%0d ",
+                "dr_wr=%0b dr_row=%0d dr_data0=%0d dr_data1=%0d"},
+               $time,
+               dbg_m2_ag_block_row_q,
+               dbg_m2_ag_block_col_q,
+               dbg_m2_ag_cgrp_q,
+               dbg_m2_ag_ky_q,
+               dbg_m2_ag_kx_q,
+               dbg_m2_ag_abs_row_q,
+               dbg_m2_ag_abs_col_q,
+               dbg_m2_ag_col_l_q,
+               dbg_m2_ag_fgrp_q,
+               ifm_rd_valid,
+               $signed(ifm_rd_data[0*DATA_W +: DATA_W]),
+               $signed(ifm_rd_data[1*DATA_W +: DATA_W]),
+               dr_write_en,
+               dr_write_row_idx,
+               $signed(dr_write_data[0*DATA_W +: DATA_W]),
+               $signed(dr_write_data[1*DATA_W +: DATA_W]));
+    end
+
+    // Issue-side monitor: print layer-5 K=3 requests near PC wrap boundary.
+    if (dbg_m2_ag_l5_s &&
+        issue_any &&
+        ((!issue_addr_valid) ||
+         dbg_m2_ag_col_focus(issue_abs_col_g16, issue_col_sel_l16))) begin
+      $display({"DBG_M2_AG_ISSUE_L5 t=%0t ",
+                "start=%0b pass=%0b mac=%0b out_v=%0b ",
+                "fgrp=%0d blk_row=%0d blk_col=%0d cgrp=%0d ky=%0d kx=%0d ",
+                "abs_row=%0d abs_col=%0d col_l=%0d ",
+                "addr_valid=%0b ifm_rd_en=%0b bank_base=%0d rd_row=%0d rd_col_l=%0d"},
+               $time,
+               start,
+               pass_start_pulse,
+               mac_en,
+               out_valid,
+               f_group,
+               issue_block_row,
+               issue_block_col,
+               issue_cgroup,
+               issue_ky,
+               issue_kx,
+               issue_abs_row16,
+               issue_abs_col_g16,
+               issue_col_sel_l16,
+               issue_addr_valid,
+               ifm_rd_en,
+               ifm_rd_bank_base,
+               ifm_rd_row_idx,
+               ifm_rd_col_idx);
+    end
+
+    dbg_m2_ag_req_q <= ifm_rd_en;
+
+    if (ifm_rd_en) begin
+      dbg_m2_ag_block_row_q <= issue_block_row;
+      dbg_m2_ag_block_col_q <= issue_block_col;
+      dbg_m2_ag_cgrp_q      <= issue_cgroup;
+      dbg_m2_ag_ky_q        <= issue_ky;
+      dbg_m2_ag_kx_q        <= issue_kx;
+      dbg_m2_ag_abs_row_q   <= issue_abs_row16;
+      dbg_m2_ag_abs_col_q   <= issue_abs_col_g16;
+      dbg_m2_ag_col_l_q     <= issue_col_sel_l16;
+      dbg_m2_ag_fgrp_q      <= f_group;
+    end
+  end
+end
+
+`endif
+
+`ifndef SYNTHESIS
+
+logic        dbg_l8_ag_req_q;
+logic [15:0] dbg_l8_ag_block_row_q;
+logic [15:0] dbg_l8_ag_block_col_q;
+logic [15:0] dbg_l8_ag_cgrp_q;
+logic [15:0] dbg_l8_ag_abs_row_q;
+logic [15:0] dbg_l8_ag_abs_col_q;
+logic [15:0] dbg_l8_ag_col_l_q;
+logic [15:0] dbg_l8_ag_fgrp_q;
+logic [K_ROW_W-1:0] dbg_l8_ag_ky_q;
+logic [K_ROW_W-1:0] dbg_l8_ag_kx_q;
+
+logic dbg_l8_ag_layer_s;
+assign dbg_l8_ag_layer_s = (K_cur == 4'd3) && (Hout_cur == 16'd46) && (Wout_cur == 16'd78);
+
+function automatic logic dbg_l8_ag_focus(input logic [15:0] row_g, input logic [15:0] col_g, input logic [15:0] cgrp_g);
+begin
+  dbg_l8_ag_focus = (cgrp_g == 16'd0) && (row_g < 16'd6) && (col_g < 16'd30);
+end
+endfunction
+
+always_ff @(posedge clk or negedge rst_n) begin
+  if (!rst_n) begin
+    dbg_l8_ag_req_q       <= 1'b0;
+    dbg_l8_ag_block_row_q <= 16'd0;
+    dbg_l8_ag_block_col_q <= 16'd0;
+    dbg_l8_ag_cgrp_q      <= 16'd0;
+    dbg_l8_ag_abs_row_q   <= 16'd0;
+    dbg_l8_ag_abs_col_q   <= 16'd0;
+    dbg_l8_ag_col_l_q     <= 16'd0;
+    dbg_l8_ag_fgrp_q      <= 16'd0;
+    dbg_l8_ag_ky_q        <= '0;
+    dbg_l8_ag_kx_q        <= '0;
+  end else begin
+    if (dbg_l8_ag_req_q && dbg_l8_ag_layer_s && dbg_l8_ag_focus(dbg_l8_ag_block_row_q, dbg_l8_ag_block_col_q, dbg_l8_ag_cgrp_q)) begin
+      $display("DBG_L8_AG_RET t=%0t blk_row=%0d blk_col=%0d cgrp=%0d ky=%0d kx=%0d abs_row=%0d abs_col=%0d col_l=%0d fgrp=%0d ifm_rd_valid=%0b ifm0=%0d ifm1=%0d dr_wr=%0b dr_row=%0d dr0=%0d dr1=%0d", $time, dbg_l8_ag_block_row_q, dbg_l8_ag_block_col_q, dbg_l8_ag_cgrp_q, dbg_l8_ag_ky_q, dbg_l8_ag_kx_q, dbg_l8_ag_abs_row_q, dbg_l8_ag_abs_col_q, dbg_l8_ag_col_l_q, dbg_l8_ag_fgrp_q, ifm_rd_valid, $signed(ifm_rd_data[0*DATA_W +: DATA_W]), $signed(ifm_rd_data[1*DATA_W +: DATA_W]), dr_write_en, dr_write_row_idx, $signed(dr_write_data[0*DATA_W +: DATA_W]), $signed(dr_write_data[1*DATA_W +: DATA_W]));
+    end
+
+    if (dbg_l8_ag_layer_s && issue_any && dbg_l8_ag_focus(issue_block_row, issue_block_col, issue_cgroup)) begin
+      $display("DBG_L8_AG_ISSUE t=%0t start=%0b pass=%0b mac=%0b out_v=%0b fgrp=%0d blk_row=%0d blk_col=%0d cgrp=%0d ky=%0d kx=%0d abs_row=%0d abs_col=%0d col_l=%0d addr_valid=%0b ifm_rd_en=%0b bank_base=%0d rd_row=%0d rd_col_l=%0d", $time, start, pass_start_pulse, mac_en, out_valid, f_group, issue_block_row, issue_block_col, issue_cgroup, issue_ky, issue_kx, issue_abs_row16, issue_abs_col_g16, issue_col_sel_l16, issue_addr_valid, ifm_rd_en, ifm_rd_bank_base, ifm_rd_row_idx, ifm_rd_col_idx);
+    end
+
+    dbg_l8_ag_req_q <= ifm_rd_en;
+
+    if (ifm_rd_en) begin
+      dbg_l8_ag_block_row_q <= issue_block_row;
+      dbg_l8_ag_block_col_q <= issue_block_col;
+      dbg_l8_ag_cgrp_q      <= issue_cgroup;
+      dbg_l8_ag_ky_q        <= issue_ky;
+      dbg_l8_ag_kx_q        <= issue_kx;
+      dbg_l8_ag_abs_row_q   <= issue_abs_row16;
+      dbg_l8_ag_abs_col_q   <= issue_abs_col_g16;
+      dbg_l8_ag_col_l_q     <= issue_col_sel_l16;
+      dbg_l8_ag_fgrp_q      <= f_group;
+    end
+  end
+end
+
+`endif
+
 endmodule

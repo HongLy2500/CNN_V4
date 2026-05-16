@@ -1540,6 +1540,212 @@ always_ff @(posedge clk or negedge rst_n) begin
   end
 end
 
+`ifndef SYNTHESIS
+
+function automatic logic dbg_ofm_mon_dim_focus(input logic [15:0] h, input logic [15:0] w, input logic [7:0] f);
+begin
+  dbg_ofm_mon_dim_focus = ((h == 16'd54) && (w == 16'd86) && (f == 8'd24)) || ((h == 16'd52) && (w == 16'd84) && (f == 8'd24)) || ((h == 16'd50) && (w == 16'd82) && (f == 8'd32));
+end
+endfunction
+
+function automatic logic dbg_ofm_mon_col_focus(input logic [15:0] col_g);
+begin
+  dbg_ofm_mon_col_focus = (col_g < 16'd4) || ((col_g >= 16'd30) && (col_g <= 16'd34)) || ((col_g >= 16'd62) && (col_g <= 16'd66)) || ((PC > 2) && (((col_g % PC) <= 16'd2) || (((col_g % PC) + 16'd2) >= PC)));
+end
+endfunction
+
+always @(posedge clk or negedge rst_n) begin : DBG_OFM_MON_PROC
+  integer dbg_ofm_mon_tok_i;
+
+  if (!rst_n) begin
+    // debug monitor only
+  end else begin
+
+    if (layer_start && (cfg_src_mode || cfg_next_mode) && dbg_ofm_mon_dim_focus(cfg_h_out, cfg_w_out, cfg_f_out)) begin
+      $display("DBG_OFM_CFG_M2_FOCUS t=%0t layer_start src_mode=%0b next_mode=%0b pool=%0b H=%0d W=%0d F=%0d pv_cur=%0d pf_cur=%0d pv_next=%0d pf_next=%0d old_tag=%0d new_tag=%0d prev_tag=%0d", $time, cfg_src_mode, cfg_next_mode, cfg_pool_en, cfg_h_out, cfg_w_out, cfg_f_out, cfg_pv_cur, cfg_pf_cur, cfg_pv_next, cfg_pf_next, layer_tag_q, layer_tag_q + 1'b1, prev_layer_tag_q);
+    end
+
+    if (m2_wr_en && dbg_ofm_mon_dim_focus(h_out_q, w_out_q, f_out_q) && (dbg_ofm_mon_col_focus(m2_wr_col) || (m2_wr_data[0*M2_IN_W +: M2_IN_W] == '0))) begin
+      $display("DBG_OFM_M2_WR_FOCUS t=%0t tag=%0d prev_tag=%0d src=%0b next=%0b H=%0d W=%0d F=%0d row=%0d col=%0d fbase=%0d data0=%0d done=%0b pix=%0d total=%0d", $time, layer_tag_q, prev_layer_tag_q, src_mode_q, next_mode_q, h_out_q, w_out_q, f_out_q, m2_wr_row, m2_wr_col, m2_wr_f_base, $signed(m2_wr_data[0*M2_IN_W +: M2_IN_W]), layer_write_done_q, pixels_written_q, total_pixels_q);
+    end
+
+    for (dbg_ofm_mon_tok_i = 0; dbg_ofm_mon_tok_i < PF; dbg_ofm_mon_tok_i = dbg_ofm_mon_tok_i + 1) begin
+      if (m2_sm_ready_valid[dbg_ofm_mon_tok_i] && (dbg_ofm_mon_dim_focus(h_out_q, w_out_q, f_out_q) || dbg_ofm_mon_dim_focus(prev_h_out_q, prev_w_out_q, prev_f_out_q))) begin
+        $display("DBG_OFM_M2_READY_TOKEN t=%0t tok=%0d tag=%0d prev_tag=%0d bank_cgrp=%0d row=%0d col=%0d src_mode=%0b next_mode=%0b H=%0d W=%0d F=%0d prevH=%0d prevW=%0d prevF=%0d", $time, dbg_ofm_mon_tok_i, layer_tag_q, prev_layer_tag_q, m2_sm_ready_bank[dbg_ofm_mon_tok_i], m2_sm_ready_row_g[dbg_ofm_mon_tok_i], m2_sm_ready_colbase_g[dbg_ofm_mon_tok_i], src_mode_q, next_mode_q, h_out_q, w_out_q, f_out_q, prev_h_out_q, prev_w_out_q, prev_f_out_q);
+      end
+    end
+
+    if (ifm_stream_start && (ifm_stream_kind == IFM_KIND_M2_DIRECT) && (dbg_ofm_mon_dim_focus(h_out_q, w_out_q, f_out_q) || dbg_ofm_mon_dim_focus(prev_h_out_q, prev_w_out_q, prev_f_out_q))) begin
+      $display("DBG_OFM_M2_STREAM_START t=%0t active=%0b mode=%0d kind=%0d src=%0b next=%0b row_base=%0d num_rows=%0d col=%0d cgrp=%0d tag=%0d prev_tag=%0d H=%0d W=%0d F=%0d prevH=%0d prevW=%0d prevF=%0d", $time, strm_active_q, strm_mode_q, ifm_stream_kind, src_mode_q, next_mode_q, ifm_stream_row_base, ifm_stream_num_rows, ifm_stream_col_base, ifm_stream_m2_cgrp_g, layer_tag_q, prev_layer_tag_q, h_out_q, w_out_q, f_out_q, prev_h_out_q, prev_w_out_q, prev_f_out_q);
+    end
+
+    if (ifm_ofm_wr_en && ifm_ofm_wr_ready && ((strm_mode_q == STRM_M2_DIRECT) || (strm_mode_q == STRM_M1_TO_M2))) begin
+      $display("DBG_OFM_TO_IFM_WORD t=%0t strm_mode=%0d src=%0b next=%0b row_base=%0d row_q=%0d col_base=%0d cgrp_q=%0d ifm_bank_col_l=%0d ifm_row=%0d ifm_cgrp=%0d keep=%h data0=%0d tag=%0d prev_tag=%0d done=%0b", $time, strm_mode_q, src_mode_q, next_mode_q, strm_row_base_q, strm_row_q, strm_col_base_q, strm_m2_cgrp_q, ifm_ofm_wr_bank, ifm_ofm_wr_row_idx, ifm_ofm_wr_col_idx, ifm_ofm_wr_keep, $signed(ifm_ofm_wr_data[0*DATA_W +: DATA_W]), layer_tag_q, prev_layer_tag_q, ifm_stream_done);
+    end
+
+  end
+end
+
+`endif
+
+
+`ifndef SYNTHESIS
+
+logic        dbg_ofm_l8_wr_q;
+integer      dbg_ofm_l8_row_q;
+integer      dbg_ofm_l8_col_q;
+integer      dbg_ofm_l8_fbase_q;
+integer      dbg_ofm_l8_grp_q;
+integer      dbg_ofm_l8_lane_q;
+integer      dbg_ofm_l8_addr_q;
+integer      dbg_ofm_l8_ch0_q;
+integer      dbg_ofm_l8_ch1_q;
+integer      dbg_ofm_l8_ch2_q;
+integer      dbg_ofm_l8_ch3_q;
+
+function automatic logic dbg_ofm_l8_layer_active;
+begin
+  dbg_ofm_l8_layer_active = src_mode_q && (h_out_q == 16'd46) && (w_out_q == 16'd78) && (f_out_q == 8'd16);
+end
+endfunction
+
+function automatic logic dbg_ofm_l8_focus_col(input logic [15:0] col_g);
+begin
+  dbg_ofm_l8_focus_col = (col_g < 16'd24) || ((col_g >= 16'd30) && (col_g < 16'd36)) || ((col_g >= 16'd62) && (col_g < 16'd68));
+end
+endfunction
+
+always @(posedge clk or negedge rst_n) begin : DBG_OFM_L8_M2WR_MON
+  integer dbg_grp;
+  integer dbg_lane;
+  integer dbg_addr;
+  integer dbg_ch0;
+  integer dbg_ch1;
+  integer dbg_ch2;
+  integer dbg_ch3;
+
+  if (!rst_n) begin
+    dbg_ofm_l8_wr_q    <= 1'b0;
+    dbg_ofm_l8_row_q   <= 0;
+    dbg_ofm_l8_col_q   <= 0;
+    dbg_ofm_l8_fbase_q <= 0;
+    dbg_ofm_l8_grp_q   <= 0;
+    dbg_ofm_l8_lane_q  <= 0;
+    dbg_ofm_l8_addr_q  <= 0;
+    dbg_ofm_l8_ch0_q   <= 0;
+    dbg_ofm_l8_ch1_q   <= 0;
+    dbg_ofm_l8_ch2_q   <= 0;
+    dbg_ofm_l8_ch3_q   <= 0;
+  end else begin
+    if (dbg_ofm_l8_wr_q) begin
+      if ((dbg_ofm_l8_ch3_q < C_MAX) && (dbg_ofm_l8_addr_q < DEPTH) && (dbg_ofm_l8_lane_q < PV_MAX)) begin
+        $display("DBG_OFM_L8_M2WR_COMMIT t=%0t row=%0d col=%0d fbase=%0d grp=%0d lane=%0d addr=%0d ch0=%0d ch1=%0d ch2=%0d ch3=%0d mem0=%0d mem1=%0d mem2=%0d mem3=%0d fill0=%b fill1=%b fill2=%b fill3=%b tag0=%0d tag1=%0d tag2=%0d tag3=%0d layer_tag=%0d", $time, dbg_ofm_l8_row_q, dbg_ofm_l8_col_q, dbg_ofm_l8_fbase_q, dbg_ofm_l8_grp_q, dbg_ofm_l8_lane_q, dbg_ofm_l8_addr_q, dbg_ofm_l8_ch0_q, dbg_ofm_l8_ch1_q, dbg_ofm_l8_ch2_q, dbg_ofm_l8_ch3_q, $signed(mem_data[dbg_ofm_l8_ch0_q][dbg_ofm_l8_addr_q][dbg_ofm_l8_lane_q*DATA_W +: DATA_W]), $signed(mem_data[dbg_ofm_l8_ch1_q][dbg_ofm_l8_addr_q][dbg_ofm_l8_lane_q*DATA_W +: DATA_W]), $signed(mem_data[dbg_ofm_l8_ch2_q][dbg_ofm_l8_addr_q][dbg_ofm_l8_lane_q*DATA_W +: DATA_W]), $signed(mem_data[dbg_ofm_l8_ch3_q][dbg_ofm_l8_addr_q][dbg_ofm_l8_lane_q*DATA_W +: DATA_W]), mem_fill[dbg_ofm_l8_ch0_q][dbg_ofm_l8_addr_q][dbg_ofm_l8_lane_q], mem_fill[dbg_ofm_l8_ch1_q][dbg_ofm_l8_addr_q][dbg_ofm_l8_lane_q], mem_fill[dbg_ofm_l8_ch2_q][dbg_ofm_l8_addr_q][dbg_ofm_l8_lane_q], mem_fill[dbg_ofm_l8_ch3_q][dbg_ofm_l8_addr_q][dbg_ofm_l8_lane_q], mem_tag[dbg_ofm_l8_ch0_q][dbg_ofm_l8_addr_q], mem_tag[dbg_ofm_l8_ch1_q][dbg_ofm_l8_addr_q], mem_tag[dbg_ofm_l8_ch2_q][dbg_ofm_l8_addr_q], mem_tag[dbg_ofm_l8_ch3_q][dbg_ofm_l8_addr_q], layer_tag_q);
+      end
+    end
+
+    dbg_ofm_l8_wr_q <= 1'b0;
+
+    if (dbg_ofm_l8_layer_active() && m2_wr_en && (m2_wr_row < 16'd4) && dbg_ofm_l8_focus_col(m2_wr_col) && (m2_wr_f_base == 16'd0)) begin
+      dbg_grp  = (store_pack_q == 0) ? 0 : (m2_wr_col / store_pack_q);
+      dbg_lane = (store_pack_q == 0) ? 0 : (m2_wr_col % store_pack_q);
+      dbg_addr = ofm_phys_addr(m2_wr_row, dbg_grp);
+      dbg_ch0  = m2_wr_f_base + 0;
+      dbg_ch1  = m2_wr_f_base + 1;
+      dbg_ch2  = m2_wr_f_base + 2;
+      dbg_ch3  = m2_wr_f_base + 3;
+
+      if ((dbg_ch3 < C_MAX) && (dbg_addr < DEPTH) && (dbg_lane < PV_MAX)) begin
+        $display("DBG_OFM_L8_M2WR_REQ t=%0t row=%0d col=%0d fbase=%0d grp=%0d lane=%0d addr=%0d store_pack=%0d stored_groups=%0d tag=%0d in0=%0d in1=%0d in2=%0d in3=%0d old0=%0d old1=%0d old2=%0d old3=%0d oldfill0=%b oldfill1=%b oldfill2=%b oldfill3=%b oldtag0=%0d oldtag1=%0d oldtag2=%0d oldtag3=%0d", $time, m2_wr_row, m2_wr_col, m2_wr_f_base, dbg_grp, dbg_lane, dbg_addr, store_pack_q, stored_groups_q, layer_tag_q, $signed(m2_wr_data[0*M2_IN_W +: M2_IN_W]), $signed(m2_wr_data[1*M2_IN_W +: M2_IN_W]), $signed(m2_wr_data[2*M2_IN_W +: M2_IN_W]), $signed(m2_wr_data[3*M2_IN_W +: M2_IN_W]), $signed(mem_data[dbg_ch0][dbg_addr][dbg_lane*DATA_W +: DATA_W]), $signed(mem_data[dbg_ch1][dbg_addr][dbg_lane*DATA_W +: DATA_W]), $signed(mem_data[dbg_ch2][dbg_addr][dbg_lane*DATA_W +: DATA_W]), $signed(mem_data[dbg_ch3][dbg_addr][dbg_lane*DATA_W +: DATA_W]), mem_fill[dbg_ch0][dbg_addr][dbg_lane], mem_fill[dbg_ch1][dbg_addr][dbg_lane], mem_fill[dbg_ch2][dbg_addr][dbg_lane], mem_fill[dbg_ch3][dbg_addr][dbg_lane], mem_tag[dbg_ch0][dbg_addr], mem_tag[dbg_ch1][dbg_addr], mem_tag[dbg_ch2][dbg_addr], mem_tag[dbg_ch3][dbg_addr]);
+      end
+
+      dbg_ofm_l8_wr_q    <= 1'b1;
+      dbg_ofm_l8_row_q   <= m2_wr_row;
+      dbg_ofm_l8_col_q   <= m2_wr_col;
+      dbg_ofm_l8_fbase_q <= m2_wr_f_base;
+      dbg_ofm_l8_grp_q   <= dbg_grp;
+      dbg_ofm_l8_lane_q  <= dbg_lane;
+      dbg_ofm_l8_addr_q  <= dbg_addr;
+      dbg_ofm_l8_ch0_q   <= dbg_ch0;
+      dbg_ofm_l8_ch1_q   <= dbg_ch1;
+      dbg_ofm_l8_ch2_q   <= dbg_ch2;
+      dbg_ofm_l8_ch3_q   <= dbg_ch3;
+    end
+  end
+end
+
+`endif
+
+
+`ifndef SYNTHESIS
+
+logic        dbg_ofm_l8_dma_q;
+integer      dbg_ofm_l8_dma_lin_q;
+integer      dbg_ofm_l8_dma_ch_q;
+integer      dbg_ofm_l8_dma_row_q;
+integer      dbg_ofm_l8_dma_grp_q;
+integer      dbg_ofm_l8_dma_addr_q;
+logic [WORD_W-1:0] dbg_ofm_l8_dma_memword_q;
+logic [PV_MAX-1:0] dbg_ofm_l8_dma_memfill_q;
+logic [TAG_W-1:0] dbg_ofm_l8_dma_memtag_q;
+
+always @(posedge clk or negedge rst_n) begin : DBG_OFM_L8_DMA_MON
+  integer dbg_lin;
+  integer dbg_words_per_ch;
+  integer dbg_ch;
+  integer dbg_rem;
+  integer dbg_row;
+  integer dbg_grp;
+  integer dbg_addr;
+  logic [PV_MAX-1:0] dbg_keep;
+
+  if (!rst_n) begin
+    dbg_ofm_l8_dma_q         <= 1'b0;
+    dbg_ofm_l8_dma_lin_q     <= 0;
+    dbg_ofm_l8_dma_ch_q      <= 0;
+    dbg_ofm_l8_dma_row_q     <= 0;
+    dbg_ofm_l8_dma_grp_q     <= 0;
+    dbg_ofm_l8_dma_addr_q    <= 0;
+    dbg_ofm_l8_dma_memword_q <= '0;
+    dbg_ofm_l8_dma_memfill_q <= '0;
+    dbg_ofm_l8_dma_memtag_q  <= '0;
+  end else begin
+    if (dbg_ofm_l8_dma_q) begin
+      $display("DBG_OFM_L8_DMA_RET t=%0t lin=%0d ch=%0d row=%0d grp=%0d addr=%0d rd_valid=%0b dma_data=%h dma_keep=%h req_memword=%h req_memfill=%h req_memtag=%0d layer_tag=%0d", $time, dbg_ofm_l8_dma_lin_q, dbg_ofm_l8_dma_ch_q, dbg_ofm_l8_dma_row_q, dbg_ofm_l8_dma_grp_q, dbg_ofm_l8_dma_addr_q, dma_valid_q, dma_data_q, dma_keep_q, dbg_ofm_l8_dma_memword_q, dbg_ofm_l8_dma_memfill_q, dbg_ofm_l8_dma_memtag_q, layer_tag_q);
+    end
+
+    dbg_ofm_l8_dma_q <= 1'b0;
+
+    if ((h_out_q == 16'd46) && (w_out_q == 16'd78) && (f_out_q == 8'd16) && ofm_dma_rd_en && (ofm_dma_rd_addr < 24)) begin
+      dbg_lin = ofm_dma_rd_addr;
+      dbg_words_per_ch = h_out_q * stored_groups_q;
+
+      if (dbg_words_per_ch != 0) begin
+        dbg_ch = dbg_lin / dbg_words_per_ch;
+        dbg_rem = dbg_lin % dbg_words_per_ch;
+        dbg_row = dbg_rem / stored_groups_q;
+        dbg_grp = dbg_rem % stored_groups_q;
+        dbg_addr = ofm_phys_addr(dbg_row, dbg_grp);
+        dbg_keep = calc_keep_mask(store_pack_q, dbg_grp * store_pack_q, w_out_q);
+
+        if ((dbg_ch < C_MAX) && (dbg_addr < DEPTH)) begin
+          $display("DBG_OFM_L8_DMA_REQ t=%0t lin=%0d ch=%0d row=%0d grp=%0d addr=%0d store_pack=%0d stored_groups=%0d keep_calc=%h memtag=%0d layer_tag=%0d memfill=%h memword=%h", $time, dbg_lin, dbg_ch, dbg_row, dbg_grp, dbg_addr, store_pack_q, stored_groups_q, dbg_keep, mem_tag[dbg_ch][dbg_addr], layer_tag_q, mem_fill[dbg_ch][dbg_addr], mem_data[dbg_ch][dbg_addr]);
+
+          dbg_ofm_l8_dma_q         <= 1'b1;
+          dbg_ofm_l8_dma_lin_q     <= dbg_lin;
+          dbg_ofm_l8_dma_ch_q      <= dbg_ch;
+          dbg_ofm_l8_dma_row_q     <= dbg_row;
+          dbg_ofm_l8_dma_grp_q     <= dbg_grp;
+          dbg_ofm_l8_dma_addr_q    <= dbg_addr;
+          dbg_ofm_l8_dma_memword_q <= mem_data[dbg_ch][dbg_addr];
+          dbg_ofm_l8_dma_memfill_q <= mem_fill[dbg_ch][dbg_addr];
+          dbg_ofm_l8_dma_memtag_q  <= mem_tag[dbg_ch][dbg_addr];
+        end
+      end
+    end
+  end
+end
+
+`endif
 
 
 endmodule

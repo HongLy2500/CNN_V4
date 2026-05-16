@@ -79,13 +79,20 @@ module ce_mode2_top #(
   logic [PC*DATA_W-1:0]       data_out_raw;
   logic [PF*PC*DATA_W-1:0]    weight_out_raw;
 
-  // Block-start operand readiness for Mode 2.
-  // The CE waits in S_CLEAR until the first IFM/weight tuple of the
-  // current output block is loaded. After entering S_RUN, the existing
-  // prefetch-ahead cadence driven by pass_start_pulse/mac_en is preserved.
+  // Consume-qualified operand readiness for Mode 2.
+  // This mirrors Mode 1's ctrl_step_en contract:
+  // the controller/MAC may advance only after both the current IFM tuple
+  // and the current weight tuple are already valid in their registers.
   logic ifm_tuple_ready_q;
   logic wgt_tuple_ready_q;
   logic tuple_ready_s;
+  logic ctrl_step_en;
+
+  // One outstanding Mode-2 weight request at a time.  This prevents the
+  // weight register from being overwritten by a prefetched bundle before
+  // the current registered bundle is consumed by the MAC.
+  logic weight_req_inflight_q;
+  logic weight_bank_ready_m2_s;
 
   always_comb begin
     f_base_cur = f_group * PF;
@@ -93,6 +100,15 @@ module ce_mode2_top #(
   end
 
   assign tuple_ready_s = ifm_tuple_ready_q && wgt_tuple_ready_q;
+  assign ctrl_step_en = step_en && tuple_ready_s;
+
+  // Present the weight buffer as ready only when Mode 2 is allowed to
+  // issue a request for the current/next consumed tuple.  In particular,
+  // do not let pass_start_pulse prefetch over a still-unconsumed current
+  // weight bundle.
+  assign weight_bank_ready_m2_s = weight_bank_ready &&
+                                  !weight_req_inflight_q &&
+                                  (!wgt_tuple_ready_q || mac_en || start);
 
   ce_controller_mode2 #(
     .K_MAX    (K_MAX),
@@ -104,7 +120,7 @@ module ce_mode2_top #(
     .clk               (clk),
     .rst_n             (rst_n),
     .start             (start),
-    .step_en           (step_en),
+    .step_en           (ctrl_step_en),
     .tuple_ready       (tuple_ready_s),
     .K_cur             (K_cur),
     .C_cur             (C_cur),
@@ -172,7 +188,7 @@ module ce_mode2_top #(
     .out_row         (out_row),
     .out_col         (out_col),
     .wb_bank_sel     (weight_bank_sel),
-    .wb_bank_ready   (weight_bank_ready),
+    .wb_bank_ready   (weight_bank_ready_m2_s),
     .wb_rd_en        (wb_rd_en),
     .wb_rd_buf_sel   (wb_rd_buf_sel),
     .wb_rd_addr      (wb_rd_addr),
@@ -195,33 +211,56 @@ module ce_mode2_top #(
   );
 
   // ------------------------------------------------------------
-  // Tuple-ready tracking for Mode 2.
+  // Consume-qualified tuple tracking for Mode 2.
   //
-  // start/out_valid begin a new output block and invalidate the old
-  // first-tuple readiness. The CE controller uses tuple_ready only to
-  // release S_CLEAR. Do NOT clear readiness on every mac_en; otherwise
-  // Mode 2 is converted into a per-MAC handshake and can stall on layers
-  // with multiple C/F groups. Register writes have priority over clears
-  // so same-cycle return at a block boundary is not lost.
+  // This is the Mode-2 counterpart of Mode1's data_ready_q /
+  // weight_valid_q / ctrl_step_en contract.  A returned weight bundle
+  // first loads weight_register_mode2.  Only on the following cycle does
+  // wgt_tuple_ready_q allow ce_controller_mode2 to assert mac_en and
+  // advance the loop counters.  Therefore MAC never consumes the same
+  // cycle as weight_write_en.
   // ------------------------------------------------------------
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-      ifm_tuple_ready_q <= 1'b0;
-      wgt_tuple_ready_q <= 1'b0;
+      ifm_tuple_ready_q     <= 1'b0;
+      wgt_tuple_ready_q     <= 1'b0;
+      weight_req_inflight_q <= 1'b0;
     end
     else begin
-      if (start || out_valid) begin
-        ifm_tuple_ready_q <= 1'b0;
-        wgt_tuple_ready_q <= 1'b0;
+      if (start) begin
+        ifm_tuple_ready_q     <= 1'b0;
+        wgt_tuple_ready_q     <= 1'b0;
+        weight_req_inflight_q <= wb_rd_en;
       end
+      else begin
+        // IFM readiness is kept at output-block granularity, matching the
+        // existing Mode2 data-register lifecycle.  A write has priority
+        // over the block-boundary clear.
+        if (out_valid) begin
+          ifm_tuple_ready_q <= 1'b0;
+        end
+        if (dr_write_en) begin
+          ifm_tuple_ready_q <= 1'b1;
+        end
 
-      // Writes have priority over the block-boundary clears above.
-      if (dr_write_en) begin
-        ifm_tuple_ready_q <= 1'b1;
-      end
+        // Current weight bundle validity.  A real MAC consume invalidates
+        // the current registered weight.  A same-cycle return/write has
+        // priority and becomes consumable on the next cycle.
+        if (mac_en) begin
+          wgt_tuple_ready_q <= 1'b0;
+        end
+        if (weight_write_en) begin
+          wgt_tuple_ready_q <= 1'b1;
+        end
 
-      if (weight_write_en) begin
-        wgt_tuple_ready_q <= 1'b1;
+        // Track one outstanding weight request.  If a return and a new
+        // request ever happen in the same cycle, keep the request in-flight.
+        if (weight_write_en) begin
+          weight_req_inflight_q <= 1'b0;
+        end
+        if (wb_rd_en) begin
+          weight_req_inflight_q <= 1'b1;
+        end
       end
     end
   end
@@ -284,5 +323,44 @@ module ce_mode2_top #(
         mac_f_base <= f_base_cur;
     end
   end
+  
+  
+  `ifndef SYNTHESIS
+always_ff @(posedge clk or negedge rst_n) begin
+  if (!rst_n) begin
+    // debug only
+  end else begin
+    if ((K_cur == 4'd3) && (C_cur == 8'd24) && (F_cur == 8'd24) && (Hout_cur == 16'd52) && (Wout_cur == 16'd84) && (wb_rd_en || wb_rd_valid || weight_write_en || mac_en || out_valid)) begin
+      $display("DBG_M2_WGT_L5 t=%0t start=%0b pass=%0b mac=%0b out_v=%0b clr=%0b row=%0d col=%0d fg=%0d cg=%0d ky=%0d kx=%0d wb_en=%0b wb_addr=%0d wb_valid=%0b wwe=%0b wb0=%0d ww0=%0d wraw0=%0d wmask0=%0d ifm0=%0d mac0=%0d", $time, start, pass_start_pulse, mac_en, out_valid, clear_psum, out_row, out_col, f_group, c_group, ky, kx, wb_rd_en, wb_rd_addr, wb_rd_valid, weight_write_en, $signed(wb_rd_data[0*DATA_W +: DATA_W]), $signed(weight_write_data[0*DATA_W +: DATA_W]), $signed(weight_out_raw[0*DATA_W +: DATA_W]), $signed(weight_out[0*DATA_W +: DATA_W]), $signed(data_out_logic[0*DATA_W +: DATA_W]), $signed(mac_data_out[0*PSUM_W +: PSUM_W]));
+    end
+  end
+end
+`endif
+
+`ifndef SYNTHESIS
+
+logic [31:0] dbg_l8_ce_evt_q;
+
+function automatic logic dbg_l8_ce_focus_coord(input logic [15:0] row_g, input logic [15:0] col_g, input logic [15:0] fg_g, input logic [15:0] cg_g);
+begin
+  dbg_l8_ce_focus_coord = (fg_g == 16'd0) && (cg_g == 16'd0) && (row_g < 16'd4) && (col_g < 16'd24);
+end
+endfunction
+
+logic dbg_l8_ce_layer_s;
+assign dbg_l8_ce_layer_s = (K_cur == 4'd3) && (F_cur == 8'd16) && (Hout_cur == 16'd46) && (Wout_cur == 16'd78);
+
+always_ff @(posedge clk or negedge rst_n) begin
+  if (!rst_n) begin
+    dbg_l8_ce_evt_q <= 32'd0;
+  end else begin
+    if (dbg_l8_ce_layer_s && dbg_l8_ce_focus_coord(out_row, out_col, f_group, c_group) && (start || pass_start_pulse || wb_rd_en || wb_rd_valid || weight_write_en || ctrl_step_en || mac_en || out_valid || mac_data_out_valid)) begin
+      dbg_l8_ce_evt_q <= dbg_l8_ce_evt_q + 32'd1;
+      $display("DBG_L8_CE_TAP t=%0t evt=%0d start=%0b step_raw=%0b ctrl_step=%0b tuple=%0b ifm_rdy=%0b wgt_rdy=%0b inflight=%0b pass=%0b mac=%0b clr=%0b out_v=%0b mac_v=%0b row=%0d col=%0d fg=%0d cg=%0d ky=%0d kx=%0d wb_en=%0b wb_addr=%0d wb_valid=%0b wwe=%0b wb0=%0d wb1=%0d ww0=%0d ww1=%0d data_raw0=%0d data_raw1=%0d data0=%0d data1=%0d wraw0=%0d wraw1=%0d wmask0=%0d wmask1=%0d mac0=%0d mac1=%0d mac_f_base=%0d", $time, dbg_l8_ce_evt_q + 32'd1, start, step_en, ctrl_step_en, tuple_ready_s, ifm_tuple_ready_q, wgt_tuple_ready_q, weight_req_inflight_q, pass_start_pulse, mac_en, clear_psum, out_valid, mac_data_out_valid, out_row, out_col, f_group, c_group, ky, kx, wb_rd_en, wb_rd_addr, wb_rd_valid, weight_write_en, $signed(wb_rd_data[0*DATA_W +: DATA_W]), $signed(wb_rd_data[1*DATA_W +: DATA_W]), $signed(weight_write_data[0*DATA_W +: DATA_W]), $signed(weight_write_data[1*DATA_W +: DATA_W]), $signed(data_out_raw[0*DATA_W +: DATA_W]), $signed(data_out_raw[1*DATA_W +: DATA_W]), $signed(data_out_logic[0*DATA_W +: DATA_W]), $signed(data_out_logic[1*DATA_W +: DATA_W]), $signed(weight_out_raw[0*DATA_W +: DATA_W]), $signed(weight_out_raw[1*DATA_W +: DATA_W]), $signed(weight_out[0*DATA_W +: DATA_W]), $signed(weight_out[1*DATA_W +: DATA_W]), $signed(mac_data_out[0*PSUM_W +: PSUM_W]), $signed(mac_data_out[1*PSUM_W +: PSUM_W]), mac_f_base);
+    end
+  end
+end
+
+`endif
 
 endmodule
