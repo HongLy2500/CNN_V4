@@ -307,6 +307,10 @@ module control_unit_top
 
   logic ifm_load_done_s, wgt_load_done_s, ofm_store_done_s, phase_error_s;
   logic local_hold_compute_s, local_busy_s, local_done_s, local_error_s;
+  // K3/P1 Mode1 keeps one previous input row alive.  Suppress the first
+  // row-advance/free pulse of each Mode1 layer so output row 1 can still
+  // use input row 0 as its ky=0 tap.
+  logic m1_pady1_first_row_pending_q;
   logic transition_done_s, transition_busy_s, transition_error_s;
   logic same_mode_drain_done_s, sched_next_path_done_s;
   logic compute_done_s, compute_busy_s;
@@ -709,7 +713,24 @@ module control_unit_top
     end
   end
 
-  assign ifm_m1_advance_row = (cur_cfg_s.mode == MODE1) ? m1_out_row_done_pulse : 1'b0;
+  always_ff @(posedge clk or negedge rst_n) begin : PROC_M1_PADY1_ROW_ADVANCE_GUARD
+    if (!rst_n) begin
+      m1_pady1_first_row_pending_q <= 1'b1;
+    end
+    else if (abort || start_pulse || kick_compute_s || advance_layer_s) begin
+      m1_pady1_first_row_pending_q <= 1'b1;
+    end
+    else if ((cur_cfg_s.mode == MODE1) && m1_out_row_done_pulse && (cur_cfg_s.k == 4'd3)) begin
+      m1_pady1_first_row_pending_q <= 1'b0;
+    end
+  end
+
+  // For full K3/P1 Mode1, output row r still needs input row r-1.
+  // Therefore the first completed output row must not free/advance the IFM
+  // sliding window.  For non-K3 layers, preserve the original behavior.
+  assign ifm_m1_advance_row = (cur_cfg_s.mode == MODE1) &&
+                              m1_out_row_done_pulse &&
+                              ((cur_cfg_s.k != 4'd3) || !m1_pady1_first_row_pending_q);
 
   // DDR->IFM refill for a first/current mode-1 layer whose input height is
   // larger than the HT rows resident in ifm_buffer.  Initial preload fills
@@ -1839,6 +1860,7 @@ module control_unit_top
     .ifm_rd_en(ifm_rd_en), .ifm_rd_bank_base(ifm_rd_bank_base), .ifm_rd_row_idx(ifm_rd_row_idx),
     .ifm_rd_col_idx(ifm_rd_col_idx), .ifm_rd_col_g(ifm_rd_col_g), .ifm_rd_valid(ifm_rd_valid), .ifm_rd_data(ifm_rd_data),
     .m1_pass_start_pulse(m1_pass_start_pulse), .m1_chan_done_pulse(m1_chan_done_pulse), .m1_c_iter(m1_c_iter),
+    .m1_out_row(m1_out_row),
     .m1_dr_write_en(m1_dr_write_en), .m1_dr_write_row_idx(m1_dr_write_row_idx),
     .m1_dr_write_x_base(m1_dr_write_x_base), .m1_dr_write_data(m1_dr_write_data),
     .m2_start(m2_start), .m2_pass_start_pulse(m2_pass_start_pulse), .m2_mac_en(m2_mac_en),

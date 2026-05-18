@@ -14,6 +14,7 @@ module addr_gen_ifm_m1 #(
   // --------------------------------------------------
   input  logic [3:0] K_cur,
   input  logic [9:0] C_cur,
+  input  logic [15:0] H_cur,
   input  logic [15:0] W_cur,
   input  logic [7:0] Pv_cur,
 
@@ -36,6 +37,7 @@ module addr_gen_ifm_m1 #(
   input  logic        pass_start_pulse,
   input  logic        chan_done_pulse,
   input  logic [15:0] c_iter,
+  input  logic [15:0] out_row,
 
   // --------------------------------------------------
   // Read port from ifm_buffer (mode 1)
@@ -104,6 +106,12 @@ module addr_gen_ifm_m1 #(
   logic issue_is_last;
   logic issue_next_col_wrap;
 
+  // K3/P1 vertical padding support.
+  // ifm_rd_row_idx remains a LOCAL row index in the current Mode1 IFM window.
+  logic issue_zero_pad_s;
+  logic [K_ROW_W-1:0] issue_local_row_s;
+  logic ret_zero_pad_q;
+
   // --------------------------------------------------
   // Derived values / legality
   // --------------------------------------------------
@@ -118,6 +126,8 @@ module addr_gen_ifm_m1 #(
     cfg_valid = 1'b0;
     if ((K_cur != 0) && (K_cur <= K_MAX) &&
         (C_cur != 0) && (C_cur <= C_MAX) &&
+        (H_cur != 0) && (H_cur <= H_MAX) &&
+        (out_row < H_cur) &&
         (W_cur != 0) && (W_cur <= W_MAX) &&
         (Pv_cur != 0) && (Pv_cur <= PV_MAX) &&
         (words_per_row != 0)) begin
@@ -153,18 +163,51 @@ module addr_gen_ifm_m1 #(
                                (issue_col_q == words_per_row[W_COL_W-1:0] - 1'b1);
   assign issue_next_col_wrap = (issue_col_q == words_per_row[W_COL_W-1:0] - 1'b1);
 
-  assign ifm_rd_en        = issue_fire;
+  // --------------------------------------------------
+  // K3/P1 vertical padding mapping
+  // --------------------------------------------------
+  // Contract: ifm_buffer Mode1 read row is LOCAL to current HT/ring window.
+  // For K=3/P=1 and with control delaying row advance by one row:
+  //   out_row=0:      ky0 zero, ky1 local0, ky2 local1
+  //   middle rows:    ky0 local0, ky1 local1, ky2 local2
+  //   out_row=H-1:    ky0 local0, ky1 local1, ky2 zero
+  // Non-K3 keeps legacy local-row mapping.
+  always_comb begin
+    issue_zero_pad_s  = 1'b0;
+    issue_local_row_s = issue_row_q;
+
+    if (K_cur == 4'd3) begin
+      if ((out_row == 16'd0) && (issue_row_q == '0)) begin
+        issue_zero_pad_s  = 1'b1;
+        issue_local_row_s = '0;
+      end
+      else if ((H_cur != 16'd0) &&
+               (out_row == (H_cur - 16'd1)) &&
+               (issue_row_q == 2)) begin
+        issue_zero_pad_s  = 1'b1;
+        issue_local_row_s = issue_row_q;
+      end
+      else if (out_row == 16'd0) begin
+        issue_local_row_s = issue_row_q - 1'b1;
+      end
+      else begin
+        issue_local_row_s = issue_row_q;
+      end
+    end
+  end
+
+  assign ifm_rd_en        = issue_fire && !issue_zero_pad_s;
   assign ifm_rd_bank_base = target_channel_q[C_BANK_W-1:0];
-  assign ifm_rd_row_idx   = issue_row_q;
+  assign ifm_rd_row_idx   = issue_local_row_s;
   assign ifm_rd_col_idx   = issue_col_q;
 
   // --------------------------------------------------
   // data_register write side
   // --------------------------------------------------
-  assign dr_write_en      = (state_q == ST_LOAD) && ret_valid_q && ifm_rd_valid;
+  assign dr_write_en      = (state_q == ST_LOAD) && ret_valid_q && (ret_zero_pad_q || ifm_rd_valid);
   assign dr_write_row_idx = ret_row_q;
   assign dr_write_x_base  = ret_x_base_q;
-  assign dr_write_data    = ifm_rd_data;
+  assign dr_write_data    = ret_zero_pad_q ? '0 : ifm_rd_data;
 
   // --------------------------------------------------
   // Status / debug
@@ -174,7 +217,7 @@ module addr_gen_ifm_m1 #(
   assign dbg_words_per_row  = words_per_row;
   assign dbg_issue_row      = issue_row_q;
   assign dbg_issue_col      = issue_col_q;
-  assign dbg_waiting_for_return = (state_q == ST_LOAD) && issued_all_q && ret_valid_q && !ifm_rd_valid;
+  assign dbg_waiting_for_return = (state_q == ST_LOAD) && issued_all_q && ret_valid_q && !ret_zero_pad_q && !ifm_rd_valid;
 
   // --------------------------------------------------
   // State / sequencing
@@ -190,6 +233,7 @@ module addr_gen_ifm_m1 #(
       ret_row_q        <= '0;
       ret_x_base_q     <= 16'd0;
       ret_last_q       <= 1'b0;
+      ret_zero_pad_q   <= 1'b0;
       done             <= 1'b0;
       error            <= 1'b0;
     end
@@ -199,8 +243,9 @@ module addr_gen_ifm_m1 #(
 
       case (state_q)
         ST_IDLE: begin
-          ret_valid_q <= 1'b0;
-          ret_last_q  <= 1'b0;
+          ret_valid_q    <= 1'b0;
+          ret_last_q     <= 1'b0;
+          ret_zero_pad_q <= 1'b0;
 
           if (load_req) begin
             if (!cfg_valid || (load_req_channel >= C_cur)) begin
@@ -218,10 +263,11 @@ module addr_gen_ifm_m1 #(
 
         ST_LOAD: begin
           // Capture metadata for the read that is being issued in this cycle.
-          ret_valid_q  <= issue_fire;
-          ret_row_q    <= issue_row_q;
-          ret_x_base_q <= issue_col_q * Pv_cur;
-          ret_last_q   <= issue_is_last;
+          ret_valid_q    <= issue_fire;
+          ret_row_q      <= issue_row_q;
+          ret_x_base_q   <= issue_col_q * Pv_cur;
+          ret_last_q     <= issue_is_last;
+          ret_zero_pad_q <= issue_fire && issue_zero_pad_s;
 
           if (issue_fire) begin
             if (issue_is_last) begin
@@ -240,7 +286,7 @@ module addr_gen_ifm_m1 #(
           end
 
           // Last returned read completes the channel load.
-          if (ret_valid_q && ifm_rd_valid && ret_last_q) begin
+          if (ret_valid_q && (ret_zero_pad_q || ifm_rd_valid) && ret_last_q) begin
             state_q <= ST_DONE;
           end
         end
@@ -248,21 +294,24 @@ module addr_gen_ifm_m1 #(
         ST_DONE: begin
           done     <= 1'b1;
           state_q  <= ST_IDLE;
-          ret_valid_q <= 1'b0;
-          ret_last_q  <= 1'b0;
+          ret_valid_q    <= 1'b0;
+          ret_last_q     <= 1'b0;
+          ret_zero_pad_q <= 1'b0;
         end
 
         ST_ERROR: begin
           error    <= 1'b1;
           state_q  <= ST_IDLE;
-          ret_valid_q <= 1'b0;
-          ret_last_q  <= 1'b0;
+          ret_valid_q    <= 1'b0;
+          ret_last_q     <= 1'b0;
+          ret_zero_pad_q <= 1'b0;
         end
 
         default: begin
           state_q <= ST_IDLE;
-          ret_valid_q <= 1'b0;
-          ret_last_q  <= 1'b0;
+          ret_valid_q    <= 1'b0;
+          ret_last_q     <= 1'b0;
+          ret_zero_pad_q <= 1'b0;
         end
       endcase
     end

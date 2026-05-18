@@ -54,7 +54,6 @@ module data_register_mode1 #(
   integer r, c;
   logic [15:0] base_x;       // legacy/debug: out_col + kx before padding
   logic [3:0]  pad_x;        // fixed horizontal padding, PAD_X=1
-  logic [3:0]  pad_y;        // fixed vertical padding, PAD_Y=1; center-tap confirmation patch
   logic        data_valid_q;
   logic [$clog2(K_MAX)-1:0] write_row_idx_clamped;
   logic [$clog2(K_MAX)-1:0] ky_clamped;
@@ -105,37 +104,30 @@ module data_register_mode1 #(
   // =====================================================
   always_comb begin
     int read_x_i;
-    int read_y_i;
     int pad_x_i;
-    int pad_y_i;
 
     // Keep the old unpadded expression for debug visibility.
     base_x  = out_col + kx;
 
-    // Fixed K3/P1 padding for the current Mode1 center-tap test.
-    // X: with kx=1, read_x_i = out_col + 1 + i - 1 = out_col + i.
-    // Y: with ky=1, read_y_i = 1 - 1 = 0, so center tap uses row0.
-    // NOTE: PAD_Y here is a confirmation patch for center-tap K3/P1.
-    // It is sufficient for the current sparse center-tap test, but a full
-    // 3x3 kernel should implement vertical padding in addr_gen_ifm_m1.
+    // Fixed K3/P1 horizontal padding.
+    // With kx=1, read_x_i = out_col + 1 + i - 1 = out_col + i.
+    // Vertical padding is intentionally NOT handled here; ky still selects
+    // reg_bank[ky]. Full K3/P1 vertical padding must be handled by the
+    // Mode1 IFM address/window loader so each reg_bank[ky] already contains
+    // the correct row, or a zero row at the top/bottom boundary.
     pad_x   = 4'd1;
-    pad_y   = 4'd1;
     pad_x_i = 1;
-    pad_y_i = 1;
 
     for (int i = 0; i < PV_MAX; i++) begin
       read_x_i = int'(out_col) + int'(kx) + i - pad_x_i;
-      read_y_i = int'(ky) - pad_y_i;
 
       if (data_valid_q &&
           (i < Pv_cur) &&
           (ky < K_cur) &&
-          (read_y_i >= 0) &&
-          (read_y_i < K_MAX) &&
           (read_x_i >= 0) &&
           (read_x_i < int'(W_cur)) &&
           (read_x_i < W_MAX)) begin
-        data_out_logic[i*DATA_W +: DATA_W] = reg_bank[read_y_i][read_x_i];
+        data_out_logic[i*DATA_W +: DATA_W] = reg_bank[ky_clamped][read_x_i];
       end
       else begin
         data_out_logic[i*DATA_W +: DATA_W] = '0;
@@ -194,12 +186,10 @@ always_ff @(posedge clk) begin : DBG_M1_CENTER_TAP_ROW_SPATIAL
         (kx == 1) &&
         (out_col == 0)) begin
 
-        $display("DBG_M1_CENTER_TAP_ROW_SPATIAL t=%0t ky=%0d kx=%0d pad_y=%0d fixed_y=%0d out_col=%0d data_lane0=%0d row0_lane0=%0d row1_lane0=%0d row2_lane0=%0d",
+        $display("DBG_M1_CENTER_TAP_ROW_SPATIAL t=%0t ky=%0d kx=%0d out_col=%0d data_lane0=%0d row0_lane0=%0d row1_lane0=%0d row2_lane0=%0d",
             $time,
             ky,
             kx,
-            pad_y,
-            int'(ky) - int'(pad_y),
             out_col,
             $signed(data_out_logic[0*DATA_W +: DATA_W]),
             $signed(reg_bank[0][0]),
