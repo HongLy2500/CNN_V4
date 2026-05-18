@@ -944,4 +944,31 @@ logic                        ifm_ofm_wr_mode2_s;
     .error              (ofm_error_s)
   );
 
+`ifndef SYNTHESIS
+
+always_ff @(posedge clk or negedge rst_n) begin : DBG_TOP_IFM_RD_WIRE_MON
+  if (!rst_n) begin
+  end else begin
+    if (ifm_rd_en_s || ifm_rd_valid_s) begin
+      $display("DBG_TOP_IFM_RD_WIRE t=%0t layer=%0d mode=%0b rd_en=%0b bank_base=%0d row=%0d col_idx=%0d col_g=%0d rd_valid=%0b data0=%0d data1=%0d data2=%0d data3=%0d",
+        $time,
+        dbg_layer_idx,
+        dbg_mode,
+        ifm_rd_en_s,
+        ifm_rd_bank_base_s,
+        ifm_rd_row_idx_s,
+        ifm_rd_col_idx_s,
+        ifm_rd_col_g_s,
+        ifm_rd_valid_s,
+        $signed(ifm_rd_data_s[0*DATA_W +: DATA_W]),
+        $signed(ifm_rd_data_s[1*DATA_W +: DATA_W]),
+        $signed(ifm_rd_data_s[2*DATA_W +: DATA_W]),
+        $signed(ifm_rd_data_s[3*DATA_W +: DATA_W])
+      );
+    end
+  end
+end
+
+`endif
+
 endmodule

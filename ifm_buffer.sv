@@ -8,10 +8,9 @@ module ifm_buffer #(
     parameter int HT     = 8,    // fixed tile height for mode 1
     // DEPTH must cover both layouts:
     //   mode 1: HT rows * W_MAX words/row
-    //   mode 2: H_MAX rows * ceil(C_MAX/PC) channel groups
-    parameter int DEPTH  = (((HT * W_MAX) > (H_MAX * ((C_MAX + PC - 1) / PC)))
-                            ? (HT * W_MAX)
-                            : (H_MAX * ((C_MAX + PC - 1) / PC)))
+    //   mode 2: H_MAX rows, because mode-2 folds cgrp into the bank index:
+    //           bank = cgrp*PC + col_l, addr = row
+    parameter int DEPTH  = (((HT * W_MAX) > H_MAX) ? (HT * W_MAX) : H_MAX)
 )(
     input  logic clk,
     input  logic rst_n,
@@ -47,6 +46,8 @@ module ifm_buffer #(
     //   dma_wr_row_idx = absolute row index [0..H-1]
     //   dma_wr_col_idx = channel-group index cgrp = floor(channel/PC)
     //   dma_wr_data    = low PC lanes hold PC channel values at (row, col_l, cgrp)
+    //   Internal Mode2 physical layout maps these to:
+    //     bank = cgrp*PC + col_l, addr = row
     //==================================================
     input  logic                        dma_wr_en,
     input  logic [$clog2(C_MAX)-1:0]    dma_wr_bank,
@@ -68,6 +69,8 @@ module ifm_buffer #(
     //   ofm_wr_row_idx = absolute row index [0..H-1]
     //   ofm_wr_col_idx = channel-group index cgrp = floor(channel/PC)
     //   ofm_wr_data    = low PC lanes hold PC channel values at (row, col_l, cgrp)
+    //   Internal Mode2 physical layout maps these to:
+    //     bank = cgrp*PC + col_l, addr = row
     //==================================================
     input  logic                        ofm_wr_en,
     input  logic [$clog2(C_MAX)-1:0]    ofm_wr_bank,
@@ -89,10 +92,11 @@ module ifm_buffer #(
     //
     // mode 2:
     //   rd_bank_base = first channel index of current PC group (cgrp*PC).
-    //                  It is used only to derive cgrp = rd_bank_base/PC.
     //   rd_row_idx   = absolute row index
     //   rd_col_idx   = local column col_l inside the resident W tile [0..PC-1]
     //   rd_data      = PC channel lanes for the requested (row, col_l, cgrp)
+    //   Internal Mode2 physical layout maps these to:
+    //     bank = rd_bank_base + rd_col_idx, addr = row
     //==================================================
     input  logic                        rd_en,
     input  logic [$clog2(C_MAX)-1:0]    rd_bank_base,
@@ -139,11 +143,15 @@ module ifm_buffer #(
     localparam int M1_STRIDE = W_MAX;
 
     // Mode 2 storage contract:
-    //   bank = local column col_l inside the resident W tile, 0..PC-1
-    //   addr = row * M2_CGRP_MAX + cgrp
-    //   lane = local channel pc_l inside that cgrp, 0..PC-1
+    //   interface still presents:
+    //     wr_bank/rd_col_idx = local column col_l inside resident Wt=PC
+    //     wr_col_idx/rd_bank_base = channel group cgrp information
+    //   physical storage is the finalized Mode2 layout:
+    //     bank = cgrp * PC + col_l
+    //     addr = row
+    //     word lanes = PC channel values of that cgrp
     localparam int M2_CGRP_MAX = (C_MAX + PC - 1) / PC;
-    localparam int M2_STRIDE   = M2_CGRP_MAX;
+    localparam int M2_BANKS    = M2_CGRP_MAX * PC;
 
     //==================================================
     // Physical storage
@@ -193,6 +201,7 @@ module ifm_buffer #(
     logic [ROWBASE_W-1:0] wr_m1_phys_row_ofm;
     logic [ROWBASE_W-1:0] wr_m1_phys_row;
     logic [DEPTH_W-1:0]   wr_addr;
+    logic [$clog2(C_MAX)-1:0] wr_bank_phys_sel;
     logic [DEPTH_W-1:0]   rd_addr_m1;
     logic [DEPTH_W-1:0]   rd_addr_m2;
     logic [DEPTH_W-1:0]   wr_row_idx_ext;
@@ -208,6 +217,7 @@ module ifm_buffer #(
     // address/read behavior remains unchanged.
     logic [31:0]          rd_m2_cgrp_u32;
     logic [31:0]          rd_m2_col_l_u32;
+    logic [31:0]          rd_m2_bank_u32;
     logic [31:0]          rd_addr_m2_u32;
 
     //==================================================
@@ -248,14 +258,14 @@ module ifm_buffer #(
         if (PC > PV_MAX) begin
             $error("ifm_buffer: PC must be <= PV_MAX");
         end
-        if (PC > C_MAX) begin
-            $error("ifm_buffer: PC must be <= C_MAX because mode 2 maps bank=col_l[0..PC-1]");
+        if (M2_BANKS > C_MAX) begin
+            $error("ifm_buffer: C_MAX must cover all Mode2 banks cgrp*PC+col_l; require ceil(C_MAX/PC)*PC <= C_MAX, i.e. C_MAX divisible by PC for this shared bank array");
         end
         if (DEPTH < (HT * W_MAX)) begin
             $error("ifm_buffer: DEPTH too small for mode 1 worst-case Pv=1 mapping");
         end
-        if (DEPTH < (H_MAX * M2_CGRP_MAX)) begin
-            $error("ifm_buffer: DEPTH too small for mode 2 H_MAX*ceil(C_MAX/PC) mapping");
+        if (DEPTH < H_MAX) begin
+            $error("ifm_buffer: DEPTH too small for mode 2 H_MAX mapping");
         end
     end
 
@@ -408,14 +418,17 @@ module ifm_buffer #(
         logic wr_row_valid_v;
         logic wr_cgrp_valid_v;
         logic [31:0] cfg_m2_cgroups_v;
+        logic [31:0] wr_m2_bank_u32;
         logic [31:0] wr_m2_addr_u32;
 
         wr_addr          = '0;
+        wr_bank_phys_sel = '0;
         wr_addr_valid    = 1'b0;
         wr_bank_valid_v  = 1'b0;
         wr_row_valid_v   = 1'b0;
         wr_cgrp_valid_v  = 1'b0;
         cfg_m2_cgroups_v = '0;
+        wr_m2_bank_u32   = '0;
         wr_m2_addr_u32   = '0;
 
         if (!wr_use_mode2_layout) begin
@@ -439,16 +452,21 @@ module ifm_buffer #(
             if (wr_bank_valid_v &&
                 wr_row_valid_v &&
                 (wr_col_idx_sel < W_MAX)) begin
-                wr_addr       = (wr_m1_phys_row * M1_STRIDE) + wr_col_idx_sel;
-                wr_addr_valid = (wr_addr < DEPTH);
+                wr_bank_phys_sel = wr_bank_sel;
+                wr_addr          = (wr_m1_phys_row * M1_STRIDE) + wr_col_idx_sel;
+                wr_addr_valid    = (wr_addr < DEPTH);
             end
         end
         else begin
             // MODE 2 FIXED CONTRACT:
-            //   wr_bank_sel    = col_l inside resident W tile, 0..PC-1
-            //   wr_row_idx_sel = absolute row
-            //   wr_col_idx_sel = cgrp
-            //   wr_data lanes  = PC channel lanes
+            //   interface:
+            //     wr_bank_sel    = col_l inside resident W tile, 0..PC-1
+            //     wr_row_idx_sel = absolute row
+            //     wr_col_idx_sel = cgrp
+            //     wr_data lanes  = PC channel lanes
+            //   physical storage:
+            //     bank = cgrp*PC + col_l
+            //     addr = row
             //
             // OFM->IFM writes may target the NEXT layer before cfg_load
             // advances this buffer, so they must not be limited by the
@@ -465,9 +483,11 @@ module ifm_buffer #(
                             : (wr_col_idx_sel < cfg_m2_cgroups_v);
 
             if (wr_bank_valid_v && wr_row_valid_v && wr_cgrp_valid_v) begin
-                wr_m2_addr_u32 = (wr_row_idx_sel * M2_STRIDE) + wr_col_idx_sel;
-                wr_addr        = wr_m2_addr_u32;
-                wr_addr_valid  = (wr_m2_addr_u32 < DEPTH);
+                wr_m2_bank_u32 = (wr_col_idx_sel * PC) + wr_bank_sel;
+                wr_m2_addr_u32 = wr_row_idx_sel;
+                wr_bank_phys_sel = wr_m2_bank_u32[$clog2(C_MAX)-1:0];
+                wr_addr          = wr_m2_addr_u32;
+                wr_addr_valid    = (wr_m2_bank_u32 < C_MAX) && (wr_m2_addr_u32 < DEPTH);
             end
         end
     end
@@ -480,14 +500,14 @@ module ifm_buffer #(
         if (wr_en_sel && wr_addr_valid) begin
             for (wlane = 0; wlane < PV_MAX; wlane++) begin
                 if (wr_keep_sel[wlane]) begin
-                    mem[wr_bank_sel][wr_addr][wlane*DATA_W +: DATA_W]
+                    mem[wr_bank_phys_sel][wr_addr][wlane*DATA_W +: DATA_W]
                         <= wr_data_sel[wlane*DATA_W +: DATA_W];
                 end
             end
 
-            if (wr_src_is_ofm && ofm_wr_mode2 && (wr_bank_sel < PC) && (wr_bank_sel < C_MAX)) begin
-                m2_slot_valid[wr_bank_sel][wr_addr]   <= 1'b1;
-                m2_slot_col_tag[wr_bank_sel][wr_addr] <= ofm_wr_col_g[COL_W-1:0];
+            if (wr_src_is_ofm && ofm_wr_mode2 && (wr_bank_phys_sel < C_MAX)) begin
+                m2_slot_valid[wr_bank_phys_sel][wr_addr]   <= 1'b1;
+                m2_slot_col_tag[wr_bank_phys_sel][wr_addr] <= ofm_wr_col_g[COL_W-1:0];
             end
         end
     end
@@ -509,20 +529,22 @@ module ifm_buffer #(
         rd_addr_m1 = (rd_m1_phys_row * M1_STRIDE) + rd_col_idx;
 
         // MODE 2 FIXED CONTRACT:
-        //   rd_bank_base carries cgrp*PC for interface compatibility.
+        //   rd_bank_base carries cgrp*PC.
         //   rd_col_idx carries local column col_l.
-        //   IFM physical bank is col_l; word lanes are channel lanes.
+        //   IFM physical bank is cgrp*PC + col_l = rd_bank_base + rd_col_idx.
+        //   IFM physical addr is row.
         rd_m2_cgrp_u32  = rd_bank_base / PC;
         rd_m2_col_l_u32 = rd_col_idx;
-        rd_addr_m2_u32  = (rd_row_idx_ext * M2_STRIDE) + rd_m2_cgrp_u32;
+        rd_m2_bank_u32  = rd_bank_base + rd_col_idx;
+        rd_addr_m2_u32  = rd_row_idx_ext;
         rd_addr_m2      = rd_addr_m2_u32;
     end
 
     always_comb begin
         rd_m2_tag_hit = 1'b0;
-        if ((rd_m2_col_l_u32 < C_MAX) && (rd_addr_m2_u32 < DEPTH)) begin
-            rd_m2_tag_hit = m2_slot_valid[rd_m2_col_l_u32][rd_addr_m2] &&
-                            (m2_slot_col_tag[rd_m2_col_l_u32][rd_addr_m2] == rd_col_g[COL_W-1:0]);
+        if ((rd_m2_bank_u32 < C_MAX) && (rd_addr_m2_u32 < DEPTH)) begin
+            rd_m2_tag_hit = m2_slot_valid[rd_m2_bank_u32][rd_addr_m2] &&
+                            (m2_slot_col_tag[rd_m2_bank_u32][rd_addr_m2] == rd_col_g[COL_W-1:0]);
         end
     end
 
@@ -554,22 +576,23 @@ module ifm_buffer #(
                 end
                 else if (rd_m2_tag_hit) begin
                     // MODE 2 FIXED CONTRACT:
-                    //   bank = col_l = rd_col_idx
-                    //   addr = row * M2_CGRP_MAX + cgrp
+                    //   bank = cgrp*PC + col_l = rd_bank_base + rd_col_idx
+                    //   addr = row
                     //   lane = pc_l = rlane
                     //
-                    // rd_bank_base still carries cgrp*PC so existing upstream
-                    // mode-2 address generation can remain source-compatible.
+                    // rd_bank_base carries cgrp*PC and rd_col_idx carries col_l,
+                    // so existing upstream mode-2 address generation remains
+                    // source-compatible while the physical layout is corrected.
                     for (rlane = 0; rlane < PV_MAX; rlane++) begin
                         if ((rlane < PC) &&
                             ((rd_bank_base + rlane) < cfg_c_in_q) &&
                             (rd_m2_col_l_u32 < PC) &&
-                            (rd_m2_col_l_u32 < C_MAX) &&
                             (rd_m2_cgrp_u32 < M2_CGRP_MAX) &&
+                            (rd_m2_bank_u32 < C_MAX) &&
                             (rd_addr_m2_u32 < DEPTH)) begin
 
                             rd_data_q[rlane*DATA_W +: DATA_W]
-                                <= mem[rd_m2_col_l_u32][rd_addr_m2][rlane*DATA_W +: DATA_W];
+                                <= mem[rd_m2_bank_u32][rd_addr_m2][rlane*DATA_W +: DATA_W];
                         end
                         else begin
                             rd_data_q[rlane*DATA_W +: DATA_W] <= '0;
@@ -655,11 +678,11 @@ always_ff @(posedge clk or negedge rst_n) begin
     if (cfg_mode_q) begin
 
       if (ofm_wr_en && ofm_wr_ready && ((ofm_wr_bank <= 2) || ((PC > 2) && ((ofm_wr_bank + 16'd2) >= PC)) || (ofm_wr_row_idx < 4))) begin
-        $display("DBG_IFM_M2_OFM_WR_X t=%0t bank_col_l=%0d row=%0d cgrp=%0d keep=%h wr_addr_valid=%0b wr_addr=%0d data0=%0d data1=%0d", $time, ofm_wr_bank, ofm_wr_row_idx, ofm_wr_col_idx, ofm_wr_keep, wr_addr_valid, wr_addr, $signed(ofm_wr_data[0*DATA_W +: DATA_W]), $signed(ofm_wr_data[1*DATA_W +: DATA_W]));
+        $display("DBG_IFM_M2_OFM_WR_X t=%0t col_l=%0d row=%0d cgrp=%0d phys_bank=%0d keep=%h wr_addr_valid=%0b wr_addr=%0d data0=%0d data1=%0d", $time, ofm_wr_bank, ofm_wr_row_idx, ofm_wr_col_idx, wr_bank_phys_sel, ofm_wr_keep, wr_addr_valid, wr_addr, $signed(ofm_wr_data[0*DATA_W +: DATA_W]), $signed(ofm_wr_data[1*DATA_W +: DATA_W]));
       end
 
       if (rd_en && dbg_ifm_m2_col_focus(rd_col_idx)) begin
-        $display("DBG_IFM_M2_RD_REQ t=%0t bank_base=%0d row=%0d col_l=%0d cgrp=%0d rd_addr_u32=%0d rd_addr=%0d cfg_C=%0d cfg_H=%0d cfg_W=%0d", $time, rd_bank_base, rd_row_idx, rd_col_idx, rd_m2_cgrp_u32, rd_addr_m2_u32, rd_addr_m2, cfg_c_in_q, cfg_h_in_q, cfg_w_in_q);
+        $display("DBG_IFM_M2_RD_REQ t=%0t bank_base=%0d row=%0d col_l=%0d cgrp=%0d phys_bank=%0d rd_addr_u32=%0d rd_addr=%0d cfg_C=%0d cfg_H=%0d cfg_W=%0d", $time, rd_bank_base, rd_row_idx, rd_col_idx, rd_m2_cgrp_u32, rd_m2_bank_u32, rd_addr_m2_u32, rd_addr_m2, cfg_c_in_q, cfg_h_in_q, cfg_w_in_q);
       end
 
       if (dbg_ifm_m2_rd_q && dbg_ifm_m2_rd_focus_q) begin
@@ -684,6 +707,214 @@ always_ff @(posedge clk or negedge rst_n) begin
   end
 end
 
+`endif
+
+`ifndef SYNTHESIS
+
+always_ff @(posedge clk or negedge rst_n) begin : DBG_IFM_M2_PAYLOAD_PATH_MON
+  if (!rst_n) begin
+    // no-op
+  end else begin
+    if (cfg_mode_q) begin
+      // OFM->IFM write request as seen by IFM buffer
+      if (ofm_wr_en && ofm_wr_ready && ((ofm_wr_row_idx < 4) || (ofm_wr_col_idx < 2) || (ofm_wr_data[0*DATA_W +: DATA_W] == '0))) begin
+        $display("DBG_IFM_M2_OFM_WR_IN t=%0t bank_col_l=%0d row=%0d cgrp=%0d keep=%h data0=%0d data1=%0d data2=%0d data3=%0d", $time, ofm_wr_bank, ofm_wr_row_idx, ofm_wr_col_idx, ofm_wr_keep, $signed(ofm_wr_data[0*DATA_W +: DATA_W]), $signed(ofm_wr_data[1*DATA_W +: DATA_W]), $signed(ofm_wr_data[2*DATA_W +: DATA_W]), $signed(ofm_wr_data[3*DATA_W +: DATA_W]));
+      end
+
+      // Actual selected write mapping inside IFM buffer
+      if (wr_en_sel && wr_src_is_ofm && wr_addr_valid && ((wr_row_idx_sel < 4) || (wr_col_idx_sel < 2) || (wr_data_sel[0*DATA_W +: DATA_W] == '0))) begin
+        $display("DBG_IFM_M2_OFM_WR_MAP t=%0t wr_bank=%0d wr_row=%0d wr_colidx_cgrp=%0d wr_addr=%0d keep=%h data0=%0d data1=%0d data2=%0d data3=%0d", $time, wr_bank_sel, wr_row_idx_sel, wr_col_idx_sel, wr_addr, wr_keep_sel, $signed(wr_data_sel[0*DATA_W +: DATA_W]), $signed(wr_data_sel[1*DATA_W +: DATA_W]), $signed(wr_data_sel[2*DATA_W +: DATA_W]), $signed(wr_data_sel[3*DATA_W +: DATA_W]));
+      end
+
+      // Read request from addr_gen/CE
+      if (rd_en && ((rd_row_idx < 4) || (rd_col_idx < 4) || (rd_valid_q == 1'b0))) begin
+        $display("DBG_IFM_M2_RD_PATH t=%0t rd_en=%0b bank_base=%0d row=%0d col_l=%0d cgrp=%0d rd_addr_u32=%0d rd_addr=%0d rd_valid_q=%0b data0=%0d data1=%0d data2=%0d data3=%0d", $time, rd_en, rd_bank_base, rd_row_idx, rd_col_idx, rd_m2_cgrp_u32, rd_addr_m2_u32, rd_addr_m2, rd_valid_q, $signed(rd_data_q[0*DATA_W +: DATA_W]), $signed(rd_data_q[1*DATA_W +: DATA_W]), $signed(rd_data_q[2*DATA_W +: DATA_W]), $signed(rd_data_q[3*DATA_W +: DATA_W]));
+      end
+    end
+  end
+end
+
+`endif
+
+`ifndef SYNTHESIS
+
+logic        dbg_m2_wr_q;
+integer      dbg_m2_wr_bank_q;
+integer      dbg_m2_wr_addr_q;
+integer      dbg_m2_wr_row_q;
+integer      dbg_m2_wr_cgrp_q;
+integer      dbg_m2_wr_col_l_q;
+integer      dbg_m2_wr_col_g_q;
+
+always_ff @(posedge clk or negedge rst_n) begin : DBG_IFM_M2_PHYS_MAP_MON
+  if (!rst_n) begin
+    dbg_m2_wr_q       <= 1'b0;
+    dbg_m2_wr_bank_q  <= 0;
+    dbg_m2_wr_addr_q  <= 0;
+    dbg_m2_wr_row_q   <= 0;
+    dbg_m2_wr_cgrp_q  <= 0;
+    dbg_m2_wr_col_l_q <= 0;
+    dbg_m2_wr_col_g_q <= 0;
+  end else begin
+    if (dbg_m2_wr_q) begin
+      if ((dbg_m2_wr_bank_q >= 0) && (dbg_m2_wr_bank_q < C_MAX) &&
+          (dbg_m2_wr_addr_q >= 0) && (dbg_m2_wr_addr_q < DEPTH)) begin
+        $display("DBG_IFM_M2_WR_COMMIT_PHYS t=%0t bank_phys=%0d addr=%0d row=%0d cgrp=%0d col_l=%0d col_g=%0d mem0=%0d mem1=%0d mem2=%0d mem3=%0d tag_valid=%0b tag=%0d",
+          $time,
+          dbg_m2_wr_bank_q,
+          dbg_m2_wr_addr_q,
+          dbg_m2_wr_row_q,
+          dbg_m2_wr_cgrp_q,
+          dbg_m2_wr_col_l_q,
+          dbg_m2_wr_col_g_q,
+          $signed(mem[dbg_m2_wr_bank_q][dbg_m2_wr_addr_q][0*DATA_W +: DATA_W]),
+          $signed(mem[dbg_m2_wr_bank_q][dbg_m2_wr_addr_q][1*DATA_W +: DATA_W]),
+          $signed(mem[dbg_m2_wr_bank_q][dbg_m2_wr_addr_q][2*DATA_W +: DATA_W]),
+          $signed(mem[dbg_m2_wr_bank_q][dbg_m2_wr_addr_q][3*DATA_W +: DATA_W]),
+          m2_slot_valid[dbg_m2_wr_bank_q][dbg_m2_wr_addr_q],
+          m2_slot_col_tag[dbg_m2_wr_bank_q][dbg_m2_wr_addr_q]
+        );
+      end
+    end
+
+    dbg_m2_wr_q <= 1'b0;
+
+    if (wr_en_sel && wr_src_is_ofm && ofm_wr_mode2 && wr_addr_valid &&
+        (wr_row_idx_sel < 4) && (wr_col_idx_sel < 4) && (wr_bank_sel < 4)) begin
+      $display("DBG_IFM_M2_WR_REQ_PHYS t=%0t logical_col_l=%0d cgrp=%0d row=%0d col_g=%0d bank_phys_calc=%0d bank_phys_used=%0d addr_calc=%0d addr_used=%0d data0=%0d data1=%0d data2=%0d data3=%0d",
+        $time,
+        wr_bank_sel,
+        wr_col_idx_sel,
+        wr_row_idx_sel,
+        ofm_wr_col_g,
+        (wr_col_idx_sel * PC) + wr_bank_sel,
+        wr_bank_phys_sel,
+        wr_row_idx_sel,
+        wr_addr,
+        $signed(wr_data_sel[0*DATA_W +: DATA_W]),
+        $signed(wr_data_sel[1*DATA_W +: DATA_W]),
+        $signed(wr_data_sel[2*DATA_W +: DATA_W]),
+        $signed(wr_data_sel[3*DATA_W +: DATA_W])
+      );
+
+      dbg_m2_wr_q       <= 1'b1;
+      dbg_m2_wr_bank_q  <= wr_bank_phys_sel;
+      dbg_m2_wr_addr_q  <= wr_addr;
+      dbg_m2_wr_row_q   <= wr_row_idx_sel;
+      dbg_m2_wr_cgrp_q  <= wr_col_idx_sel;
+      dbg_m2_wr_col_l_q <= wr_bank_sel;
+      dbg_m2_wr_col_g_q <= ofm_wr_col_g;
+    end
+
+    if (rd_en && cfg_mode_q && (rd_row_idx < 4) && (rd_bank_base < 64) && (rd_col_idx < 4)) begin
+      $display("DBG_IFM_M2_RD_REQ_PHYS t=%0t rd_bank_base=%0d cgrp=%0d col_l=%0d row=%0d rd_col_g=%0d bank_phys_calc=%0d addr_calc=%0d rd_valid_q=%0b data0=%0d data1=%0d data2=%0d data3=%0d tag_valid=%0b tag=%0d",
+        $time,
+        rd_bank_base,
+        (rd_bank_base / PC),
+        rd_col_idx,
+        rd_row_idx,
+        rd_col_g,
+        rd_bank_base + rd_col_idx,
+        rd_row_idx,
+        rd_valid_q,
+        $signed(rd_data_q[0*DATA_W +: DATA_W]),
+        $signed(rd_data_q[1*DATA_W +: DATA_W]),
+        $signed(rd_data_q[2*DATA_W +: DATA_W]),
+        $signed(rd_data_q[3*DATA_W +: DATA_W]),
+        (((rd_bank_base + rd_col_idx) < C_MAX) && (rd_row_idx < DEPTH)) ? m2_slot_valid[rd_bank_base + rd_col_idx][rd_row_idx] : 1'b0,
+        (((rd_bank_base + rd_col_idx) < C_MAX) && (rd_row_idx < DEPTH)) ? m2_slot_col_tag[rd_bank_base + rd_col_idx][rd_row_idx] : '0
+      );
+    end
+  end
+end
+
+`endif
+
+`ifndef SYNTHESIS
+
+always_ff @(posedge clk or negedge rst_n) begin : DBG_IFM_ANY_RD_MON
+  integer dbg_bank_phys;
+  integer dbg_addr_phys;
+begin
+  if (!rst_n) begin
+  end else begin
+    if (rd_en) begin
+      dbg_bank_phys = rd_bank_base + rd_col_idx;
+      dbg_addr_phys = rd_row_idx;
+
+      $display("DBG_IFM_ANY_RD t=%0t cfg_mode=%0b rd_en=%0b rd_bank_base=%0d rd_row=%0d rd_col_idx=%0d rd_col_g=%0d calc_bank=%0d calc_addr=%0d rd_valid_q=%0b rd_data0=%0d rd_data1=%0d rd_data2=%0d rd_data3=%0d",
+        $time,
+        cfg_mode_q,
+        rd_en,
+        rd_bank_base,
+        rd_row_idx,
+        rd_col_idx,
+        rd_col_g,
+        dbg_bank_phys,
+        dbg_addr_phys,
+        rd_valid_q,
+        $signed(rd_data_q[0*DATA_W +: DATA_W]),
+        $signed(rd_data_q[1*DATA_W +: DATA_W]),
+        $signed(rd_data_q[2*DATA_W +: DATA_W]),
+        $signed(rd_data_q[3*DATA_W +: DATA_W])
+      );
+
+      if ((dbg_bank_phys >= 0) && (dbg_bank_phys < C_MAX) &&
+          (dbg_addr_phys >= 0) && (dbg_addr_phys < DEPTH)) begin
+        $display("DBG_IFM_ANY_RD_MEM t=%0t calc_bank=%0d calc_addr=%0d mem0=%0d mem1=%0d mem2=%0d mem3=%0d tag_valid=%0b tag=%0d",
+          $time,
+          dbg_bank_phys,
+          dbg_addr_phys,
+          $signed(mem[dbg_bank_phys][dbg_addr_phys][0*DATA_W +: DATA_W]),
+          $signed(mem[dbg_bank_phys][dbg_addr_phys][1*DATA_W +: DATA_W]),
+          $signed(mem[dbg_bank_phys][dbg_addr_phys][2*DATA_W +: DATA_W]),
+          $signed(mem[dbg_bank_phys][dbg_addr_phys][3*DATA_W +: DATA_W]),
+          m2_slot_valid[dbg_bank_phys][dbg_addr_phys],
+          m2_slot_col_tag[dbg_bank_phys][dbg_addr_phys]
+        );
+      end
+    end
+  end
+end
+end
+
+`endif
+
+
+`ifndef SYNTHESIS
+always_ff @(posedge clk or negedge rst_n) begin : DBG_IFM_RD_RAW_ALWAYS
+  integer b;
+  integer a;
+  if (!rst_n) begin
+  end else begin
+    if (rd_en) begin
+      b = rd_bank_base + rd_col_idx;
+      a = rd_row_idx;
+
+      $display("DBG_IFM_RD_RAW t=%0t cfg_mode=%0b rd_en=%0b rd_bank_base=%0d rd_col_idx=%0d rd_row=%0d rd_col_g=%0d calc_bank=%0d calc_addr=%0d rd_valid_q=%0b rd_data0=%0d rd_data1=%0d rd_data2=%0d rd_data3=%0d",
+        $time, cfg_mode_q, rd_en,
+        rd_bank_base, rd_col_idx, rd_row_idx, rd_col_g,
+        b, a, rd_valid_q,
+        $signed(rd_data_q[0*DATA_W +: DATA_W]),
+        $signed(rd_data_q[1*DATA_W +: DATA_W]),
+        $signed(rd_data_q[2*DATA_W +: DATA_W]),
+        $signed(rd_data_q[3*DATA_W +: DATA_W])
+      );
+
+      if ((b >= 0) && (b < C_MAX) && (a >= 0) && (a < DEPTH)) begin
+        $display("DBG_IFM_RD_RAW_MEM t=%0t calc_bank=%0d calc_addr=%0d mem0=%0d mem1=%0d mem2=%0d mem3=%0d tag_valid=%0b tag=%0d",
+          $time, b, a,
+          $signed(mem[b][a][0*DATA_W +: DATA_W]),
+          $signed(mem[b][a][1*DATA_W +: DATA_W]),
+          $signed(mem[b][a][2*DATA_W +: DATA_W]),
+          $signed(mem[b][a][3*DATA_W +: DATA_W]),
+          m2_slot_valid[b][a],
+          m2_slot_col_tag[b][a]
+        );
+      end
+    end
+  end
+end
 `endif
 
 endmodule

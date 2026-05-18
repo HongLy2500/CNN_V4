@@ -371,4 +371,27 @@ end
 
 `endif
 
+`ifndef SYNTHESIS
+
+logic [31:0] dbg_m2_vgg_evt_q;
+
+always_ff @(posedge clk or negedge rst_n) begin : DBG_M2_COMPUTE_ZERO_PATH_MON
+  if (!rst_n) begin
+    dbg_m2_vgg_evt_q <= 32'd0;
+  end else begin
+    if ((K_cur == 4'd3) &&
+        (Hout_cur <= 16'd8) &&
+        (Wout_cur <= 16'd8) &&
+        (F_cur <= 8'd64) &&
+        (dr_write_en || mac_en || ce_mac_data_out_valid || relu_data_out_valid || ofm_wr_en)) begin
+
+      dbg_m2_vgg_evt_q <= dbg_m2_vgg_evt_q + 32'd1;
+
+      $display("DBG_M2_ZERO_PATH t=%0t evt=%0d start=%0b busy=%0b done=%0b pool=%0b H=%0d W=%0d C=%0d F=%0d dr_wr=%0b dr_row=%0d dr0=%0d dr1=%0d dr2=%0d dr3=%0d mac=%0b clr=%0b ky=%0d kx=%0d row=%0d col=%0d cgrp=%0d fgrp=%0d ifm0=%0d ifm1=%0d w0=%0d w1=%0d ce_v=%0b ce_row=%0d ce_col=%0d ce_fbase=%0d mac0=%0d mac1=%0d relu_v=%0b relu0=%0d relu1=%0d wr=%0b wr_row=%0d wr_col=%0d wr_fbase=%0d wr0=%0d wr1=%0d", $time, dbg_m2_vgg_evt_q + 32'd1, start, busy, done, pool_en, Hout_cur, Wout_cur, C_cur, F_cur, dr_write_en, dr_write_row_idx, $signed(dr_write_data[0*DATA_W +: DATA_W]), $signed(dr_write_data[1*DATA_W +: DATA_W]), $signed(dr_write_data[2*DATA_W +: DATA_W]), $signed(dr_write_data[3*DATA_W +: DATA_W]), mac_en, clear_psum, ky, kx, out_row_g, out_col_g, c_group, f_group, $signed(ce_data_out_logic[0*DATA_W +: DATA_W]), $signed(ce_data_out_logic[1*DATA_W +: DATA_W]), $signed(ce_weight_out[0*DATA_W +: DATA_W]), $signed(ce_weight_out[1*DATA_W +: DATA_W]), ce_mac_data_out_valid, ce_out_row_g, ce_out_col_g, ce_mac_f_base, $signed(ce_mac_data_out[0*PSUM_W +: PSUM_W]), $signed(ce_mac_data_out[1*PSUM_W +: PSUM_W]), relu_data_out_valid, $signed(relu_data_out[0*PSUM_W +: PSUM_W]), $signed(relu_data_out[1*PSUM_W +: PSUM_W]), ofm_wr_en, ofm_wr_row, ofm_wr_col, ofm_wr_f_base, $signed(ofm_wr_data[0*DATA_W +: DATA_W]), $signed(ofm_wr_data[1*DATA_W +: DATA_W]));
+    end
+  end
+end
+
+`endif
+
 endmodule

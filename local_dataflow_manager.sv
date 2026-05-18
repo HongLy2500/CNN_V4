@@ -773,4 +773,30 @@ module local_dataflow_manager
   end
 `endif
 
+`ifndef SYNTHESIS
+
+always_ff @(posedge clk or negedge rst_n) begin : DBG_LDM_IFM_RD_MUX_MON
+  if (!rst_n) begin
+  end else begin
+    if (ifm_rd_en || ifm_rd_valid) begin
+      $display("DBG_LDM_IFM_RD_MUX t=%0t cur_mode=%0b ifm_rd_en=%0b bank_base=%0d row=%0d col_idx=%0d col_g=%0d ifm_rd_valid=%0b data0=%0d data1=%0d data2=%0d data3=%0d",
+        $time,
+        cur_mode,
+        ifm_rd_en,
+        ifm_rd_bank_base,
+        ifm_rd_row_idx,
+        ifm_rd_col_idx,
+        ifm_rd_col_g,
+        ifm_rd_valid,
+        $signed(ifm_rd_data[0*DATA_W +: DATA_W]),
+        $signed(ifm_rd_data[1*DATA_W +: DATA_W]),
+        $signed(ifm_rd_data[2*DATA_W +: DATA_W]),
+        $signed(ifm_rd_data[3*DATA_W +: DATA_W])
+      );
+    end
+  end
+end
+
+`endif
+
 endmodule

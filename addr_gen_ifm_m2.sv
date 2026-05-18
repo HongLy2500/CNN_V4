@@ -300,7 +300,11 @@ module addr_gen_ifm_m2 #(
     issue_retry = 1'b0;
 
     if (cfg_valid) begin
-      if (stream_active_q && ret_valid_q && !ifm_rd_valid) begin
+      // Retry only for real IFM reads that returned not-valid/tag-miss.
+      // Padding-zero tuples do not access ifm_buffer, so ifm_rd_valid will
+      // naturally be 0 for them; they must still complete and allow the
+      // controller/data path to advance to the next tap.
+      if (stream_active_q && ret_valid_q && !ret_zero_pad_q && !ifm_rd_valid) begin
         issue_retry = 1'b1;
       end
       else if (start) begin
@@ -384,8 +388,11 @@ module addr_gen_ifm_m2 #(
     // pad input; use the VGG-specific rule only for K_cur==3.  For legacy
     // valid-conv tests, keep the previous pad=0 behavior.
     issue_pad_i     = (K_cur == 4'd3) ? 1 : 0;
-    issue_src_row_i = issue_block_row + issue_ky - issue_pad_i;
-    issue_src_col_i = issue_block_col + issue_kx - issue_pad_i;
+    // Cast operands to signed int before subtracting padding.  Without the
+    // cast, unsigned underflow at the top/left border can turn -1 into a
+    // large positive value before assignment to integer.
+    issue_src_row_i = int'(issue_block_row) + int'(issue_ky) - issue_pad_i;
+    issue_src_col_i = int'(issue_block_col) + int'(issue_kx) - issue_pad_i;
 
     issue_zero_pad = 1'b0;
     if (issue_any) begin
