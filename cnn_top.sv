@@ -292,7 +292,7 @@ logic                        ifm_ofm_wr_mode2_s;
   logic                        ofm_cfg_pool_en_s;
   logic [$clog2(H_MAX+1)-1:0]  ofm_cfg_h_out_s;
   logic [$clog2(W_MAX+1)-1:0]  ofm_cfg_w_out_s;
-  logic [7:0]                  ofm_cfg_f_out_s;
+  logic [9:0]                  ofm_cfg_f_out_s;
   logic [7:0]                  ofm_cfg_pv_cur_s;
   logic [7:0]                  ofm_cfg_pf_cur_s;
   logic [7:0]                  ofm_cfg_pv_next_s;

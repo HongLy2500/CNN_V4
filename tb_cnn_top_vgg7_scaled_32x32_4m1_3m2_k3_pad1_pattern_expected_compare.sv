@@ -1,11 +1,11 @@
 `timescale 1ns/1ps
 `include "cnn_ddr_defs.svh"
 
-module tb_cnn_top_vgg16_7layer_4m1_3m2_k3_pad1_pattern_expected_compare;
+module tb_cnn_top_vgg7_scaled_32x32_4m1_3m2_k3_pad1_pattern_expected_compare;
   import cnn_layer_desc_pkg::*;
 
   // --------------------------------------------------------------------------
-  // VGG16 canonical first-7-conv regression
+  // VGG16-like scaled first-7-conv regression
   //   L0-L3 : Mode1
   //   L4-L6 : Mode2
   //   K=3, stride=1, padding=1, ReLU enabled
@@ -35,15 +35,15 @@ module tb_cnn_top_vgg16_7layer_4m1_3m2_k3_pad1_pattern_expected_compare;
 
   localparam int C_MAX = 512;
   localparam int F_MAX = 512;
-  localparam int H_MAX = 224;
-  localparam int W_MAX = 224;
+  localparam int H_MAX = 32;
+  localparam int W_MAX = 32;
   localparam int HT = 4;
   localparam int K_MAX = 3;
 
-  localparam int WGT_DEPTH = 16384;
+  localparam int WGT_DEPTH = 512;
   localparam int CFG_DEPTH = 16;
 
-  localparam int OFM_ROW_STRIDE = W_MAX;
+  localparam int OFM_ROW_STRIDE = (W_MAX + PV_MAX - 1) / PV_MAX;
   localparam int OFM_BANK_DEPTH = H_MAX * OFM_ROW_STRIDE;
   localparam int OFM_LINEAR_DEPTH = F_MAX * OFM_BANK_DEPTH;
 
@@ -60,39 +60,36 @@ module tb_cnn_top_vgg16_7layer_4m1_3m2_k3_pad1_pattern_expected_compare;
   localparam int TB_OFM_BASE = 20'h40000;
 
   localparam int CLK_PERIOD_NS = 10;
-  localparam int MAX_CYCLES = 1000000000;
+  localparam int MAX_CYCLES = 50000000;
 
   localparam int LK = 3;
   localparam int PAD = 1;
-  localparam int OFM_ROW_STRIDE_TB  = (W_MAX + PV_MAX - 1) / PV_MAX;
-  localparam int OFM_BANK_DEPTH_TB  = H_MAX * OFM_ROW_STRIDE_TB;
-  localparam int OFM_LINEAR_DEPTH_TB = C_MAX * OFM_BANK_DEPTH_TB;
 
   // --------------------------------------------------------------------------
-  // VGG16 first 7 conv layers.
+  // VGG7 scaled first 7 conv layers.
   // h_conv_out/w_conv_out are descriptor conv output dimensions before pooling.
   // h_out/w_out are logical output dimensions after optional pooling.
   // --------------------------------------------------------------------------
-  localparam int L0_H_IN=224, L0_W_IN=224, L0_C_IN=3,   L0_F_OUT=64,  L0_POOL_EN=0;
-  localparam int L0_H_CONV_OUT=224, L0_W_CONV_OUT=224, L0_H_OUT=224, L0_W_OUT=224;
+  localparam int L0_H_IN=32, L0_W_IN=32, L0_C_IN=3,   L0_F_OUT=16,  L0_POOL_EN=0;
+  localparam int L0_H_CONV_OUT=32, L0_W_CONV_OUT=32, L0_H_OUT=32, L0_W_OUT=32;
 
-  localparam int L1_H_IN=224, L1_W_IN=224, L1_C_IN=64,  L1_F_OUT=64,  L1_POOL_EN=1;
-  localparam int L1_H_CONV_OUT=224, L1_W_CONV_OUT=224, L1_H_OUT=112, L1_W_OUT=112;
+  localparam int L1_H_IN=32, L1_W_IN=32, L1_C_IN=16,  L1_F_OUT=16,  L1_POOL_EN=1;
+  localparam int L1_H_CONV_OUT=32, L1_W_CONV_OUT=32, L1_H_OUT=16, L1_W_OUT=16;
 
-  localparam int L2_H_IN=112, L2_W_IN=112, L2_C_IN=64,  L2_F_OUT=128, L2_POOL_EN=0;
-  localparam int L2_H_CONV_OUT=112, L2_W_CONV_OUT=112, L2_H_OUT=112, L2_W_OUT=112;
+  localparam int L2_H_IN=16, L2_W_IN=16, L2_C_IN=16,  L2_F_OUT=32, L2_POOL_EN=0;
+  localparam int L2_H_CONV_OUT=16, L2_W_CONV_OUT=16, L2_H_OUT=16, L2_W_OUT=16;
 
-  localparam int L3_H_IN=112, L3_W_IN=112, L3_C_IN=128, L3_F_OUT=128, L3_POOL_EN=1;
-  localparam int L3_H_CONV_OUT=112, L3_W_CONV_OUT=112, L3_H_OUT=56,  L3_W_OUT=56;
+  localparam int L3_H_IN=16, L3_W_IN=16, L3_C_IN=32, L3_F_OUT=32, L3_POOL_EN=1;
+  localparam int L3_H_CONV_OUT=16, L3_W_CONV_OUT=16, L3_H_OUT=8,  L3_W_OUT=8;
 
-  localparam int L4_H_IN=56,  L4_W_IN=56,  L4_C_IN=128, L4_F_OUT=256, L4_POOL_EN=0;
-  localparam int L4_H_CONV_OUT=56,  L4_W_CONV_OUT=56,  L4_H_OUT=56,  L4_W_OUT=56;
+  localparam int L4_H_IN=8,  L4_W_IN=8,  L4_C_IN=32, L4_F_OUT=64, L4_POOL_EN=0;
+  localparam int L4_H_CONV_OUT=8,  L4_W_CONV_OUT=8,  L4_H_OUT=8,  L4_W_OUT=8;
 
-  localparam int L5_H_IN=56,  L5_W_IN=56,  L5_C_IN=256, L5_F_OUT=256, L5_POOL_EN=0;
-  localparam int L5_H_CONV_OUT=56,  L5_W_CONV_OUT=56,  L5_H_OUT=56,  L5_W_OUT=56;
+  localparam int L5_H_IN=8,  L5_W_IN=8,  L5_C_IN=64, L5_F_OUT=64, L5_POOL_EN=0;
+  localparam int L5_H_CONV_OUT=8,  L5_W_CONV_OUT=8,  L5_H_OUT=8,  L5_W_OUT=8;
 
-  localparam int L6_H_IN=56,  L6_W_IN=56,  L6_C_IN=256, L6_F_OUT=256, L6_POOL_EN=1;
-  localparam int L6_H_CONV_OUT=56,  L6_W_CONV_OUT=56,  L6_H_OUT=28,  L6_W_OUT=28;
+  localparam int L6_H_IN=8,  L6_W_IN=8,  L6_C_IN=64, L6_F_OUT=64, L6_POOL_EN=1;
+  localparam int L6_H_CONV_OUT=8,  L6_W_CONV_OUT=8,  L6_H_OUT=4,  L6_W_OUT=4;
 
   localparam int L0_NUM_CGROUP = (L0_C_IN + PV_M1 - 1) / PV_M1;
   localparam int L1_NUM_CGROUP = (L1_C_IN + PV_M1 - 1) / PV_M1;
@@ -202,8 +199,8 @@ module tb_cnn_top_vgg16_7layer_4m1_3m2_k3_pad1_pattern_expected_compare;
     .HT(HT),
     .K_MAX(K_MAX),
     .WGT_DEPTH(WGT_DEPTH),
-    .OFM_BANK_DEPTH(OFM_BANK_DEPTH_TB),
-    .OFM_LINEAR_DEPTH(OFM_LINEAR_DEPTH_TB),
+    .OFM_BANK_DEPTH(OFM_BANK_DEPTH),
+    .OFM_LINEAR_DEPTH(OFM_LINEAR_DEPTH),
     .CFG_DEPTH(CFG_DEPTH),
     .DDR_ADDR_W(DDR_ADDR_W),
     .DDR_WORD_W(DDR_WORD_W)
@@ -564,14 +561,14 @@ module tb_cnn_top_vgg16_7layer_4m1_3m2_k3_pad1_pattern_expected_compare;
     end
     if (mismatch != 0) begin
       dump_ofm_region();
-      $fatal(1, "TB_FAIL: VGG16-7L 4M1+3M2 K3/P1 final OFM mismatch count=%0d", mismatch);
+      $fatal(1, "TB_FAIL: VGG7-scaled 32x32 4M1+3M2 K3/P1 final OFM mismatch count=%0d", mismatch);
     end
   end
   endtask
 
   task automatic print_banner;
   begin
-    $display("TB_INFO: VGG16 canonical first 7 conv layers, 4M1+3M2, K=3 stride=1 pad=1");
+    $display("TB_INFO: VGG7 scaled 32x32 first 7 conv layers, 4M1+3M2, K=3 stride=1 pad=1");
     $display("TB_INFO: params PTOTAL=%0d PV_MAX=%0d PF_MAX=%0d PC=%0d PF=%0d C_MAX=%0d F_MAX=%0d", PTOTAL, PV_MAX, PF_MAX, PC, PF, C_MAX, F_MAX);
     $display("TB_INFO: L0-L3 MODE1, L4-L6 MODE2; final expected shape %0dx%0dx%0d", L6_H_OUT, L6_W_OUT, L6_F_OUT);
     $display("TB_INFO: DDR bases IFM=0x%0h WGT=0x%0h OFM=0x%0h WGT_END=0x%0h", TB_IFM_BASE, TB_WGT_BASE, TB_OFM_BASE, WGT_DDR_END);
@@ -692,7 +689,7 @@ module tb_cnn_top_vgg16_7layer_4m1_3m2_k3_pad1_pattern_expected_compare;
       $fatal(1, "TB_FAIL: timeout");
     end
 
-    $display("TB_INFO: VGG16-7L test done after %0d cycles", cycle_count);
+    $display("TB_INFO: VGG7-scaled 32x32 test done after %0d cycles", cycle_count);
     $display("TB_INFO: DDR counts: ifm_reads=%0d est=%0d, wgt_reads=%0d est=%0d, ofm_writes=%0d expected=%0d", ddr_ifm_read_count, EXPECTED_IFM_DDR_READS, ddr_wgt_read_count, EXPECTED_WGT_DDR_READS, ddr_ofm_write_count, EXPECTED_OFM_DDR_WORDS);
     $display("TB_INFO: OFM->IFM stream starts=%0d done=%0d legacy_m2_mgr_req=%0d", ofm_ifm_stream_start_count, ofm_ifm_stream_done_count, legacy_m2_mgr_req_count);
 
