@@ -1,12 +1,12 @@
 module mode1_compute_top #(
   parameter int DATA_W    = 8,
   parameter int PSUM_W    = 32,
-  parameter int K_MAX     = 7,
+  parameter int K_MAX     = 3,
   parameter int W_MAX     = 224,
-  parameter int PV_MAX    = 8,
-  parameter int PF_MAX    = 8,
-  parameter int PTOTAL    = 16,
-  parameter int F_MAX     = 128,
+  parameter int PV_MAX    = 16,
+  parameter int PF_MAX    = 16,
+  parameter int PTOTAL    = 256,
+  parameter int F_MAX     = 512,
   parameter int HOUT_MAX  = 224,
   parameter int WOUT_MAX  = 224,
   parameter int WB_ADDR_W = 12
@@ -18,8 +18,8 @@ module mode1_compute_top #(
   input  logic step_en,
 
   input  logic [3:0] K_cur,
-  input  logic [7:0] C_cur,
-  input  logic [7:0] F_cur,
+  input  logic [9:0] C_cur,
+  input  logic [9:0] F_cur,
   input  logic [15:0] Hout_cur,
   input  logic [15:0] Wout_cur,
   input  logic [15:0] W_cur,

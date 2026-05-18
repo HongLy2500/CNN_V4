@@ -1,7 +1,7 @@
 module weight_read_ctrl_mode2 #(
   parameter int DATA_W    = 8,
-  parameter int PC        = 8,
-  parameter int PF        = 4,
+  parameter int PC        = 16,
+  parameter int PF        = 16,
   // Physical word width from weight_buffer. Must match weight_buffer.WORD_LANES.
   // In mode 2, this controller consumes the low PF*PC lanes from that physical word.
   parameter int WB_LANES  = 32,
@@ -18,8 +18,8 @@ module weight_read_ctrl_mode2 #(
   // lane = pf*PC + pc
   // =====================================================
   input  logic [3:0] K_cur,
-  input  logic [7:0] C_cur,
-  input  logic [7:0] F_cur,
+  input  logic [9:0] C_cur,
+  input  logic [9:0] F_cur,
   input  logic [15:0] Hout_cur,
   input  logic [15:0] Wout_cur,
 

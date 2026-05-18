@@ -1,8 +1,8 @@
 module ifm_buffer #(
     parameter int DATA_W = 8,
-    parameter int PV_MAX = 8,
-    parameter int PC     = 8,    // fixed for mode 2, also WT = PC
-    parameter int C_MAX  = 64,
+    parameter int PV_MAX = 16,
+    parameter int PC     = 16,    // fixed for mode 2, also WT = PC
+    parameter int C_MAX  = 512,
     parameter int W_MAX  = 224,
     parameter int H_MAX  = 224,
     parameter int HT     = 8,    // fixed tile height for mode 1
@@ -75,6 +75,10 @@ module ifm_buffer #(
     input  logic [$clog2(W_MAX)-1:0]    ofm_wr_col_idx,
     input  logic [PV_MAX*DATA_W-1:0]    ofm_wr_data,
     input  logic [PV_MAX-1:0]           ofm_wr_keep,
+    // Mode2 OFM->IFM target metadata.  Only asserted/used for OFM stream
+    // beats whose destination layout is IFM Mode2.  Mode1/DMA paths ignore it.
+    input  logic [$clog2(W_MAX)-1:0]    ofm_wr_col_g,
+    input  logic                        ofm_wr_mode2,
 
     //==================================================
     // Read port to data_register
@@ -94,6 +98,9 @@ module ifm_buffer #(
     input  logic [$clog2(C_MAX)-1:0]    rd_bank_base,
     input  logic [$clog2(H_MAX)-1:0]    rd_row_idx,
     input  logic [$clog2(W_MAX)-1:0]    rd_col_idx,
+    // Global IFM column requested by Mode2 addr_gen.  The physical read
+    // column above remains the rolling slot (global_col % PC).
+    input  logic [$clog2(W_MAX)-1:0]    rd_col_g,
 
     output logic                        rd_valid,
     output logic [PV_MAX*DATA_W-1:0]    rd_data,
@@ -145,6 +152,10 @@ module ifm_buffer #(
     (* ram_style = "block" *)
     logic [WORD_W-1:0] mem [0:C_MAX-1][0:DEPTH-1];
 
+    // Mode2 rolling-slot content tag.  Mode1 never reads these tags.
+    logic                 m2_slot_valid   [0:C_MAX-1][0:DEPTH-1];
+    logic [COL_W-1:0]     m2_slot_col_tag [0:C_MAX-1][0:DEPTH-1];
+
     //==================================================
     // Latched configuration
     //==================================================
@@ -188,6 +199,10 @@ module ifm_buffer #(
     logic [DEPTH_W-1:0]   rd_row_idx_ext;
     logic                 wr_addr_valid;
     logic                 wr_src_is_ofm;
+    logic                 wr_use_mode2_layout;
+    logic                 rd_m2_tag_hit;
+
+    assign wr_use_mode2_layout = wr_src_is_ofm ? ofm_wr_mode2 : cfg_mode_q;
 
     // Mode 2 read decode helpers. Kept separate from mode 1 so the mode 1
     // address/read behavior remains unchanged.
@@ -276,6 +291,12 @@ module ifm_buffer #(
             m1_free_valid_q       <= 1'b0;
             m1_free_row_slot_l_q  <= '0;
             m1_free_row_g_q       <= '0;
+            for (int ti = 0; ti < C_MAX; ti++) begin
+                for (int tj = 0; tj < DEPTH; tj++) begin
+                    m2_slot_valid[ti][tj]   <= 1'b0;
+                    m2_slot_col_tag[ti][tj] <= '0;
+                end
+            end
         end
         else begin
             // default: free event is a 1-cycle pulse
@@ -397,7 +418,7 @@ module ifm_buffer #(
         cfg_m2_cgroups_v = '0;
         wr_m2_addr_u32   = '0;
 
-        if (!cfg_mode_q) begin
+        if (!wr_use_mode2_layout) begin
             // MODE 1 UNCHANGED:
             // bank = channel, addr = physical_ring_row * W_MAX + col_group,
             // lane = Pv pixel lane.
@@ -463,6 +484,11 @@ module ifm_buffer #(
                         <= wr_data_sel[wlane*DATA_W +: DATA_W];
                 end
             end
+
+            if (wr_src_is_ofm && ofm_wr_mode2 && (wr_bank_sel < PC) && (wr_bank_sel < C_MAX)) begin
+                m2_slot_valid[wr_bank_sel][wr_addr]   <= 1'b1;
+                m2_slot_col_tag[wr_bank_sel][wr_addr] <= ofm_wr_col_g[COL_W-1:0];
+            end
         end
     end
 
@@ -492,6 +518,14 @@ module ifm_buffer #(
         rd_addr_m2      = rd_addr_m2_u32;
     end
 
+    always_comb begin
+        rd_m2_tag_hit = 1'b0;
+        if ((rd_m2_col_l_u32 < C_MAX) && (rd_addr_m2_u32 < DEPTH)) begin
+            rd_m2_tag_hit = m2_slot_valid[rd_m2_col_l_u32][rd_addr_m2] &&
+                            (m2_slot_col_tag[rd_m2_col_l_u32][rd_addr_m2] == rd_col_g[COL_W-1:0]);
+        end
+    end
+
     //==================================================
     // Read path: 1-cycle registered output
     //==================================================
@@ -503,7 +537,7 @@ module ifm_buffer #(
             rd_data_q  <= '0;
         end
         else begin
-            rd_valid_q <= rd_en;
+            rd_valid_q <= rd_en && (!cfg_mode_q || rd_m2_tag_hit);
             rd_data_q  <= '0;
 
             if (rd_en) begin
@@ -518,7 +552,7 @@ module ifm_buffer #(
                         end
                     end
                 end
-                else begin
+                else if (rd_m2_tag_hit) begin
                     // MODE 2 FIXED CONTRACT:
                     //   bank = col_l = rd_col_idx
                     //   addr = row * M2_CGRP_MAX + cgrp

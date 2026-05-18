@@ -185,14 +185,14 @@ module transition_manager
   assign cfg_f_out_s   = next_cfg.c_in;
   assign cfg_pv_next_s = '0; // unused when next mode is mode2
 
-  // Continue across all horizontal Mode2 input columns of the final producer
-  // OFM / destination IFM.  Bound by cfg_w_out_s (= next_cfg.w_in), not by
-  // raw cur_cfg.w_out.
+  // Mode1->Mode2 transition preloads ONLY the initial resident Mode2
+  // rolling-column window.  Do not sweep active_col_q across the full width.
+  // Columns beyond the initial resident PC slots are filled later by the
+  // Mode2 runtime refill path driven by free tokens.  Sweeping here would
+  // overwrite physical slots because Mode2 maps global_col to col_l =
+  // global_col % PC before the Mode2 CE has consumed the initial columns.
   always_comb begin
     more_tiles_after_done = 1'b0;
-    if ((req_kind_q == REQ_M1_TO_M2) && sub_done) begin
-      more_tiles_after_done = ((active_col_q + PC[COL_W-1:0]) < cfg_w_out_s);
-    end
   end
 
   addr_gen_ofm_to_ifm #(

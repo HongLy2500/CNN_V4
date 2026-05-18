@@ -1,7 +1,7 @@
 module weight_register_mode1 #(
   parameter int DATA_W = 8,
-  parameter int PF_MAX = 8,
-  parameter int PTOTAL = 16
+  parameter int PF_MAX = 16,
+  parameter int PTOTAL = 256
 )(
   input  logic clk,
   input  logic rst_n,

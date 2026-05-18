@@ -26,6 +26,7 @@ module local_dataflow_manager
   output logic [$clog2(C_MAX)-1:0] ifm_rd_bank_base,
   output logic [$clog2(H_MAX)-1:0] ifm_rd_row_idx,
   output logic [$clog2(W_MAX)-1:0] ifm_rd_col_idx,
+  output logic [$clog2(W_MAX)-1:0] ifm_rd_col_g,
   input  logic                     ifm_rd_valid,
   input  logic [PV_MAX*DATA_W-1:0] ifm_rd_data,
 
@@ -89,6 +90,7 @@ module local_dataflow_manager
   //   compute-consumed for the last PF/f-group, and it requests the next
   //   global column that can reuse the same local col_l slot.
   // - Mode1 is intentionally untouched; this token is Mode2-only.
+  input  logic        m2_free_ready,
   output logic        m2_free_valid,
   output logic [15:0] m2_free_row_g,
   output logic [15:0] m2_free_col_g,
@@ -120,6 +122,12 @@ module local_dataflow_manager
   logic [$clog2(C_MAX)-1:0] m2_ifm_rd_bank_base_s;
   logic [$clog2(H_MAX)-1:0] m2_ifm_rd_row_idx_s;
   logic [$clog2(W_MAX)-1:0] m2_ifm_rd_col_idx_s;
+  logic [$clog2(W_MAX)-1:0] m2_ifm_rd_col_g_s;
+  logic                     m2_miss_refill_valid_s;
+  logic [15:0]              m2_miss_refill_row_g_s;
+  logic [15:0]              m2_miss_refill_col_g_s;
+  logic [15:0]              m2_miss_refill_col_l_s;
+  logic [15:0]              m2_miss_refill_cgrp_g_s;
 
   logic                     m2_dr_write_en_s;
   logic [$clog2(K_MAX)-1:0] m2_dr_write_row_idx_s;
@@ -229,6 +237,11 @@ module local_dataflow_manager
   logic [15:0] m2_free_emit_col_l_q;
   logic [15:0] m2_free_emit_cgrp_q;
   logic [15:0] m2_free_emit_num_cgrp_q;
+  logic        m2_miss_pending_q;
+  logic [15:0] m2_miss_row_g_q;
+  logic [15:0] m2_miss_col_g_q;
+  logic [15:0] m2_miss_col_l_q;
+  logic [15:0] m2_miss_cgrp_g_q;
 
   logic [15:0] m2_num_cgrp_s;
   logic        m2_pixel_consumed_last_fgroup_s;
@@ -472,8 +485,15 @@ module local_dataflow_manager
     .ifm_rd_bank_base  (m2_ifm_rd_bank_base_s),
     .ifm_rd_row_idx    (m2_ifm_rd_row_idx_s),
     .ifm_rd_col_idx    (m2_ifm_rd_col_idx_s),
+    .ifm_rd_col_g      (m2_ifm_rd_col_g_s),
     .ifm_rd_valid      (ifm_rd_valid),
     .ifm_rd_data       (ifm_rd_data),
+
+    .m2_miss_refill_valid  (m2_miss_refill_valid_s),
+    .m2_miss_refill_row_g  (m2_miss_refill_row_g_s),
+    .m2_miss_refill_col_g  (m2_miss_refill_col_g_s),
+    .m2_miss_refill_col_l  (m2_miss_refill_col_l_s),
+    .m2_miss_refill_cgrp_g (m2_miss_refill_cgrp_g_s),
 
     .dr_write_en       (m2_dr_write_en_s),
     .dr_write_row_idx  (m2_dr_write_row_idx_s),
@@ -502,6 +522,7 @@ module local_dataflow_manager
     ifm_rd_bank_base = '0;
     ifm_rd_row_idx   = '0;
     ifm_rd_col_idx   = '0;
+    ifm_rd_col_g     = '0;
 
     case (cur_mode)
       MODE1: begin
@@ -516,6 +537,7 @@ module local_dataflow_manager
         ifm_rd_bank_base = m2_ifm_rd_bank_base_s;
         ifm_rd_row_idx   = m2_ifm_rd_row_idx_s;
         ifm_rd_col_idx   = m2_ifm_rd_col_idx_s;
+        ifm_rd_col_g     = m2_ifm_rd_col_g_s;
       end
 
       default: begin end
@@ -573,6 +595,11 @@ module local_dataflow_manager
       m2_free_emit_col_l_q      <= 16'd0;
       m2_free_emit_cgrp_q       <= 16'd0;
       m2_free_emit_num_cgrp_q   <= 16'd0;
+      m2_miss_pending_q         <= 1'b0;
+      m2_miss_row_g_q           <= 16'd0;
+      m2_miss_col_g_q           <= 16'd0;
+      m2_miss_col_l_q           <= 16'd0;
+      m2_miss_cgrp_g_q          <= 16'd0;
       m2_boundary_pending_q     <= 1'b0;
       m2_boundary_issue_sent_q  <= 1'b0;
       m2_boundary_pending_col_q <= 16'd0;
@@ -613,30 +640,63 @@ module local_dataflow_manager
           m2_ret_cgrp_g_q         <= 16'd0;
       end
 
-      // Mode2 follow-Mode1 free-slot emitter.  It serializes cgrp events
-      // for one compute-consumed IFM slot.  hold_compute is asserted while
-      // active so a new output pixel is not accepted before all cgrp free
-      // events for the current slot have been exposed to control_unit_top.
+      // Mode2 follow-Mode1 free-slot emitter plus demand refill fallback.
+      // Normal free events are prefetch tokens.  If a tagged IFM read misses,
+      // addr_gen_ifm_m2 emits a demand token naming the exact missing entry;
+      // that token has priority and is held until it can be exposed.
       if (cur_mode != MODE2) begin
         m2_free_emit_active_q   <= 1'b0;
         m2_free_emit_cgrp_q     <= 16'd0;
+        m2_miss_pending_q       <= 1'b0;
       end
-      else if (m2_free_emit_active_q) begin
-        if ((m2_free_emit_cgrp_q + 16'd1) < m2_free_emit_num_cgrp_q) begin
-          m2_free_emit_cgrp_q <= m2_free_emit_cgrp_q + 16'd1;
+      else begin
+        if (m2_miss_refill_valid_s && !m2_miss_pending_q && !m2_free_emit_active_q) begin
+          m2_free_emit_active_q   <= 1'b1;
+          m2_free_emit_row_g_q    <= m2_miss_refill_row_g_s;
+          m2_free_emit_col_g_q    <= m2_miss_refill_col_g_s;
+          m2_free_emit_col_l_q    <= m2_miss_refill_col_l_s;
+          m2_free_emit_cgrp_q     <= m2_miss_refill_cgrp_g_s;
+          m2_free_emit_num_cgrp_q <= m2_miss_refill_cgrp_g_s + 16'd1;
         end
-        else begin
-          m2_free_emit_active_q <= 1'b0;
-          m2_free_emit_cgrp_q   <= 16'd0;
+        else if (m2_miss_refill_valid_s && !m2_miss_pending_q) begin
+          m2_miss_pending_q <= 1'b1;
+          m2_miss_row_g_q   <= m2_miss_refill_row_g_s;
+          m2_miss_col_g_q   <= m2_miss_refill_col_g_s;
+          m2_miss_col_l_q   <= m2_miss_refill_col_l_s;
+          m2_miss_cgrp_g_q  <= m2_miss_refill_cgrp_g_s;
         end
-      end
-      else if (m2_free_refill_needed_s) begin
-        m2_free_emit_active_q   <= 1'b1;
-        m2_free_emit_row_g_q    <= m2_out_row_g_s;
-        m2_free_emit_col_g_q    <= m2_free_refill_col_g_s;
-        m2_free_emit_col_l_q    <= m2_free_consumed_col_l_s;
-        m2_free_emit_cgrp_q     <= 16'd0;
-        m2_free_emit_num_cgrp_q <= m2_num_cgrp_s;
+
+        if (m2_free_emit_active_q) begin
+          // Hold the token until control_unit_top confirms it has been queued.
+          // This prevents demand/free tokens from being lost when the runtime
+          // refill FIFO or stream path is temporarily unable to accept them.
+          if (m2_free_ready) begin
+            if ((m2_free_emit_cgrp_q + 16'd1) < m2_free_emit_num_cgrp_q) begin
+              m2_free_emit_cgrp_q <= m2_free_emit_cgrp_q + 16'd1;
+            end
+            else begin
+              m2_free_emit_active_q <= 1'b0;
+              m2_free_emit_cgrp_q   <= 16'd0;
+            end
+          end
+        end
+        else if (m2_miss_pending_q) begin
+          m2_free_emit_active_q   <= 1'b1;
+          m2_free_emit_row_g_q    <= m2_miss_row_g_q;
+          m2_free_emit_col_g_q    <= m2_miss_col_g_q;
+          m2_free_emit_col_l_q    <= m2_miss_col_l_q;
+          m2_free_emit_cgrp_q     <= m2_miss_cgrp_g_q;
+          m2_free_emit_num_cgrp_q <= m2_miss_cgrp_g_q + 16'd1;
+          m2_miss_pending_q       <= 1'b0;
+        end
+        else if (m2_free_refill_needed_s) begin
+          m2_free_emit_active_q   <= 1'b1;
+          m2_free_emit_row_g_q    <= m2_out_row_g_s;
+          m2_free_emit_col_g_q    <= m2_free_refill_col_g_s;
+          m2_free_emit_col_l_q    <= m2_free_consumed_col_l_s;
+          m2_free_emit_cgrp_q     <= 16'd0;
+          m2_free_emit_num_cgrp_q <= m2_num_cgrp_s;
+        end
       end
     end
   end
@@ -667,7 +727,7 @@ module local_dataflow_manager
   // --------------------------------------------------------------------------
   // Mode1 behavior is unchanged.  Mode2 asserts a narrow hold only while
   // serializing cgrp free events so no compute-consumed slot is dropped.
-  assign m2_free_emit_hold_s = m2_free_emit_active_q || m2_free_refill_needed_s;
+  assign m2_free_emit_hold_s = m2_free_emit_active_q || m2_free_refill_needed_s || m2_miss_pending_q || m2_miss_refill_valid_s;
 
   assign hold_compute = (cur_mode == MODE1) ? m1_busy_s :
                         (cur_mode == MODE2) ? m2_free_emit_hold_s : 1'b0;

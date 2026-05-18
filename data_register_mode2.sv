@@ -1,14 +1,14 @@
 module data_register_mode2 #(
   parameter int K_MAX   = 7,
   parameter int DATA_W  = 8,
-  parameter int PC      = 8
+  parameter int PC      = 16
 )(
   input  logic clk,
   input  logic rst_n,
 
   // Runtime config
   input  logic [3:0]  K_cur,
-  input  logic [7:0]  C_cur,
+  input  logic [9:0]  C_cur,
   input  logic [15:0] c_group,
 
   // ---------------------------------------------

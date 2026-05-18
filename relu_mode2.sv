@@ -1,6 +1,6 @@
 module relu_mode2 #(
   parameter int PSUM_W = 32,
-  parameter int PF     = 4
+  parameter int PF     = 16
 )(
   input  logic clk,
   input  logic rst_n,

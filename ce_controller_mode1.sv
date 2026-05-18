@@ -16,8 +16,8 @@ module ce_controller_mode1 #(
   // Runtime config
   // =====================================================
   input  logic [3:0] K_cur,
-  input  logic [7:0] C_cur,
-  input  logic [7:0] F_cur,
+  input  logic [9:0] C_cur,
+  input  logic [9:0] F_cur,
   input  logic [15:0] Hout_cur,
   input  logic [15:0] Wout_cur,
   input  logic [7:0] Pv_cur,

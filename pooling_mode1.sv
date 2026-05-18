@@ -1,10 +1,10 @@
 module pooling_mode1 #(
   parameter int DATA_W   = 32,
   parameter int OUT_W    = DATA_W,
-  parameter int PV_MAX   = 8,
-  parameter int PF_MAX   = 8,
-  parameter int PTOTAL   = 16,
-  parameter int F_MAX    = 128,
+  parameter int PV_MAX   = 16,
+  parameter int PF_MAX   = 16,
+  parameter int PTOTAL   = 256,
+  parameter int F_MAX    = 512,
   parameter int WOUT_MAX = 224
 )(
   input  logic clk,
@@ -18,7 +18,7 @@ module pooling_mode1 #(
   // bypass path is handled outside this module by mode1_compute_top.
   input  logic [7:0] Pv_cur,
   input  logic [7:0] Pf_cur,
-  input  logic [7:0] F_cur,
+  input  logic [9:0] F_cur,
   input  logic [15:0] Wout_cur,
   input  logic [7:0] f_group,
 

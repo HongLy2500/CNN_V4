@@ -1,8 +1,8 @@
 module mac_array_mode2 #(
   parameter int DATA_W = 8,
   parameter int PSUM_W = 32,
-  parameter int PC     = 8,
-  parameter int PF     = 4
+  parameter int PC     = 16,
+  parameter int PF     = 16
 )(
   input  logic clk,
   input  logic rst_n,

@@ -27,12 +27,12 @@ module cnn_top
 #(
   parameter int DATA_W           = 8,
   parameter int PSUM_W           = 32,
-  parameter int PTOTAL           = 16,
-  parameter int PV_MAX           = 8,
-  parameter int PF_MAX           = 8,
-  parameter int PC_MODE2         = 8,
-  parameter int PF_MODE2         = 4,
-  parameter int C_MAX            = 64,
+  parameter int PTOTAL           = 256,
+  parameter int PV_MAX           = 16,
+  parameter int PF_MAX           = 16,
+  parameter int PC_MODE2         = 16,
+  parameter int PF_MODE2         = 16,
+  parameter int C_MAX            = 512,
   parameter int F_MAX            = 512,
   parameter int W_MAX            = 224,
   parameter int H_MAX            = 224,
@@ -186,6 +186,9 @@ module cnn_top
   logic [$clog2(C_MAX)-1:0]    ifm_rd_bank_base_s;
   logic [IFM_ROW_W-1:0]        ifm_rd_row_idx_s;
   logic [IFM_COL_W-1:0]        ifm_rd_col_idx_s;
+logic [IFM_COL_W-1:0]        ifm_rd_col_g_s;
+logic [IFM_COL_W-1:0]        ifm_ofm_wr_col_g_s;
+logic                        ifm_ofm_wr_mode2_s;
   logic                        ifm_rd_valid_s;
   logic [PV_MAX*DATA_W-1:0]    ifm_rd_data_s;
 
@@ -418,6 +421,7 @@ module cnn_top
     .ifm_rd_bank_base       (ifm_rd_bank_base_s),
     .ifm_rd_row_idx         (ifm_rd_row_idx_s),
     .ifm_rd_col_idx         (ifm_rd_col_idx_s),
+    .ifm_rd_col_g           (ifm_rd_col_g_s),
     .ifm_rd_valid           (ifm_rd_valid_s),
     .ifm_rd_data            (ifm_rd_data_s),
     .m1_free_valid          (ifm_m1_free_valid_s),
@@ -661,10 +665,13 @@ module cnn_top
     .ofm_wr_col_idx(ifm_ofm_wr_col_idx_s),
     .ofm_wr_data  (ifm_ofm_wr_data_s),
     .ofm_wr_keep  (ifm_ofm_wr_keep_s),
+    .ofm_wr_col_g (ifm_ofm_wr_col_g_s),
+    .ofm_wr_mode2 (ifm_ofm_wr_mode2_s),
     .rd_en        (ifm_rd_en_s),
     .rd_bank_base (ifm_rd_bank_base_s),
     .rd_row_idx   (ifm_rd_row_idx_s),
     .rd_col_idx   (ifm_rd_col_idx_s),
+    .rd_col_g     (ifm_rd_col_g_s),
     .rd_valid     (ifm_rd_valid_s),
     .rd_data      (ifm_rd_data_s),
     .dma_wr_ready (ifm_dma_wr_ready_s),
@@ -914,6 +921,8 @@ module cnn_top
     .ifm_ofm_wr_col_idx (ifm_ofm_wr_col_idx_s),
     .ifm_ofm_wr_data    (ifm_ofm_wr_data_s),
     .ifm_ofm_wr_keep    (ifm_ofm_wr_keep_s),
+    .ifm_ofm_wr_col_g   (ifm_ofm_wr_col_g_s),
+    .ifm_ofm_wr_mode2   (ifm_ofm_wr_mode2_s),
     .ifm_ofm_wr_ready   (ifm_ofm_wr_ready_s),
     .m1_sm_ready_valid  (m1_sm_ready_valid_s),
     .m1_sm_ready_bank   (m1_sm_ready_bank_s),

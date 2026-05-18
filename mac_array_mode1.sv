@@ -1,8 +1,8 @@
 module mac_array_mode1 #(
   parameter int DATA_W = 8,
   parameter int PSUM_W = 8,
-  parameter int PV_MAX = 8,
-  parameter int PTOTAL = 16
+  parameter int PV_MAX = 16,
+  parameter int PTOTAL = 256
 )(
   input  logic clk,
   input  logic rst_n,

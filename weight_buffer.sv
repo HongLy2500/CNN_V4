@@ -4,7 +4,7 @@ module weight_buffer #(
   // In the integrated design this should be PTOTAL.
   parameter int WORD_LANES = 16,
   // Logical read width for mode 1.
-  parameter int PF_MAX     = 8,
+  parameter int PF_MAX     =512,
   parameter int ADDR_W     = 12,
   parameter int DEPTH      = 4096
 )(

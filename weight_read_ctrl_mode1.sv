@@ -1,10 +1,10 @@
 module weight_read_ctrl_mode1 #(
   parameter int DATA_W    = 8,
-  parameter int PF_MAX    = 8,
+  parameter int PF_MAX    = 16,
   // Physical width of one weight_buffer word. In the integrated design this
   // should be PTOTAL. One physical word in mode 1 packs Pv_cur logical bundles,
   // each logical bundle being Pf_cur weights wide.
-  parameter int PTOTAL    = 16,
+  parameter int PTOTAL    = 256,
   parameter int WB_ADDR_W = 12
 )(
   input  logic clk,
@@ -20,8 +20,8 @@ module weight_read_ctrl_mode1 #(
   // Logical bundle order is the flat order of (f_group, c, ky, kx).
   // =====================================================
   input  logic [3:0] K_cur,
-  input  logic [7:0] C_cur,
-  input  logic [7:0] F_cur,
+  input  logic [9:0] C_cur,
+  input  logic [9:0] F_cur,
   input  logic [7:0] Pv_cur,
   input  logic [7:0] Pf_cur,
   input  logic [15:0] Wout_cur,
@@ -64,8 +64,8 @@ module weight_read_ctrl_mode1 #(
   // cur_cfg bits from feeding the weight-buffer read-address register through a
   // very long combinational path.
   logic [3:0]  K_q;
-  logic [7:0]  C_q;
-  logic [7:0]  F_q;
+  logic [9:0]  C_q;
+  logic [9:0]  F_q;
   logic [7:0]  Pv_q;
   logic [7:0]  Pf_q;
   logic [15:0] Wout_q;

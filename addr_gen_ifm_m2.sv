@@ -71,6 +71,7 @@ module addr_gen_ifm_m2 #(
   output logic [$clog2(C_MAX)-1:0] ifm_rd_bank_base,
   output logic [$clog2(H_MAX)-1:0] ifm_rd_row_idx,
   output logic [$clog2(W_MAX)-1:0] ifm_rd_col_idx,
+  output logic [$clog2(W_MAX)-1:0] ifm_rd_col_g,
   input  logic                     ifm_rd_valid,
   input  logic [PV_MAX*DATA_W-1:0] ifm_rd_data,
 
@@ -87,6 +88,15 @@ module addr_gen_ifm_m2 #(
   output logic                     busy,
   output logic                     done,
   output logic                     error,
+
+  // Mode2 demand refill request.  Asserted once when a tagged IFM read
+  // returns not-valid for the current requested tuple.  The request names
+  // the exact IFM entry that must be refilled into the rolling slot.
+  output logic                     m2_miss_refill_valid,
+  output logic [15:0]              m2_miss_refill_row_g,
+  output logic [15:0]              m2_miss_refill_col_g,
+  output logic [15:0]              m2_miss_refill_col_l,
+  output logic [15:0]              m2_miss_refill_cgrp_g,
 
   // Optional debug / visibility
   output logic [15:0]              dbg_num_fgroup,
@@ -137,6 +147,7 @@ module addr_gen_ifm_m2 #(
 
   logic issue_first;
   logic issue_succ;
+  logic issue_retry;
   logic issue_any;
 
   logic [15:0] issue_block_row;
@@ -156,6 +167,12 @@ module addr_gen_ifm_m2 #(
   // Metadata delayed to align with 1-cycle ifm_buffer read latency.
   logic               ret_valid_q;
   logic [K_ROW_W-1:0] ret_row_q;
+  logic [15:0]        ret_abs_row_g_q;
+  logic [15:0]        ret_abs_col_g_q;
+  logic [15:0]        ret_col_l_q;
+  logic [15:0]        ret_cgrp_g_q;
+  logic               miss_refill_pending_q;
+  logic               miss_now_s;
 
   integer lane_i;
 
@@ -271,9 +288,13 @@ module addr_gen_ifm_m2 #(
   always_comb begin
     issue_first = 1'b0;
     issue_succ  = 1'b0;
+    issue_retry = 1'b0;
 
     if (cfg_valid) begin
-      if (start) begin
+      if (stream_active_q && ret_valid_q && !ifm_rd_valid) begin
+        issue_retry = 1'b1;
+      end
+      else if (start) begin
         issue_first = 1'b1;
       end
       else if (stream_active_q && out_valid && have_next_block) begin
@@ -290,7 +311,7 @@ module addr_gen_ifm_m2 #(
     end
   end
 
-  assign issue_any = issue_first || issue_succ;
+  assign issue_any = issue_retry || issue_first || issue_succ;
 
   always_comb begin
     issue_block_row = block_row_q;
@@ -299,7 +320,14 @@ module addr_gen_ifm_m2 #(
     issue_ky        = issue_ky_q;
     issue_kx        = issue_kx_q;
 
-    if (issue_first) begin
+    if (issue_retry) begin
+      issue_block_row = block_row_q;
+      issue_block_col = block_col_q;
+      issue_cgroup    = issue_cgroup_q;
+      issue_ky        = issue_ky_q;
+      issue_kx        = issue_kx_q;
+    end
+    else if (issue_first) begin
       if (start) begin
         issue_block_row = 16'd0;
         issue_block_col = 16'd0;
@@ -371,6 +399,7 @@ module addr_gen_ifm_m2 #(
   assign ifm_rd_bank_base = issue_bank_base16[C_BANK_W-1:0];
   assign ifm_rd_row_idx   = issue_abs_row16[H_ROW_W-1:0];
   assign ifm_rd_col_idx   = issue_col_sel_l16[W_COL_W-1:0];
+  assign ifm_rd_col_g     = issue_abs_col_g16[W_COL_W-1:0];
 
   // --------------------------------------------------
   // data_register_mode2 write side
@@ -401,6 +430,13 @@ module addr_gen_ifm_m2 #(
 
   assign final_out_valid = stream_active_q && out_valid && !have_next_block;
 
+  assign miss_now_s = stream_active_q && ret_valid_q && !ifm_rd_valid;
+  assign m2_miss_refill_valid = miss_now_s && !miss_refill_pending_q;
+  assign m2_miss_refill_row_g  = ret_abs_row_g_q;
+  assign m2_miss_refill_col_g  = ret_abs_col_g_q;
+  assign m2_miss_refill_col_l  = ret_col_l_q;
+  assign m2_miss_refill_cgrp_g = ret_cgrp_g_q;
+
 `ifndef SYNTHESIS
   // Simulation-only sanity check for the rolling-buffer contract.
   // tile_col_base_g is kept as an interface-compatibility input only.
@@ -426,6 +462,11 @@ module addr_gen_ifm_m2 #(
       stream_active_q <= 1'b0;
       ret_valid_q     <= 1'b0;
       ret_row_q       <= '0;
+      ret_abs_row_g_q <= 16'd0;
+      ret_abs_col_g_q <= 16'd0;
+      ret_col_l_q     <= 16'd0;
+      ret_cgrp_g_q    <= 16'd0;
+      miss_refill_pending_q <= 1'b0;
       done            <= 1'b0;
       error           <= 1'b0;
     end
@@ -436,6 +477,23 @@ module addr_gen_ifm_m2 #(
       // Delay metadata for the read issued in this cycle.
       ret_valid_q <= ifm_rd_en;
       ret_row_q   <= issue_ky;
+      if (ifm_rd_en) begin
+        ret_abs_row_g_q <= issue_abs_row16;
+        ret_abs_col_g_q <= issue_abs_col_g16;
+        ret_col_l_q     <= issue_col_sel_l16;
+        ret_cgrp_g_q    <= issue_cgroup;
+      end
+
+      if (!stream_active_q || start) begin
+        miss_refill_pending_q <= 1'b0;
+      end else begin
+        if (miss_now_s && !miss_refill_pending_q) begin
+          miss_refill_pending_q <= 1'b1;
+        end
+        if (ret_valid_q && ifm_rd_valid) begin
+          miss_refill_pending_q <= 1'b0;
+        end
+      end
 
       if (start) begin
         if (!cfg_valid) begin

@@ -2,8 +2,8 @@ module ce_mode2_top #(
   parameter int DATA_W    = 8,
   parameter int PSUM_W    = 32,
   parameter int K_MAX     = 7,
-  parameter int PC        = 8,
-  parameter int PF        = 4,
+  parameter int PC        = 16,
+  parameter int PF        = 16,
   parameter int HOUT_MAX  = 224,
   parameter int WOUT_MAX  = 224,
   // Physical word width shared with weight_buffer.WORD_LANES.
@@ -18,8 +18,8 @@ module ce_mode2_top #(
   input  logic step_en,
 
   input  logic [3:0] K_cur,
-  input  logic [7:0] C_cur,
-  input  logic [7:0] F_cur,
+  input  logic [9:0] C_cur,
+  input  logic [9:0] F_cur,
   input  logic [15:0] Hout_cur,
   input  logic [15:0] Wout_cur,
 

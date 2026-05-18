@@ -3,13 +3,13 @@
 module control_unit_top
   import cnn_layer_desc_pkg::*;
 #(
-  parameter int PTOTAL           = 16,
+  parameter int PTOTAL           = 256,
   parameter int DATA_W           = 8,
-  parameter int PF_MAX           = 8,
-  parameter int PV_MAX           = 8,
-  parameter int PC_MODE2         = 8,
-  parameter int PF_MODE2         = 4,
-  parameter int C_MAX            = 64,
+  parameter int PF_MAX           = 16,
+  parameter int PV_MAX           = 16,
+  parameter int PC_MODE2         = 16,
+  parameter int PF_MODE2         = 16,
+  parameter int C_MAX            = 512,
   parameter int W_MAX            = 224,
   parameter int H_MAX            = 224,
   parameter int HT               = 8,
@@ -74,6 +74,7 @@ module control_unit_top
   output logic [$clog2(C_MAX)-1:0]      ifm_rd_bank_base,
   output logic [$clog2(H_MAX)-1:0]      ifm_rd_row_idx,
   output logic [$clog2(W_MAX)-1:0]      ifm_rd_col_idx,
+  output logic [$clog2(W_MAX)-1:0]      ifm_rd_col_g,
   input  logic                          ifm_rd_valid,
   input  logic [PV_MAX*DATA_W-1:0]      ifm_rd_data,
 
@@ -99,8 +100,8 @@ module control_unit_top
   output logic                          m1_start,
   output logic                          m1_step_en,
   output logic [3:0]                    m1_k_cur,
-  output logic [7:0]                    m1_c_cur,
-  output logic [7:0]                    m1_f_cur,
+  output logic [9:0]                    m1_c_cur,
+  output logic [9:0]                    m1_f_cur,
   output logic [15:0]                   m1_hout_cur,
   output logic [15:0]                   m1_wout_cur,
   output logic [15:0]                   m1_w_cur,
@@ -136,8 +137,8 @@ module control_unit_top
   output logic                          m2_start,
   output logic                          m2_step_en,
   output logic [3:0]                    m2_k_cur,
-  output logic [7:0]                    m2_c_cur,
-  output logic [7:0]                    m2_f_cur,
+  output logic [9:0]                    m2_c_cur,
+  output logic [9:0]                    m2_f_cur,
   output logic [15:0]                   m2_hout_cur,
   output logic [15:0]                   m2_wout_cur,
   // Mode-2 tile window ports kept for cnn_top/mode2_compute_top interface compatibility.
@@ -443,6 +444,32 @@ module control_unit_top
   logic             m2_free_entry_valid_s;
   logic             m2_free_entry_take_s;
   logic             m2_ofm2ifm_runtime_hold_s;
+  logic             m2_ofm2ifm_src_mode2_q;
+  logic             m2_ofm2ifm_runtime_src_mode2_q;
+  logic             m2_ofm2ifm_stream_src_mode2_s;
+
+  localparam int M2FQ_DEPTH = (SM_M2_RDY_Q_DEPTH < 2) ? 2 : SM_M2_RDY_Q_DEPTH;
+  localparam int M2FQ_PTR_W = (M2FQ_DEPTH <= 1) ? 1 : $clog2(M2FQ_DEPTH);
+  localparam int M2FQ_CNT_W = (M2FQ_DEPTH <= 1) ? 1 : $clog2(M2FQ_DEPTH+1);
+  localparam logic [M2FQ_CNT_W-1:0] M2FQ_DEPTH_C = M2FQ_CNT_W'(M2FQ_DEPTH);
+  logic [15:0] m2_free_fifo_row_g_q  [0:M2FQ_DEPTH-1];
+  logic [15:0] m2_free_fifo_col_g_q  [0:M2FQ_DEPTH-1];
+  logic [15:0] m2_free_fifo_col_l_q  [0:M2FQ_DEPTH-1];
+  logic [15:0] m2_free_fifo_cgrp_g_q [0:M2FQ_DEPTH-1];
+  logic        m2_free_fifo_src_mode2_q [0:M2FQ_DEPTH-1];
+  logic [M2FQ_PTR_W-1:0] m2_free_fifo_rptr_q;
+  logic [M2FQ_PTR_W-1:0] m2_free_fifo_wptr_q;
+  logic [M2FQ_CNT_W-1:0] m2_free_fifo_count_q;
+  logic m2_free_fifo_full_s;
+  logic m2_free_fifo_empty_s;
+  logic m2_free_fifo_push_s;
+  logic m2_free_fifo_overflow_q;
+  logic [15:0] m2_free_head_row_g_s;
+  logic [15:0] m2_free_head_col_g_s;
+  logic [15:0] m2_free_head_col_l_s;
+  logic [15:0] m2_free_head_cgrp_g_s;
+  logic        m2_free_head_src_mode2_s;
+  logic m1_to_m2_transition_ready_s;
 
   logic [ROW_W-1:0] stream_req_row_base_s;
   logic [ROW_W-1:0] stream_req_num_rows_s;
@@ -492,6 +519,7 @@ module control_unit_top
   // local-dataflow token stream generated when data_register_mode2 captures a
   // tuple successfully.
   logic        ldm_m2_free_valid_s;
+  logic        ldm_m2_free_ready_s;
   logic [15:0] ldm_m2_free_row_g_s;
   logic [15:0] ldm_m2_free_col_g_s;
   logic [15:0] ldm_m2_free_col_l_s;
@@ -998,21 +1026,39 @@ module control_unit_top
   // m1_free_valid.  The token already names the next global IFM column that
   // must be refilled into the freed rolling slot, so control only latches the
   // entry and issues one OFM->IFM stream command for it.
-  assign m2_free_entry_valid_s = m2_ofm2ifm_in_dst_layer_s &&
+  assign ldm_m2_free_ready_s = m2_ofm2ifm_in_dst_layer_s &&
                                  m2_busy &&
-                                 ldm_m2_free_valid_s &&
                                  (ldm_m2_free_row_g_s < 16'(m2_ofm2ifm_num_rows_q)) &&
                                  (ldm_m2_free_col_g_s < m2_ofm2ifm_w_q) &&
-                                 (ldm_m2_free_cgrp_g_s < m2_ofm2ifm_num_cgrps_q);
+                                 (ldm_m2_free_cgrp_g_s < m2_ofm2ifm_num_cgrps_q) &&
+                                 (!m2_free_fifo_full_s || m2_free_entry_take_s);
 
-  assign m2_free_entry_take_s = m2_free_entry_valid_s &&
+  assign m2_free_entry_valid_s = ldm_m2_free_valid_s && ldm_m2_free_ready_s;
+
+  assign m2_free_fifo_full_s  = (m2_free_fifo_count_q == M2FQ_DEPTH_C);
+  assign m2_free_fifo_empty_s = (m2_free_fifo_count_q == '0);
+  assign m2_free_fifo_push_s  = m2_free_entry_valid_s && (!m2_free_fifo_full_s || m2_free_entry_take_s);
+
+  assign m2_free_head_row_g_s       = m2_free_fifo_row_g_q[m2_free_fifo_rptr_q];
+  assign m2_free_head_col_g_s       = m2_free_fifo_col_g_q[m2_free_fifo_rptr_q];
+  assign m2_free_head_col_l_s       = m2_free_fifo_col_l_q[m2_free_fifo_rptr_q];
+  assign m2_free_head_cgrp_g_s      = m2_free_fifo_cgrp_g_q[m2_free_fifo_rptr_q];
+  assign m2_free_head_src_mode2_s   = m2_free_fifo_src_mode2_q[m2_free_fifo_rptr_q];
+
+  assign m2_free_entry_take_s = !m2_free_fifo_empty_s &&
                                 !m2_ofm2ifm_runtime_q &&
                                 !m2_ofm2ifm_stream_busy_q;
 
   assign m2_ofm2ifm_runtime_hold_s = m2_ofm2ifm_in_dst_layer_s &&
-                                     (m2_free_entry_valid_s ||
+                                     (!m2_free_fifo_empty_s ||
+                                      m2_free_entry_valid_s ||
                                       m2_ofm2ifm_runtime_q ||
                                       m2_ofm2ifm_stream_busy_q);
+
+  assign m1_to_m2_transition_ready_s = next_valid_s &&
+                                       (cur_cfg_s.mode == MODE1) &&
+                                       (next_cfg_s.mode == MODE2) &&
+                                       transition_done_s;
 
   assign m2_ofm2ifm_init_phase_s =
       m2_ofm2ifm_active_q &&
@@ -1048,6 +1094,13 @@ module control_unit_top
 
   assign m2_ofm2ifm_stream_accepted_s = m2_ofm2ifm_stream_start_s;
 
+  // Source layout for the command currently being issued.
+  // Initial/context streams use the context source kind; runtime exact-entry
+  // refills use the source kind latched with the free/demand token.
+  assign m2_ofm2ifm_stream_src_mode2_s = m2_ofm2ifm_runtime_q
+                                       ? m2_ofm2ifm_runtime_src_mode2_q
+                                       : m2_ofm2ifm_src_mode2_q;
+
   always_ff @(posedge clk or negedge rst_n) begin : PROC_OFM2IFM_M2_TILED_REFILL
     logic [15:0] init_cols_v;
     logic [15:0] init_cgrps_v;
@@ -1072,6 +1125,12 @@ module control_unit_top
       m2_ofm2ifm_src_layer_id_q    <= '0;
       m2_ofm2ifm_dst_layer_id_q    <= '0;
       m2_ofm2ifm_seen_dst_q        <= 1'b0;
+      m2_ofm2ifm_src_mode2_q       <= 1'b1;
+      m2_ofm2ifm_runtime_src_mode2_q <= 1'b1;
+      m2_free_fifo_rptr_q          <= '0;
+      m2_free_fifo_wptr_q          <= '0;
+      m2_free_fifo_count_q         <= '0;
+      m2_free_fifo_overflow_q      <= 1'b0;
       m2_producer_done_seen_q      <= 1'b0;
       m2_producer_done_layer_id_q  <= '0;
     end
@@ -1097,6 +1156,12 @@ module control_unit_top
         m2_ofm2ifm_src_layer_id_q    <= '0;
         m2_ofm2ifm_dst_layer_id_q    <= '0;
         m2_ofm2ifm_seen_dst_q        <= 1'b0;
+        m2_ofm2ifm_src_mode2_q       <= 1'b1;
+        m2_ofm2ifm_runtime_src_mode2_q <= 1'b1;
+        m2_free_fifo_rptr_q          <= '0;
+        m2_free_fifo_wptr_q          <= '0;
+        m2_free_fifo_count_q         <= '0;
+        m2_free_fifo_overflow_q      <= 1'b0;
         m2_producer_done_seen_q      <= 1'b0;
         m2_producer_done_layer_id_q  <= '0;
       end
@@ -1152,6 +1217,47 @@ module control_unit_top
           m2_ofm2ifm_src_layer_id_q <= cur_cfg_s.layer_id[7:0];
           m2_ofm2ifm_dst_layer_id_q <= next_cfg_s.layer_id[7:0];
           m2_ofm2ifm_seen_dst_q     <= 1'b0;
+          // New current->next Mode2 context: source OFM layout is Mode2.
+          // Drop any stale runtime tokens that belonged to the previous
+          // destination context; they are no longer needed once the producer
+          // layer has completed and this new context is armed.
+          m2_ofm2ifm_src_mode2_q    <= 1'b1;
+          m2_ofm2ifm_runtime_src_mode2_q <= 1'b1;
+          m2_free_fifo_rptr_q       <= '0;
+          m2_free_fifo_wptr_q       <= '0;
+          m2_free_fifo_count_q      <= '0;
+        end
+
+        if (!m2_ofm2ifm_arm_s && m1_to_m2_transition_ready_s) begin
+          init_cols_v  = (next_cfg_s.w_in == 0) ? 16'd1 :
+                         ((next_cfg_s.w_in < 16'(PC_MODE2)) ? next_cfg_s.w_in : 16'(PC_MODE2));
+          init_cgrps_v = (next_cfg_s.c_in == 0) ? 16'd1 :
+                         ((next_cfg_s.c_in + 16'(PC_MODE2) - 16'd1) / 16'(PC_MODE2));
+          m2_ofm2ifm_active_q       <= 1'b1;
+          m2_ofm2ifm_ready_q        <= 1'b1;
+          m2_ofm2ifm_runtime_q      <= 1'b0;
+          m2_ofm2ifm_stream_busy_q  <= 1'b0;
+          m2_ofm2ifm_tx_runtime_q   <= 1'b0;
+          m2_ofm2ifm_row_q          <= '0;
+          m2_ofm2ifm_col_blk_q      <= '0;
+          m2_ofm2ifm_cgrp_q         <= '0;
+          m2_ofm2ifm_num_rows_q     <= next_cfg_s.h_in[ROW_W-1:0];
+          m2_ofm2ifm_num_col_blks_q <= init_cols_v;
+          m2_ofm2ifm_num_cgrps_q    <= (init_cgrps_v == 0) ? 16'd1 : init_cgrps_v;
+          m2_ofm2ifm_initial_cols_q <= init_cols_v;
+          m2_ofm2ifm_col_end_q      <= init_cols_v;
+          m2_ofm2ifm_runtime_col_base_q <= 16'd0;
+          m2_ofm2ifm_w_q            <= next_cfg_s.w_in;
+          m2_ofm2ifm_src_layer_id_q <= cur_cfg_s.layer_id[7:0];
+          m2_ofm2ifm_dst_layer_id_q <= next_cfg_s.layer_id[7:0];
+          m2_ofm2ifm_seen_dst_q     <= 1'b0;
+          // M1->M2 transition context: source OFM layout is Mode1.
+          // Clear stale runtime tokens from any older context.
+          m2_ofm2ifm_src_mode2_q    <= 1'b0;
+          m2_ofm2ifm_runtime_src_mode2_q <= 1'b0;
+          m2_free_fifo_rptr_q       <= '0;
+          m2_free_fifo_wptr_q       <= '0;
+          m2_free_fifo_count_q      <= '0;
         end
 
         // Runtime refill after the destination Mode2 layer has started.
@@ -1160,12 +1266,44 @@ module control_unit_top
         // arbitrates with transition/Mode1 traffic.
         if (!m2_ofm2ifm_arm_s && m2_free_entry_take_s) begin
           m2_ofm2ifm_runtime_q          <= 1'b1;
-          m2_ofm2ifm_row_q              <= ROW_W'(ldm_m2_free_row_g_s);
-          m2_ofm2ifm_col_blk_q          <= ldm_m2_free_col_g_s;
-          m2_ofm2ifm_runtime_col_base_q <= ldm_m2_free_col_g_s;
-          m2_ofm2ifm_col_end_q          <= ldm_m2_free_col_g_s + 16'd1;
-          m2_ofm2ifm_cgrp_q             <= ldm_m2_free_cgrp_g_s;
+          m2_ofm2ifm_row_q              <= ROW_W'(m2_free_head_row_g_s);
+          m2_ofm2ifm_col_blk_q          <= m2_free_head_col_g_s;
+          m2_ofm2ifm_runtime_col_base_q <= m2_free_head_col_g_s;
+          m2_ofm2ifm_col_end_q          <= m2_free_head_col_g_s + 16'd1;
+          m2_ofm2ifm_cgrp_q             <= m2_free_head_cgrp_g_s;
+          m2_ofm2ifm_runtime_src_mode2_q <= m2_free_head_src_mode2_s;
         end
+
+        if (m2_free_fifo_push_s) begin
+          m2_free_fifo_row_g_q[m2_free_fifo_wptr_q]  <= ldm_m2_free_row_g_s;
+          m2_free_fifo_col_g_q[m2_free_fifo_wptr_q]  <= ldm_m2_free_col_g_s;
+          m2_free_fifo_col_l_q[m2_free_fifo_wptr_q]  <= ldm_m2_free_col_l_s;
+          m2_free_fifo_cgrp_g_q[m2_free_fifo_wptr_q] <= ldm_m2_free_cgrp_g_s;
+          // Capture the source layout with the token.  This prevents a stale
+          // M1->M2 transition context from being reused after the next layer
+          // becomes an M2->M2 producer/consumer pair.
+          m2_free_fifo_src_mode2_q[m2_free_fifo_wptr_q] <= m2_ofm2ifm_src_mode2_q;
+          if (m2_free_fifo_wptr_q == M2FQ_PTR_W'(M2FQ_DEPTH-1))
+            m2_free_fifo_wptr_q <= '0;
+          else
+            m2_free_fifo_wptr_q <= m2_free_fifo_wptr_q + 1'b1;
+        end
+        else if (m2_free_entry_valid_s && m2_free_fifo_full_s && !m2_free_entry_take_s) begin
+          m2_free_fifo_overflow_q <= 1'b1;
+        end
+
+        if (m2_free_entry_take_s) begin
+          if (m2_free_fifo_rptr_q == M2FQ_PTR_W'(M2FQ_DEPTH-1))
+            m2_free_fifo_rptr_q <= '0;
+          else
+            m2_free_fifo_rptr_q <= m2_free_fifo_rptr_q + 1'b1;
+        end
+
+        case ({m2_free_fifo_push_s, m2_free_entry_take_s})
+          2'b10: m2_free_fifo_count_q <= m2_free_fifo_count_q + 1'b1;
+          2'b01: m2_free_fifo_count_q <= m2_free_fifo_count_q - 1'b1;
+          default: begin end
+        endcase
 
         // Match Mode1's stream lifecycle: set internal busy only after a
         // command has actually been accepted onto the shared OFM->IFM stream
@@ -1699,7 +1837,7 @@ module control_unit_top
     .cur_cfg(cur_cfg_s), .cur_mode(cur_cfg_s.mode),
     .m2_tile_col_base_g(m2_tile_col_base_g),
     .ifm_rd_en(ifm_rd_en), .ifm_rd_bank_base(ifm_rd_bank_base), .ifm_rd_row_idx(ifm_rd_row_idx),
-    .ifm_rd_col_idx(ifm_rd_col_idx), .ifm_rd_valid(ifm_rd_valid), .ifm_rd_data(ifm_rd_data),
+    .ifm_rd_col_idx(ifm_rd_col_idx), .ifm_rd_col_g(ifm_rd_col_g), .ifm_rd_valid(ifm_rd_valid), .ifm_rd_data(ifm_rd_data),
     .m1_pass_start_pulse(m1_pass_start_pulse), .m1_chan_done_pulse(m1_chan_done_pulse), .m1_c_iter(m1_c_iter),
     .m1_dr_write_en(m1_dr_write_en), .m1_dr_write_row_idx(m1_dr_write_row_idx),
     .m1_dr_write_x_base(m1_dr_write_x_base), .m1_dr_write_data(m1_dr_write_data),
@@ -1708,6 +1846,7 @@ module control_unit_top
     .m2_dr_write_en(m2_dr_write_en), .m2_dr_write_row_idx(m2_dr_write_row_idx), .m2_dr_write_data(m2_dr_write_data),
     .hold_compute(local_hold_compute_s), .local_busy(local_busy_s), .local_done(local_done_s), .local_error(local_error_s),
     .m1_local_busy(), .m2_local_busy(),
+    .m2_free_ready(ldm_m2_free_ready_s),
     .m2_free_valid(ldm_m2_free_valid_s),
     .m2_free_row_g(ldm_m2_free_row_g_s),
     .m2_free_col_g(ldm_m2_free_col_g_s),
@@ -1831,7 +1970,7 @@ module control_unit_top
   assign ofm_ifm_stream_kind = trans_ifm_stream_start_s ? OFM_STRM_M1_TO_M2 :
                                (ofm2ifm_stream_start_s ? OFM_STRM_M1_DIRECT :
                                (((cur_cfg_s.mode == MODE2) && m2_ofm2ifm_stream_start_s) ?
-                                  OFM_STRM_M2_DIRECT :
+                                  (m2_ofm2ifm_stream_src_mode2_s ? OFM_STRM_M2_DIRECT : OFM_STRM_M1_TO_M2) :
                                   (sm_stream_start_s ? sm_stream_kind_s : OFM_STRM_IDLE)));
 
   assign ofm_ifm_stream_row_base = trans_ifm_stream_start_s ? trans_ifm_stream_row_base_s :
@@ -1854,6 +1993,7 @@ module control_unit_top
 
   assign control_error_s = m1_sm_error_s |
                            m1q_overflow_q | m1f_overflow_q |
+                           m2_free_fifo_overflow_q |
                            m1_sm_free_full_s | m1_sm_ready_full_s |
                            (sm_m2_mgr_active_s ?
                             (m2_sm_error_s | m2q_overflow_q |

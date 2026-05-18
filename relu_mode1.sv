@@ -1,6 +1,6 @@
 module relu_mode1 #(
   parameter int PSUM_W = 32,
-  parameter int PTOTAL = 16
+  parameter int PTOTAL = 256
 )(
   input  logic signed [PSUM_W-1:0] in_data  [0:PTOTAL-1],
   output logic signed [PSUM_W-1:0] out_data [0:PTOTAL-1]
