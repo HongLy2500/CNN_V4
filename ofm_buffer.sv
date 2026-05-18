@@ -2012,6 +2012,29 @@ always_ff @(posedge clk or negedge rst_n) begin : DBG_OFM_TO_IFM_SRC_PAYLOAD_MON
     if (ifm_ofm_wr_en && ifm_ofm_wr_ready && ((strm_mode_q == STRM_M1_TO_M2) || (strm_mode_q == STRM_M2_DIRECT))) begin
       $display("DBG_OFM_TO_IFM_PAYLOAD t=%0t strm_mode=%0d src=%0b next=%0b tag=%0d prev_tag=%0d row_base=%0d row_q=%0d col_base=%0d colgrp=%0d cgrp=%0d ifm_bank=%0d ifm_row=%0d ifm_cgrp=%0d ifm_col_g=%0d mode2=%0b keep=%h data0=%0d data1=%0d data2=%0d data3=%0d", $time, strm_mode_q, src_mode_q, next_mode_q, layer_tag_q, prev_layer_tag_q, strm_row_base_q, strm_row_q, strm_col_base_q, strm_colgrp_q, strm_m2_cgrp_q, ifm_ofm_wr_bank, ifm_ofm_wr_row_idx, ifm_ofm_wr_col_idx, ifm_ofm_wr_col_g, ifm_ofm_wr_mode2, ifm_ofm_wr_keep, $signed(ifm_ofm_wr_data[0*DATA_W +: DATA_W]), $signed(ifm_ofm_wr_data[1*DATA_W +: DATA_W]), $signed(ifm_ofm_wr_data[2*DATA_W +: DATA_W]), $signed(ifm_ofm_wr_data[3*DATA_W +: DATA_W]));
     end
+    
+    if (ifm_ofm_wr_en && ifm_ofm_wr_ready && (strm_mode_q == STRM_M2_DIRECT)) begin
+    $display("DBG_M2_DIRECT_SRCSEL t=%0t layer_tag=%0d prev_tag=%0d src_tag=%0d row_base=%0d row_q=%0d col_base=%0d cgrp=%0d ifm_bank=%0d ifm_row=%0d ifm_cgrp=%0d ifm_col_g=%0d keep=%h d0=%0d d1=%0d d2=%0d d3=%0d",
+        $time,
+        layer_tag_q,
+        prev_layer_tag_q,
+        stream_src_tag_v,
+        strm_row_base_q,
+        strm_row_q,
+        strm_col_base_q,
+        strm_m2_cgrp_q,
+        ifm_ofm_wr_bank,
+        ifm_ofm_wr_row_idx,
+        ifm_ofm_wr_col_idx,
+        ifm_ofm_wr_col_g,
+        ifm_ofm_wr_keep,
+        $signed(ifm_ofm_wr_data[0*DATA_W +: DATA_W]),
+        $signed(ifm_ofm_wr_data[1*DATA_W +: DATA_W]),
+        $signed(ifm_ofm_wr_data[2*DATA_W +: DATA_W]),
+        $signed(ifm_ofm_wr_data[3*DATA_W +: DATA_W])
+    );
+end
+
   end
 end
 

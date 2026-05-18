@@ -56,6 +56,7 @@ module weight_read_ctrl_mode2 #(
   logic [15:0] num_fgroup, num_cgroup;
   logic        last_issue;
   logic        last_col, last_row, last_fgroup;
+  logic        have_next_block;
 
   logic [15:0] issue_fgroup_r, issue_cgroup_r;
   logic [7:0]  issue_ky_r, issue_kx_r;
@@ -128,27 +129,29 @@ module weight_read_ctrl_mode2 #(
       end
     end
 
-    // First tuple for the next output block.  Keep the old sweep-level f_group
-    // behavior so this controller remains compatible with the existing Mode2
-    // controller loop ordering.
-    if (!last_col) begin
-      next_sweep_fgroup = f_group;
-    end
-    else if (!last_row) begin
-      next_sweep_fgroup = f_group;
-    end
-    else if (!last_fgroup) begin
+    // First tuple for the next output block.  This must match
+    // ce_controller_mode2's output-block order:
+    //   f_group advances first at the same spatial coordinate;
+    //   only after the last f_group does the controller advance spatial.
+    // Weight addresses do not depend on row/col, so only the next f_group is
+    // required here.
+    if (!last_fgroup) begin
       next_sweep_fgroup = f_group + 1'b1;
     end
     else begin
       next_sweep_fgroup = 16'd0;
     end
 
+    // Do not prefetch past the final output block of the layer.
+    have_next_block = !(last_col && last_row && last_fgroup);
+
     // Issue policy after the fix:
     //   - issue_first requests the first weight tuple of a layer/new output block;
+    //   - on out_valid, the next block follows the same f_group-first order as
+    //     ce_controller_mode2 and addr_gen_ifm_m2;
     //   - issue_succ requests the next tuple only after a real MAC consume.
     // No request is issued while a request is already in flight.
-    issue_first = wb_bank_ready && !req_inflight_q && (start || out_valid);
+    issue_first = wb_bank_ready && !req_inflight_q && (start || (out_valid && have_next_block));
     issue_succ  = wb_bank_ready && !req_inflight_q && mac_en && !last_issue;
 
     wb_rd_en      = 1'b0;

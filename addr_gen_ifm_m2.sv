@@ -220,13 +220,19 @@ module addr_gen_ifm_m2 #(
     last_row    = (Hout_cur == 0) ? 1'b1 : (out_row == (Hout_cur - 1));
     last_fgroup = (num_fgroup == 0) ? 1'b1 : (f_group == (num_fgroup - 1));
 
-    // Match ce_controller_mode2 col-pair-major, row-inner traversal:
-    //   (row, pair+0) -> (row, pair+1 if valid)
-    //   then next row at pair+0
-    //   after the last row, advance to pair+2.
-    // This changes only successor prefetch order.  Read legality below is
-    // full-layer IFM legality; physical slot selection is rolling
-    // (abs_col % PC), not resident-tile based.
+    // Match ce_controller_mode2 block order exactly.
+    //
+    // Inside one spatial point, ce_controller_mode2 advances f_group first.
+    // Therefore the first IFM tuple prefetched after out_valid must stay on
+    // the SAME row/col when another f_group remains.  Only after the last
+    // f_group do we advance the col-pair/row traversal:
+    //   for col_pair = 0,2,4,...
+    //     for row = 0..Hout-1
+    //       col pair+0, then pair+1 if valid
+    //
+    // This block changes only the prefetch target of the next output block.
+    // Read legality below remains full-layer IFM legality; physical slot
+    // selection is rolling (abs_col % PC), not resident-tile based.
     out_col_pair_base_s       = {out_col[15:1], 1'b0};
     out_col_pair_first_s      = (out_col == out_col_pair_base_s);
     out_col_pair_has_second_s = ((out_col_pair_base_s + 16'd1) < Wout_cur);
@@ -237,12 +243,18 @@ module addr_gen_ifm_m2 #(
     next_block_row = out_row;
     next_block_col = out_col;
 
-    if (out_col_pair_first_s && out_col_pair_has_second_s) begin
-      // Same row, second column of the current pair.
+    if (!last_fgroup) begin
+      // Next block is the next f_group at the SAME spatial coordinate.
+      next_block_row = out_row;
+      next_block_col = out_col;
+    end
+    else if (out_col_pair_first_s && out_col_pair_has_second_s) begin
+      // Finished all f_groups of pair+0; move to pair+1 in the same row.
+      next_block_row = out_row;
       next_block_col = out_col_pair_base_s + 16'd1;
     end
     else if (!last_row) begin
-      // Next row, restart at the first column of the same pair.
+      // Finished both columns of this pair for this row; move to next row.
       next_block_row = out_row + 16'd1;
       next_block_col = out_col_pair_base_s;
     end
@@ -252,9 +264,7 @@ module addr_gen_ifm_m2 #(
       next_block_col = out_col_pair_base_s + 16'd2;
     end
     else begin
-      // Finished the spatial raster for this f_group.  If another f_group
-      // remains, have_next_block is still true and the next block starts at
-      // row 0 / col 0, matching the CE controller.
+      // No next block when last_col && last_row && last_fgroup.
       next_block_row = 16'd0;
       next_block_col = 16'd0;
     end

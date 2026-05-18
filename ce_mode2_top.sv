@@ -81,25 +81,21 @@ module ce_mode2_top #(
 
   // Consume-qualified operand readiness for Mode 2.
   //
-  // Mode 2 now uses the same essential contract as Mode 1:
-  //   - current IFM tuple must be valid and held;
-  //   - current weight tuple must be valid and held;
-  //   - the controller/MAC may advance only when both are valid.
+  // Mode 2 now follows the same essential contract as Mode 1:
+  //   - exactly one current IFM tuple is held;
+  //   - exactly one current weight tuple is held;
+  //   - ce_controller_mode2 may advance only when both current tuples
+  //     are valid and the MAC really consumes them.
   //
-  // The IFM producer may still return a tuple while the MAC is stalled
-  // waiting for the corresponding weight.  Therefore CE owns a small
-  // ordered data skid FIFO.  The MAC always consumes data_fifo_q[0], not
-  // the directly-read data_register_mode2 output, so a later IFM return
-  // cannot overwrite the current tuple before mac_en consumes it.
-  localparam int DATA_FIFO_DEPTH = 4;
-  localparam int DATA_FIFO_CNT_W = $clog2(DATA_FIFO_DEPTH + 1);
-  localparam logic [DATA_FIFO_CNT_W-1:0] DATA_FIFO_DEPTH_C = DATA_FIFO_DEPTH;
-
-  logic [PC*DATA_W-1:0] data_fifo_q [0:DATA_FIFO_DEPTH-1];
-  logic [DATA_FIFO_CNT_W-1:0] data_fifo_count_q;
+  // This intentionally removes the previous multi-entry data skid FIFO,
+  // because the FIFO allowed the controller metadata (f_group/c_group/ky/kx)
+  // to advance ahead of the data tuple at Mode2 same-mode refill boundaries.
+  logic [PC*DATA_W-1:0] data_tuple_q;
   logic [PC*DATA_W-1:0] data_tuple_raw;
-  logic data_tuple_valid_q;
-  logic data_fifo_can_push_s;
+  logic                 data_valid_q;
+  logic                 data_tuple_valid_q;
+  logic                 data_accept_s;
+  logic                 data_overflow_s;
 
   logic wgt_tuple_ready_q;
   logic tuple_ready_s;
@@ -116,9 +112,10 @@ module ce_mode2_top #(
     c_base_cur = c_group * PC;
   end
 
-  assign data_tuple_raw      = data_fifo_q[0];
-  assign data_tuple_valid_q  = (data_fifo_count_q != '0);
-  assign data_fifo_can_push_s = (data_fifo_count_q < DATA_FIFO_DEPTH_C) || mac_en || start;
+  assign data_tuple_raw     = data_tuple_q;
+  assign data_tuple_valid_q = data_valid_q;
+  assign data_accept_s      = dr_write_en && (!data_valid_q || mac_en || start);
+  assign data_overflow_s    = dr_write_en && data_valid_q && !mac_en && !start;
 
   assign tuple_ready_s = data_tuple_valid_q && wgt_tuple_ready_q;
   assign ctrl_step_en  = step_en && tuple_ready_s;
@@ -246,44 +243,30 @@ module ce_mode2_top #(
   // so the data/weight current tuple is cleared only on mac_en.
   // ------------------------------------------------------------
   always_ff @(posedge clk or negedge rst_n) begin : M2_CONSUME_TRACKING
-    integer data_fifo_i;
-
     if (!rst_n) begin
-      data_fifo_count_q     <= '0;
+      data_tuple_q          <= '0;
+      data_valid_q          <= 1'b0;
       wgt_tuple_ready_q     <= 1'b0;
       weight_req_inflight_q <= 1'b0;
-
-      for (data_fifo_i = 0; data_fifo_i < DATA_FIFO_DEPTH; data_fifo_i = data_fifo_i + 1) begin
-        data_fifo_q[data_fifo_i] <= '0;
-      end
     end
     else begin
       if (start) begin
-        data_fifo_count_q     <= '0;
+        data_tuple_q          <= '0;
+        data_valid_q          <= 1'b0;
         wgt_tuple_ready_q     <= 1'b0;
         weight_req_inflight_q <= wb_rd_en;
       end
       else begin
-        // Ordered IFM tuple skid FIFO.
-        // Pop only on real MAC consume.  Push only when the queue has
-        // space, or when a same-cycle pop makes space.  This keeps the
-        // current data tuple stable while Mode2 waits for its weight.
-        if (mac_en && dr_write_en && (data_fifo_count_q != '0) && data_fifo_can_push_s) begin
-          for (data_fifo_i = 0; data_fifo_i < DATA_FIFO_DEPTH-1; data_fifo_i = data_fifo_i + 1) begin
-            data_fifo_q[data_fifo_i] <= data_fifo_q[data_fifo_i+1];
-          end
-          data_fifo_q[data_fifo_count_q - 1'b1] <= dr_write_data;
-          data_fifo_count_q <= data_fifo_count_q;
+        // Current IFM tuple validity, Mode1-style.
+        // A tuple is held stable until mac_en consumes it.  A same-cycle
+        // mac_en + dr_write_en consumes the old tuple and latches the next
+        // tuple for the following consume.
+        if (mac_en && !dr_write_en) begin
+          data_valid_q <= 1'b0;
         end
-        else if (mac_en && (data_fifo_count_q != '0)) begin
-          for (data_fifo_i = 0; data_fifo_i < DATA_FIFO_DEPTH-1; data_fifo_i = data_fifo_i + 1) begin
-            data_fifo_q[data_fifo_i] <= data_fifo_q[data_fifo_i+1];
-          end
-          data_fifo_count_q <= data_fifo_count_q - 1'b1;
-        end
-        else if (dr_write_en && (data_fifo_count_q < DATA_FIFO_DEPTH_C)) begin
-          data_fifo_q[data_fifo_count_q] <= dr_write_data;
-          data_fifo_count_q <= data_fifo_count_q + 1'b1;
+        if (data_accept_s) begin
+          data_tuple_q <= dr_write_data;
+          data_valid_q <= 1'b1;
         end
 
         // Current weight bundle validity.  A real MAC consume invalidates
@@ -297,7 +280,7 @@ module ce_mode2_top #(
         end
 
         // Track one outstanding weight request.  If a return and a new
-        // request ever happen in the same cycle, keep the request in-flight.
+        // request happen in the same cycle, keep the request in-flight.
         if (weight_write_en) begin
           weight_req_inflight_q <= 1'b0;
         end
@@ -367,6 +350,18 @@ module ce_mode2_top #(
     end
   end
   
-  
+  `ifndef SYNTHESIS
+  always_ff @(posedge clk) begin : DBG_M2_TUPLE_WEIGHT_FLOW
+    if (rst_n && busy && (out_row < 16'd2) && (out_col < 16'd4)) begin
+      if (data_overflow_s) begin
+        $display("DBG_M2_DATA_OVERFLOW t=%0t row=%0d col=%0d fgrp=%0d cgrp=%0d ky=%0d kx=%0d data_valid=%0d mac_en=%0d wgt_ready=%0d wgt_inflight=%0d", $time, out_row, out_col, f_group, c_group, ky, kx, data_valid_q, mac_en, wgt_tuple_ready_q, weight_req_inflight_q);
+      end
+
+      if (dr_write_en || weight_write_en || wb_rd_en || mac_en) begin
+        $display("DBG_M2_FLOW t=%0t row=%0d col=%0d fgrp=%0d cgrp=%0d ky=%0d kx=%0d dr_wr=%0d data_valid=%0d data_accept=%0d wb_req=%0d wb_ret=%0d wgt_ready=%0d mac_en=%0d tuple_ready=%0d ifm0=%0d w0=%0d mac0=%0d", $time, out_row, out_col, f_group, c_group, ky, kx, dr_write_en, data_valid_q, data_accept_s, wb_rd_en, weight_write_en, wgt_tuple_ready_q, mac_en, tuple_ready_s, $signed(data_out_logic[0*DATA_W +: DATA_W]), $signed(weight_out[0*DATA_W +: DATA_W]), $signed(mac_data_out[0*PSUM_W +: PSUM_W]));
+      end
+    end
+  end
+  `endif
   
 endmodule

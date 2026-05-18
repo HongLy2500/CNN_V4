@@ -17,8 +17,10 @@ module tb_cnn_top_vgg7_scaled_32x32_4m1_3m2_k3_pad1_pattern_expected_compare;
   //
   // Golden:
   //   Because all convolutions use center tap under pad=1, only pooling changes
-  //   spatial mapping. After three 2x2 pools, final(row,col,ch) traces to
-  //   input(row*8+7, col*8+7, ch%3), using a monotonic 8x8-local pattern.
+  //   spatial mapping. Channel mapping follows the same sparse-weight rule used
+  //   to generate weights at every layer: output filter f selects input channel
+  //   f % C_in for that layer. Therefore the final input channel is obtained by
+  //   tracing the output channel backward through L6..L0, not simply ch % 3.
   // --------------------------------------------------------------------------
 
   localparam int DATA_W = 8;
@@ -250,6 +252,184 @@ module tb_cnn_top_vgg7_scaled_32x32_4m1_3m2_k3_pad1_pattern_expected_compare;
   initial clk = 1'b0;
   always #(CLK_PERIOD_NS/2) clk = ~clk;
 
+
+always_ff @(posedge clk) begin : DBG_M2_L5_CENTER_MAC_MON
+    if (rst_n &&
+        (dbg_layer_idx == 5) &&
+        dut.u_mode2_compute_top.mac_en &&
+        (dut.u_mode2_compute_top.f_group == 0) &&
+        (dut.u_mode2_compute_top.out_row_g < 2) &&
+        (dut.u_mode2_compute_top.out_col_g < 4) &&
+        (dut.u_mode2_compute_top.ky == 1) &&
+        (dut.u_mode2_compute_top.kx == 1)) begin
+
+        $display("DBG_M2_L5_CENTER_MAC t=%0t row=%0d col=%0d fgrp=%0d cgrp=%0d ky=%0d kx=%0d ifm0=%0d ifm1=%0d ifm2=%0d ifm3=%0d w_f0pc0=%0d w_f0pc1=%0d w_f0pc2=%0d w_f0pc3=%0d w_f1pc0=%0d w_f1pc1=%0d mac0=%0d mac1=%0d",
+            $time,
+            dut.u_mode2_compute_top.out_row_g,
+            dut.u_mode2_compute_top.out_col_g,
+            dut.u_mode2_compute_top.f_group,
+            dut.u_mode2_compute_top.c_group,
+            dut.u_mode2_compute_top.ky,
+            dut.u_mode2_compute_top.kx,
+            $signed(dut.u_mode2_compute_top.ce_data_out_logic[0*DATA_W +: DATA_W]),
+            $signed(dut.u_mode2_compute_top.ce_data_out_logic[1*DATA_W +: DATA_W]),
+            $signed(dut.u_mode2_compute_top.ce_data_out_logic[2*DATA_W +: DATA_W]),
+            $signed(dut.u_mode2_compute_top.ce_data_out_logic[3*DATA_W +: DATA_W]),
+            $signed(dut.u_mode2_compute_top.ce_weight_out[(0*PC + 0)*DATA_W +: DATA_W]),
+            $signed(dut.u_mode2_compute_top.ce_weight_out[(0*PC + 1)*DATA_W +: DATA_W]),
+            $signed(dut.u_mode2_compute_top.ce_weight_out[(0*PC + 2)*DATA_W +: DATA_W]),
+            $signed(dut.u_mode2_compute_top.ce_weight_out[(0*PC + 3)*DATA_W +: DATA_W]),
+            $signed(dut.u_mode2_compute_top.ce_weight_out[(1*PC + 0)*DATA_W +: DATA_W]),
+            $signed(dut.u_mode2_compute_top.ce_weight_out[(1*PC + 1)*DATA_W +: DATA_W]),
+            $signed(dut.u_mode2_compute_top.ce_mac_data_out[0*PSUM_W +: PSUM_W]),
+            $signed(dut.u_mode2_compute_top.ce_mac_data_out[1*PSUM_W +: PSUM_W])
+        );
+    end
+end
+
+always_ff @(posedge clk) begin : DBG_TB_M1_L3_FBASE_MON
+    if (rst_n &&
+        dut.u_ofm_buffer.m1_wr_en &&
+        (dbg_layer_idx == 3) &&
+        (dut.u_ofm_buffer.m1_wr_row < 2) &&
+        (dut.u_ofm_buffer.m1_wr_col_base == 0) &&
+        ((dut.u_ofm_buffer.m1_wr_filter_base == 0) ||
+         (dut.u_ofm_buffer.m1_wr_filter_base == 8) ||
+         (dut.u_ofm_buffer.m1_wr_filter_base == 16) ||
+         (dut.u_ofm_buffer.m1_wr_filter_base == 24))) begin
+
+        $display("DBG_TB_M1_L3_FBASE t=%0t row=%0d col=%0d fbase=%0d count=%0d d0=%0d d1=%0d d2=%0d d3=%0d d4=%0d d5=%0d d6=%0d d7=%0d",
+            $time,
+            dut.u_ofm_buffer.m1_wr_row,
+            dut.u_ofm_buffer.m1_wr_col_base,
+            dut.u_ofm_buffer.m1_wr_filter_base,
+            dut.u_ofm_buffer.m1_wr_count,
+            $signed(dut.u_ofm_buffer.m1_wr_data[0]),
+            $signed(dut.u_ofm_buffer.m1_wr_data[1]),
+            $signed(dut.u_ofm_buffer.m1_wr_data[2]),
+            $signed(dut.u_ofm_buffer.m1_wr_data[3]),
+            $signed(dut.u_ofm_buffer.m1_wr_data[4]),
+            $signed(dut.u_ofm_buffer.m1_wr_data[5]),
+            $signed(dut.u_ofm_buffer.m1_wr_data[6]),
+            $signed(dut.u_ofm_buffer.m1_wr_data[7])
+        );
+    end
+end
+
+always_ff @(posedge clk) begin : DBG_TB_M1_OFM_LAYER_MON
+    if (rst_n &&
+        dut.u_ofm_buffer.m1_wr_en &&
+        (dbg_layer_idx <= 3) &&
+        (dut.u_ofm_buffer.m1_wr_filter_base == 0) &&
+        (dut.u_ofm_buffer.m1_wr_row < 4) &&
+        (dut.u_ofm_buffer.m1_wr_col_base < 8)) begin
+
+        $display("DBG_TB_M1_OFM_LAYER t=%0t layer=%0d row=%0d col=%0d fbase=%0d d0=%0d d1=%0d d2=%0d d3=%0d",
+            $time,
+            dbg_layer_idx,
+            dut.u_ofm_buffer.m1_wr_row,
+            dut.u_ofm_buffer.m1_wr_col_base,
+            dut.u_ofm_buffer.m1_wr_filter_base,
+            $signed(dut.u_ofm_buffer.m1_wr_data[0]),
+            $signed(dut.u_ofm_buffer.m1_wr_data[1]),
+            $signed(dut.u_ofm_buffer.m1_wr_data[2]),
+            $signed(dut.u_ofm_buffer.m1_wr_data[3])
+        );
+    end
+end
+
+always_ff @(posedge clk) begin : DBG_TB_M2_POOL_L6_MON
+    if (rst_n &&
+        (dbg_layer_idx == 6) &&
+        dut.u_mode2_compute_top.u_pooling_mode2.ofm_wr_en &&
+        (dut.u_mode2_compute_top.u_pooling_mode2.ofm_wr_row < 4) &&
+        (dut.u_mode2_compute_top.u_pooling_mode2.ofm_wr_col < 4) &&
+        (dut.u_mode2_compute_top.u_pooling_mode2.ofm_wr_f_base == 0)) begin
+
+        $display("DBG_TB_M2_POOL_L6 t=%0t row=%0d col=%0d fbase=%0d d0=%0d d1=%0d d2=%0d d3=%0d",
+            $time,
+            dut.u_mode2_compute_top.u_pooling_mode2.ofm_wr_row,
+            dut.u_mode2_compute_top.u_pooling_mode2.ofm_wr_col,
+            dut.u_mode2_compute_top.u_pooling_mode2.ofm_wr_f_base,
+            $signed(dut.u_mode2_compute_top.u_pooling_mode2.ofm_wr_data[0]),
+            $signed(dut.u_mode2_compute_top.u_pooling_mode2.ofm_wr_data[1]),
+            $signed(dut.u_mode2_compute_top.u_pooling_mode2.ofm_wr_data[2]),
+            $signed(dut.u_mode2_compute_top.u_pooling_mode2.ofm_wr_data[3])
+        );
+    end
+end
+
+always_ff @(posedge clk) begin : DBG_M1_TO_M2_IFM_WRITE_MON
+    if (rst_n &&
+        dut.u_ofm_buffer.ifm_ofm_wr_en &&
+        dut.u_ofm_buffer.ifm_ofm_wr_mode2 &&
+        (dbg_layer_idx == 4) &&
+        (dut.u_ofm_buffer.ifm_ofm_wr_row_idx < 4) &&
+        (dut.u_ofm_buffer.ifm_ofm_wr_col_g < 4)) begin
+
+        $display("DBG_M1_TO_M2_IFM_WRITE t=%0t layer=%0d bank=%0d row_idx=%0d col_idx=%0d col_g=%0d keep=0x%0h d0=%0d d1=%0d d2=%0d d3=%0d d4=%0d d5=%0d d6=%0d d7=%0d",
+            $time,
+            dbg_layer_idx,
+            dut.u_ofm_buffer.ifm_ofm_wr_bank,
+            dut.u_ofm_buffer.ifm_ofm_wr_row_idx,
+            dut.u_ofm_buffer.ifm_ofm_wr_col_idx,
+            dut.u_ofm_buffer.ifm_ofm_wr_col_g,
+            dut.u_ofm_buffer.ifm_ofm_wr_keep,
+            $signed(dut.u_ofm_buffer.ifm_ofm_wr_data[0*DATA_W +: DATA_W]),
+            $signed(dut.u_ofm_buffer.ifm_ofm_wr_data[1*DATA_W +: DATA_W]),
+            $signed(dut.u_ofm_buffer.ifm_ofm_wr_data[2*DATA_W +: DATA_W]),
+            $signed(dut.u_ofm_buffer.ifm_ofm_wr_data[3*DATA_W +: DATA_W]),
+            $signed(dut.u_ofm_buffer.ifm_ofm_wr_data[4*DATA_W +: DATA_W]),
+            $signed(dut.u_ofm_buffer.ifm_ofm_wr_data[5*DATA_W +: DATA_W]),
+            $signed(dut.u_ofm_buffer.ifm_ofm_wr_data[6*DATA_W +: DATA_W]),
+            $signed(dut.u_ofm_buffer.ifm_ofm_wr_data[7*DATA_W +: DATA_W])
+        );
+    end
+end
+
+always_ff @(posedge clk) begin : DBG_M2_L4_OFM_WRITE_MON
+    if (rst_n &&
+        (dbg_layer_idx == 4) &&
+        dut.u_ofm_buffer.m2_wr_en &&
+        (dut.u_ofm_buffer.m2_wr_row < 4) &&
+        (dut.u_ofm_buffer.m2_wr_col < 4) &&
+        (dut.u_ofm_buffer.m2_wr_f_base == 0)) begin
+
+        $display("DBG_M2_L4_OFM_WRITE t=%0t row=%0d col=%0d fbase=%0d d0=%0d d1=%0d d2=%0d d3=%0d d4=%0d d5=%0d d6=%0d d7=%0d",
+            $time,
+            dut.u_ofm_buffer.m2_wr_row,
+            dut.u_ofm_buffer.m2_wr_col,
+            dut.u_ofm_buffer.m2_wr_f_base,
+            $signed(dut.u_ofm_buffer.m2_wr_data[0*DATA_W +: DATA_W]),
+            $signed(dut.u_ofm_buffer.m2_wr_data[1*DATA_W +: DATA_W]),
+            $signed(dut.u_ofm_buffer.m2_wr_data[2*DATA_W +: DATA_W]),
+            $signed(dut.u_ofm_buffer.m2_wr_data[3*DATA_W +: DATA_W]),
+            $signed(dut.u_ofm_buffer.m2_wr_data[4*DATA_W +: DATA_W]),
+            $signed(dut.u_ofm_buffer.m2_wr_data[5*DATA_W +: DATA_W]),
+            $signed(dut.u_ofm_buffer.m2_wr_data[6*DATA_W +: DATA_W]),
+            $signed(dut.u_ofm_buffer.m2_wr_data[7*DATA_W +: DATA_W])
+        );
+    end
+end
+
+always_ff @(posedge clk) begin : DBG_M2_L5_OFM_WRITE_MON
+    if (rst_n && (dbg_layer_idx == 5) && dut.u_ofm_buffer.m2_wr_en && (dut.u_ofm_buffer.m2_wr_row < 4) && (dut.u_ofm_buffer.m2_wr_col < 8) && (dut.u_ofm_buffer.m2_wr_f_base == 0)) begin
+        $display("DBG_M2_L5_OFM_WRITE t=%0t row=%0d col=%0d fbase=%0d d0=%0d d1=%0d d2=%0d d3=%0d d4=%0d d5=%0d d6=%0d d7=%0d", $time, dut.u_ofm_buffer.m2_wr_row, dut.u_ofm_buffer.m2_wr_col, dut.u_ofm_buffer.m2_wr_f_base, $signed(dut.u_ofm_buffer.m2_wr_data[0*DATA_W +: DATA_W]), $signed(dut.u_ofm_buffer.m2_wr_data[1*DATA_W +: DATA_W]), $signed(dut.u_ofm_buffer.m2_wr_data[2*DATA_W +: DATA_W]), $signed(dut.u_ofm_buffer.m2_wr_data[3*DATA_W +: DATA_W]), $signed(dut.u_ofm_buffer.m2_wr_data[4*DATA_W +: DATA_W]), $signed(dut.u_ofm_buffer.m2_wr_data[5*DATA_W +: DATA_W]), $signed(dut.u_ofm_buffer.m2_wr_data[6*DATA_W +: DATA_W]), $signed(dut.u_ofm_buffer.m2_wr_data[7*DATA_W +: DATA_W]));
+    end
+end
+
+always_ff @(posedge clk) begin : DBG_M2_L6_POOL_RAW_WR_MON
+    if (rst_n && (dbg_layer_idx == 6)) begin
+        if (dut.u_mode2_compute_top.u_pooling_mode2.data_in_valid && (dut.u_mode2_compute_top.u_pooling_mode2.in_f_base == 0) && (dut.u_mode2_compute_top.u_pooling_mode2.in_row_g < 4) && (dut.u_mode2_compute_top.u_pooling_mode2.in_col_g < 4)) begin
+            $display("DBG_M2_L6_POOL_RAW t=%0t row=%0d col=%0d fbase=%0d d0=%0d d1=%0d d2=%0d d3=%0d d4=%0d d5=%0d d6=%0d d7=%0d", $time, dut.u_mode2_compute_top.u_pooling_mode2.in_row_g, dut.u_mode2_compute_top.u_pooling_mode2.in_col_g, dut.u_mode2_compute_top.u_pooling_mode2.in_f_base, $signed(dut.u_mode2_compute_top.u_pooling_mode2.data_in[0*DATA_W +: DATA_W]), $signed(dut.u_mode2_compute_top.u_pooling_mode2.data_in[1*DATA_W +: DATA_W]), $signed(dut.u_mode2_compute_top.u_pooling_mode2.data_in[2*DATA_W +: DATA_W]), $signed(dut.u_mode2_compute_top.u_pooling_mode2.data_in[3*DATA_W +: DATA_W]), $signed(dut.u_mode2_compute_top.u_pooling_mode2.data_in[4*DATA_W +: DATA_W]), $signed(dut.u_mode2_compute_top.u_pooling_mode2.data_in[5*DATA_W +: DATA_W]), $signed(dut.u_mode2_compute_top.u_pooling_mode2.data_in[6*DATA_W +: DATA_W]), $signed(dut.u_mode2_compute_top.u_pooling_mode2.data_in[7*DATA_W +: DATA_W]));
+        end
+
+        if (dut.u_mode2_compute_top.u_pooling_mode2.ofm_wr_en && (dut.u_mode2_compute_top.u_pooling_mode2.ofm_wr_f_base == 0) && (dut.u_mode2_compute_top.u_pooling_mode2.ofm_wr_row < 4) && (dut.u_mode2_compute_top.u_pooling_mode2.ofm_wr_col < 4)) begin
+            $display("DBG_M2_L6_POOL_WR t=%0t row=%0d col=%0d fbase=%0d d0=%0d d1=%0d d2=%0d d3=%0d d4=%0d d5=%0d d6=%0d d7=%0d", $time, dut.u_mode2_compute_top.u_pooling_mode2.ofm_wr_row, dut.u_mode2_compute_top.u_pooling_mode2.ofm_wr_col, dut.u_mode2_compute_top.u_pooling_mode2.ofm_wr_f_base, $signed(dut.u_mode2_compute_top.u_pooling_mode2.ofm_wr_data[0*DATA_W +: DATA_W]), $signed(dut.u_mode2_compute_top.u_pooling_mode2.ofm_wr_data[1*DATA_W +: DATA_W]), $signed(dut.u_mode2_compute_top.u_pooling_mode2.ofm_wr_data[2*DATA_W +: DATA_W]), $signed(dut.u_mode2_compute_top.u_pooling_mode2.ofm_wr_data[3*DATA_W +: DATA_W]), $signed(dut.u_mode2_compute_top.u_pooling_mode2.ofm_wr_data[4*DATA_W +: DATA_W]), $signed(dut.u_mode2_compute_top.u_pooling_mode2.ofm_wr_data[5*DATA_W +: DATA_W]), $signed(dut.u_mode2_compute_top.u_pooling_mode2.ofm_wr_data[6*DATA_W +: DATA_W]), $signed(dut.u_mode2_compute_top.u_pooling_mode2.ofm_wr_data[7*DATA_W +: DATA_W]));
+        end
+    end
+end
+
   function automatic logic [DATA_W-1:0] sat8(input int val);
   begin
     if (val < 0) sat8 = '0;
@@ -314,8 +494,20 @@ module tb_cnn_top_vgg7_scaled_32x32_4m1_3m2_k3_pad1_pattern_expected_compare;
   endfunction
 
   function automatic int trace_final_to_input_ch(input int final_ch);
+    int ch;
   begin
-    trace_final_to_input_ch = final_ch % L0_C_IN;
+    // Mirror sparse_weight_value(): each layer output filter f selects
+    // input channel f % C_in for that layer. Trace the final channel
+    // backward through all seven center-tap layers.
+    ch = final_ch;
+    ch = ch % L6_C_IN;
+    ch = ch % L5_C_IN;
+    ch = ch % L4_C_IN;
+    ch = ch % L3_C_IN;
+    ch = ch % L2_C_IN;
+    ch = ch % L1_C_IN;
+    ch = ch % L0_C_IN;
+    trace_final_to_input_ch = ch;
   end
   endfunction
 
