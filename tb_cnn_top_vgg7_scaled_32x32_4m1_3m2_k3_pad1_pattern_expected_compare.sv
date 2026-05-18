@@ -53,11 +53,11 @@ module tb_cnn_top_vgg7_scaled_32x32_4m1_3m2_k3_pad1_pattern_expected_compare;
   localparam int WGT_SUBWORDS = (PTOTAL + DDR_LANES - 1) / DDR_LANES;
   localparam int MEM_DEPTH = (1 << DDR_ADDR_W);
 
-  // Use non-overlapping DDR bases. The original cnn_ddr_defs regions are too
-  // small for VGG7 weights when C/F are increased.
-  localparam int TB_IFM_BASE = 20'h00000;
-  localparam int TB_WGT_BASE = 20'h08000;
-  localparam int TB_OFM_BASE = 20'h40000;
+  // Use the same DDR map as cnn_dma_direct/cnn_ddr_defs.svh to avoid
+  // DMA range-check mismatches.
+  localparam int TB_IFM_BASE = `DDR_IFM_BASE;
+  localparam int TB_WGT_BASE = `DDR_WGT_BASE;
+  localparam int TB_OFM_BASE = `DDR_OFM_BASE;
 
   localparam int CLK_PERIOD_NS = 10;
   localparam int MAX_CYCLES = 50000000;

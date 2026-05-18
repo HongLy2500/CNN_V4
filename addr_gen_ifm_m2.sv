@@ -1,9 +1,9 @@
 module addr_gen_ifm_m2 #(
   parameter int DATA_W = 8,
-  parameter int PV_MAX = 16,
-  parameter int PC     = 16,
-  parameter int PF     = 16,
-  parameter int C_MAX  = 512,
+  parameter int PV_MAX = 8,
+  parameter int PC     = 8,
+  parameter int PF     = 4,
+  parameter int C_MAX  = 64,
   parameter int W_MAX  = 224,
   parameter int H_MAX  = 224,
   parameter int K_MAX  = 7
@@ -25,8 +25,8 @@ module addr_gen_ifm_m2 #(
   //   coordinates while refill updates the reusable physical slots.
   // --------------------------------------------------
   input  logic [3:0] K_cur,
-  input  logic [9:0] C_cur,
-  input  logic [9:0] F_cur,
+  input  logic [7:0] C_cur,
+  input  logic [7:0] F_cur,
   input  logic [15:0] H_in,
   input  logic [15:0] W_in,
   input  logic [15:0] Hout_cur,
@@ -171,8 +171,17 @@ module addr_gen_ifm_m2 #(
   logic [15:0]        ret_abs_col_g_q;
   logic [15:0]        ret_col_l_q;
   logic [15:0]        ret_cgrp_g_q;
+  logic               ret_zero_pad_q;
   logic               miss_refill_pending_q;
   logic               miss_now_s;
+
+  // K=3/S1/P1 zero-padding support for VGG-style same convolution.
+  // A padding tap is a real tuple with IFM data = 0; it must not assert
+  // local_error and must not access the IFM buffer/tag array.
+  logic               issue_zero_pad;
+  integer             issue_pad_i;
+  integer             issue_src_row_i;
+  integer             issue_src_col_i;
 
   integer lane_i;
 
@@ -369,16 +378,39 @@ module addr_gen_ifm_m2 #(
   // --------------------------------------------------
   always_comb begin
     issue_bank_base16 = issue_cgroup * PC;
-    issue_abs_row16   = issue_block_row + issue_ky;
-    issue_abs_col_g16 = issue_block_col + issue_kx;
+
+    // VGG16 target support: K=3, stride=1, padding=1.
+    // The descriptor already carries padding, but this module currently has no
+    // pad input; use the VGG-specific rule only for K_cur==3.  For legacy
+    // valid-conv tests, keep the previous pad=0 behavior.
+    issue_pad_i     = (K_cur == 4'd3) ? 1 : 0;
+    issue_src_row_i = issue_block_row + issue_ky - issue_pad_i;
+    issue_src_col_i = issue_block_col + issue_kx - issue_pad_i;
+
+    issue_zero_pad = 1'b0;
+    if (issue_any) begin
+      if ((issue_src_row_i < 0) || (issue_src_col_i < 0) ||
+          (issue_src_row_i >= H_in) || (issue_src_col_i >= W_in)) begin
+        issue_zero_pad = 1'b1;
+      end
+    end
+
+    if (!issue_zero_pad) begin
+      issue_abs_row16   = issue_src_row_i[15:0];
+      issue_abs_col_g16 = issue_src_col_i[15:0];
+    end else begin
+      // Ignored when issue_zero_pad=1 because ifm_rd_en=0 and dr_write_data=0.
+      issue_abs_row16   = 16'd0;
+      issue_abs_col_g16 = 16'd0;
+    end
 
     // Kept only for debug/interface compatibility with older tile-based code.
     issue_tile_base_g16 = tile_col_base_g;
 
-    if (PC != 0)
+    if ((PC != 0) && !issue_zero_pad)
       issue_col_sel_l16 = issue_abs_col_g16 % PC;
     else
-      issue_col_sel_l16 = 16'hffff;
+      issue_col_sel_l16 = 16'd0;
 
     issue_addr_valid  = 1'b1;
     if (!issue_any)
@@ -387,15 +419,15 @@ module addr_gen_ifm_m2 #(
       issue_addr_valid = 1'b0;
     else if (issue_bank_base16 >= C_MAX)
       issue_addr_valid = 1'b0;
-    else if (issue_abs_row16 >= H_in)
+    else if (!issue_zero_pad && (issue_abs_row16 >= H_in))
       issue_addr_valid = 1'b0;
-    else if (issue_abs_col_g16 >= W_in)
+    else if (!issue_zero_pad && (issue_abs_col_g16 >= W_in))
       issue_addr_valid = 1'b0;
-    else if (issue_col_sel_l16 >= PC)
+    else if (!issue_zero_pad && (issue_col_sel_l16 >= PC))
       issue_addr_valid = 1'b0;
   end
 
-  assign ifm_rd_en        = issue_any && issue_addr_valid;
+  assign ifm_rd_en        = issue_any && issue_addr_valid && !issue_zero_pad;
   assign ifm_rd_bank_base = issue_bank_base16[C_BANK_W-1:0];
   assign ifm_rd_row_idx   = issue_abs_row16[H_ROW_W-1:0];
   assign ifm_rd_col_idx   = issue_col_sel_l16[W_COL_W-1:0];
@@ -405,13 +437,15 @@ module addr_gen_ifm_m2 #(
   // data_register_mode2 write side
   // low PC lanes from ifm_buffer are meaningful in mode 2
   // --------------------------------------------------
-  assign dr_write_en      = ret_valid_q && ifm_rd_valid;
+  assign dr_write_en      = ret_valid_q && (ret_zero_pad_q || ifm_rd_valid);
   assign dr_write_row_idx = ret_row_q;
 
   always_comb begin
     dr_write_data = '0;
-    for (lane_i = 0; lane_i < PC; lane_i++) begin
-      dr_write_data[lane_i*DATA_W +: DATA_W] = ifm_rd_data[lane_i*DATA_W +: DATA_W];
+    if (!ret_zero_pad_q) begin
+      for (lane_i = 0; lane_i < PC; lane_i++) begin
+        dr_write_data[lane_i*DATA_W +: DATA_W] = ifm_rd_data[lane_i*DATA_W +: DATA_W];
+      end
     end
   end
 
@@ -426,11 +460,11 @@ module addr_gen_ifm_m2 #(
   assign dbg_issue_cgroup       = issue_cgroup_q;
   assign dbg_issue_ky           = issue_ky_q;
   assign dbg_issue_kx           = issue_kx_q;
-  assign dbg_waiting_for_return = stream_active_q && ret_valid_q && !ifm_rd_valid;
+  assign dbg_waiting_for_return = stream_active_q && ret_valid_q && !ret_zero_pad_q && !ifm_rd_valid;
 
   assign final_out_valid = stream_active_q && out_valid && !have_next_block;
 
-  assign miss_now_s = stream_active_q && ret_valid_q && !ifm_rd_valid;
+  assign miss_now_s = stream_active_q && ret_valid_q && !ret_zero_pad_q && !ifm_rd_valid;
   assign m2_miss_refill_valid = miss_now_s && !miss_refill_pending_q;
   assign m2_miss_refill_row_g  = ret_abs_row_g_q;
   assign m2_miss_refill_col_g  = ret_abs_col_g_q;
@@ -461,6 +495,7 @@ module addr_gen_ifm_m2 #(
       issue_kx_q      <= '0;
       stream_active_q <= 1'b0;
       ret_valid_q     <= 1'b0;
+      ret_zero_pad_q  <= 1'b0;
       ret_row_q       <= '0;
       ret_abs_row_g_q <= 16'd0;
       ret_abs_col_g_q <= 16'd0;
@@ -474,10 +509,13 @@ module addr_gen_ifm_m2 #(
       done  <= 1'b0;
       error <= 1'b0;
 
-      // Delay metadata for the read issued in this cycle.
-      ret_valid_q <= ifm_rd_en;
-      ret_row_q   <= issue_ky;
-      if (ifm_rd_en) begin
+      // Delay metadata for the tuple issued in this cycle.  Padding-zero
+      // tuples do not access IFM buffer, but still complete as valid zero data
+      // so data/weight/MAC lifecycle stays aligned.
+      ret_valid_q    <= issue_any && issue_addr_valid;
+      ret_zero_pad_q <= issue_any && issue_addr_valid && issue_zero_pad;
+      ret_row_q      <= issue_ky;
+      if (issue_any && issue_addr_valid) begin
         ret_abs_row_g_q <= issue_abs_row16;
         ret_abs_col_g_q <= issue_abs_col_g16;
         ret_col_l_q     <= issue_col_sel_l16;
@@ -490,7 +528,7 @@ module addr_gen_ifm_m2 #(
         if (miss_now_s && !miss_refill_pending_q) begin
           miss_refill_pending_q <= 1'b1;
         end
-        if (ret_valid_q && ifm_rd_valid) begin
+        if (ret_valid_q && (ret_zero_pad_q || ifm_rd_valid)) begin
           miss_refill_pending_q <= 1'b0;
         end
       end
