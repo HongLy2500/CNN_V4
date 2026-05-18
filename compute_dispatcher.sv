@@ -1,7 +1,7 @@
 module compute_dispatcher
   import cnn_layer_desc_pkg::*;
 #(
-  parameter int PC_MODE2 = 8
+  parameter int PC_MODE2 = 16
 )(
   input  logic clk,
   input  logic rst_n,

@@ -1,8 +1,8 @@
 module transition_manager
   import cnn_layer_desc_pkg::*;
 #(
-  parameter int PV_MAX = 8,
-  parameter int PC     = 8,
+  parameter int PV_MAX = 16,
+  parameter int PC     = 16,
   parameter int F_MAX  = 512,
   parameter int H_MAX  = 224,
   parameter int W_MAX  = 224

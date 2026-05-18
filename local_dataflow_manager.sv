@@ -2,12 +2,12 @@ module local_dataflow_manager
   import cnn_layer_desc_pkg::*;
 #(
   parameter int DATA_W   = 8,
-  parameter int PTOTAL   = 16,
-  parameter int PF_MAX   = 8,
-  parameter int PV_MAX   = 8,
-  parameter int PC_MODE2 = 8,
-  parameter int PF_MODE2 = 4,
-  parameter int C_MAX    = 64,
+  parameter int PTOTAL   = 256,
+  parameter int PF_MAX   = 16,
+  parameter int PV_MAX   = 16,
+  parameter int PC_MODE2 = 16,
+  parameter int PF_MODE2 = 16,
+  parameter int C_MAX    = 512,
   parameter int W_MAX    = 224,
   parameter int H_MAX    = 224,
   parameter int K_MAX    = 7

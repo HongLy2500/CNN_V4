@@ -1,6 +1,6 @@
 module addr_gen_wgt_ddr #(
-  parameter int PTOTAL      = 16,
-  parameter int PC_MODE2    = 8,
+  parameter int PTOTAL      = 256,
+  parameter int PC_MODE2    = 16,
   parameter int WGT_DEPTH   = 4096,
   parameter int DDR_ADDR_W  = 32
 )(
@@ -14,8 +14,8 @@ module addr_gen_wgt_ddr #(
   input  logic        cfg_mode,          // 0: mode1, 1: mode2
   input  logic        cfg_buf_sel,       // target weight-buffer bank for preload
   input  logic [3:0]  cfg_k_cur,
-  input  logic [7:0]  cfg_c_cur,
-  input  logic [7:0]  cfg_f_cur,
+  input  logic [9:0]  cfg_c_cur,
+  input  logic [9:0]  cfg_f_cur,
   input  logic [7:0]  cfg_pv_mode1_cur,
   input  logic [7:0]  cfg_pf_mode1_cur,
   input  logic [7:0]  cfg_pf_mode2,

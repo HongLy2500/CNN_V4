@@ -1,7 +1,7 @@
 module addr_gen_ifm_m1 #(
   parameter int DATA_W = 8,
-  parameter int PV_MAX = 8,
-  parameter int C_MAX  = 64,
+  parameter int PV_MAX = 16,
+  parameter int C_MAX  = 512,
   parameter int W_MAX  = 224,
   parameter int H_MAX  = 224,
   parameter int K_MAX  = 7
@@ -13,7 +13,7 @@ module addr_gen_ifm_m1 #(
   // Runtime configuration for the current layer / block
   // --------------------------------------------------
   input  logic [3:0] K_cur,
-  input  logic [7:0] C_cur,
+  input  logic [9:0] C_cur,
   input  logic [15:0] W_cur,
   input  logic [7:0] Pv_cur,
 

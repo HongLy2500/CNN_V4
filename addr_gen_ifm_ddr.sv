@@ -1,9 +1,9 @@
 `include "cnn_ddr_defs.svh"
 
 module addr_gen_ifm_ddr #(
-  parameter int PV_MAX     = 8,
-  parameter int PC         = 8,
-  parameter int C_MAX      = 64,
+  parameter int PV_MAX     = 16,
+  parameter int PC         = 1,
+  parameter int C_MAX      = 512,
   parameter int W_MAX      = 224,
   parameter int H_MAX      = 224,
   parameter int HT         = 8,

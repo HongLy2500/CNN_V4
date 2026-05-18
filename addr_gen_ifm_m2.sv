@@ -1,9 +1,9 @@
 module addr_gen_ifm_m2 #(
   parameter int DATA_W = 8,
-  parameter int PV_MAX = 8,
-  parameter int PC     = 8,
-  parameter int PF     = 4,
-  parameter int C_MAX  = 64,
+  parameter int PV_MAX = 16,
+  parameter int PC     = 16,
+  parameter int PF     = 16,
+  parameter int C_MAX  = 512,
   parameter int W_MAX  = 224,
   parameter int H_MAX  = 224,
   parameter int K_MAX  = 7
@@ -25,8 +25,8 @@ module addr_gen_ifm_m2 #(
   //   coordinates while refill updates the reusable physical slots.
   // --------------------------------------------------
   input  logic [3:0] K_cur,
-  input  logic [7:0] C_cur,
-  input  logic [7:0] F_cur,
+  input  logic [9:0] C_cur,
+  input  logic [9:0] F_cur,
   input  logic [15:0] H_in,
   input  logic [15:0] W_in,
   input  logic [15:0] Hout_cur,
