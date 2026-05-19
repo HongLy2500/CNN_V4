@@ -1,0 +1,34 @@
+{
+  "benchmark": "vgg16_like_96_p256",
+  "data_w": 8,
+  "psum_w": 32,
+  "ptotal": 256,
+  "pv_max": 16,
+  "pf_max": 16,
+  "pc_mode2": 16,
+  "pf_mode2": 16,
+  "h_max": 96,
+  "w_max": 96,
+  "c_max": 128,
+  "f_max": 128,
+  "k_max": 3,
+  "ht": 4,
+  "cfg_depth": 16,
+  "ddr_word_bits": 128,
+  "ddr_word_bytes": 16,
+  "ofm_row_stride": 6,
+  "wgt_depth": 768,
+  "ddr_bases_word": {
+    "ifm": "0x000000",
+    "wgt": "0x010000",
+    "ofm": "0x020000",
+    "rsvd": "0x030000"
+  },
+  "notes": [
+    "Fixed hardware profile for VGG16-like 96x96 P256 benchmark.",
+    "Mode1 L0-L6 uses Pv=16, Pf=16.",
+    "Mode2 L7-L12 uses PC=16, Pf=16.",
+    "K=3, stride=1, padding=1; descriptor h_out/w_out are convolution outputs before pooling.",
+    "Depth-related parameters match the passing 96x96 simulation: HT=4, OFM_ROW_STRIDE=6, WGT_DEPTH=1024."
+  ]
+}

@@ -41,7 +41,7 @@ module tb_cnn_top_vgg16like_96x96_9layer_7m1_2m2_k3_pad1_center_expected_compare
   localparam int HT = 4;
   localparam int K_MAX = 3;
 
-  localparam int WGT_DEPTH = 1024;
+  localparam int WGT_DEPTH = 768;
   localparam int CFG_DEPTH = 16;
 
   // --------------------------------------------------------------------------

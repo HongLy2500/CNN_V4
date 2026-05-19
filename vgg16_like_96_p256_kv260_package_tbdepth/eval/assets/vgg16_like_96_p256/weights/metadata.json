@@ -1,0 +1,206 @@
+{
+  "tool": "gen_vgg16_like_weights.py",
+  "source": "deterministic INT8 generated weights",
+  "layers_csv": "eval\\configs\\vgg16_like_96_p256_layers.csv",
+  "pattern": "deterministic_small",
+  "seed": 0,
+  "tensor_layout": "F,C,K,K",
+  "dtype": "int8",
+  "layers": [
+    {
+      "layer_id": 0,
+      "layer_name": "L0",
+      "shape_f_c_k_k": [
+        16,
+        3,
+        3,
+        3
+      ],
+      "weight_i8_npy": "eval\\assets\\vgg16_like_96_p256\\weights\\layers\\layer00_L0_weight_i8.npy",
+      "weight_i8_bytes_hex": "eval\\assets\\vgg16_like_96_p256\\weights\\layers\\layer00_L0_weight_i8_bytes.hex",
+      "min": -2,
+      "max": 2,
+      "num_weights": 432
+    },
+    {
+      "layer_id": 1,
+      "layer_name": "L1",
+      "shape_f_c_k_k": [
+        16,
+        16,
+        3,
+        3
+      ],
+      "weight_i8_npy": "eval\\assets\\vgg16_like_96_p256\\weights\\layers\\layer01_L1_weight_i8.npy",
+      "weight_i8_bytes_hex": "eval\\assets\\vgg16_like_96_p256\\weights\\layers\\layer01_L1_weight_i8_bytes.hex",
+      "min": -2,
+      "max": 2,
+      "num_weights": 2304
+    },
+    {
+      "layer_id": 2,
+      "layer_name": "L2",
+      "shape_f_c_k_k": [
+        32,
+        16,
+        3,
+        3
+      ],
+      "weight_i8_npy": "eval\\assets\\vgg16_like_96_p256\\weights\\layers\\layer02_L2_weight_i8.npy",
+      "weight_i8_bytes_hex": "eval\\assets\\vgg16_like_96_p256\\weights\\layers\\layer02_L2_weight_i8_bytes.hex",
+      "min": -2,
+      "max": 2,
+      "num_weights": 4608
+    },
+    {
+      "layer_id": 3,
+      "layer_name": "L3",
+      "shape_f_c_k_k": [
+        32,
+        32,
+        3,
+        3
+      ],
+      "weight_i8_npy": "eval\\assets\\vgg16_like_96_p256\\weights\\layers\\layer03_L3_weight_i8.npy",
+      "weight_i8_bytes_hex": "eval\\assets\\vgg16_like_96_p256\\weights\\layers\\layer03_L3_weight_i8_bytes.hex",
+      "min": -2,
+      "max": 2,
+      "num_weights": 9216
+    },
+    {
+      "layer_id": 4,
+      "layer_name": "L4",
+      "shape_f_c_k_k": [
+        64,
+        32,
+        3,
+        3
+      ],
+      "weight_i8_npy": "eval\\assets\\vgg16_like_96_p256\\weights\\layers\\layer04_L4_weight_i8.npy",
+      "weight_i8_bytes_hex": "eval\\assets\\vgg16_like_96_p256\\weights\\layers\\layer04_L4_weight_i8_bytes.hex",
+      "min": -2,
+      "max": 2,
+      "num_weights": 18432
+    },
+    {
+      "layer_id": 5,
+      "layer_name": "L5",
+      "shape_f_c_k_k": [
+        64,
+        64,
+        3,
+        3
+      ],
+      "weight_i8_npy": "eval\\assets\\vgg16_like_96_p256\\weights\\layers\\layer05_L5_weight_i8.npy",
+      "weight_i8_bytes_hex": "eval\\assets\\vgg16_like_96_p256\\weights\\layers\\layer05_L5_weight_i8_bytes.hex",
+      "min": -2,
+      "max": 2,
+      "num_weights": 36864
+    },
+    {
+      "layer_id": 6,
+      "layer_name": "L6",
+      "shape_f_c_k_k": [
+        64,
+        64,
+        3,
+        3
+      ],
+      "weight_i8_npy": "eval\\assets\\vgg16_like_96_p256\\weights\\layers\\layer06_L6_weight_i8.npy",
+      "weight_i8_bytes_hex": "eval\\assets\\vgg16_like_96_p256\\weights\\layers\\layer06_L6_weight_i8_bytes.hex",
+      "min": -2,
+      "max": 2,
+      "num_weights": 36864
+    },
+    {
+      "layer_id": 7,
+      "layer_name": "L7",
+      "shape_f_c_k_k": [
+        128,
+        64,
+        3,
+        3
+      ],
+      "weight_i8_npy": "eval\\assets\\vgg16_like_96_p256\\weights\\layers\\layer07_L7_weight_i8.npy",
+      "weight_i8_bytes_hex": "eval\\assets\\vgg16_like_96_p256\\weights\\layers\\layer07_L7_weight_i8_bytes.hex",
+      "min": -2,
+      "max": 2,
+      "num_weights": 73728
+    },
+    {
+      "layer_id": 8,
+      "layer_name": "L8",
+      "shape_f_c_k_k": [
+        128,
+        128,
+        3,
+        3
+      ],
+      "weight_i8_npy": "eval\\assets\\vgg16_like_96_p256\\weights\\layers\\layer08_L8_weight_i8.npy",
+      "weight_i8_bytes_hex": "eval\\assets\\vgg16_like_96_p256\\weights\\layers\\layer08_L8_weight_i8_bytes.hex",
+      "min": -2,
+      "max": 2,
+      "num_weights": 147456
+    },
+    {
+      "layer_id": 9,
+      "layer_name": "L9",
+      "shape_f_c_k_k": [
+        128,
+        128,
+        3,
+        3
+      ],
+      "weight_i8_npy": "eval\\assets\\vgg16_like_96_p256\\weights\\layers\\layer09_L9_weight_i8.npy",
+      "weight_i8_bytes_hex": "eval\\assets\\vgg16_like_96_p256\\weights\\layers\\layer09_L9_weight_i8_bytes.hex",
+      "min": -2,
+      "max": 2,
+      "num_weights": 147456
+    },
+    {
+      "layer_id": 10,
+      "layer_name": "L10",
+      "shape_f_c_k_k": [
+        128,
+        128,
+        3,
+        3
+      ],
+      "weight_i8_npy": "eval\\assets\\vgg16_like_96_p256\\weights\\layers\\layer10_L10_weight_i8.npy",
+      "weight_i8_bytes_hex": "eval\\assets\\vgg16_like_96_p256\\weights\\layers\\layer10_L10_weight_i8_bytes.hex",
+      "min": -2,
+      "max": 2,
+      "num_weights": 147456
+    },
+    {
+      "layer_id": 11,
+      "layer_name": "L11",
+      "shape_f_c_k_k": [
+        128,
+        128,
+        3,
+        3
+      ],
+      "weight_i8_npy": "eval\\assets\\vgg16_like_96_p256\\weights\\layers\\layer11_L11_weight_i8.npy",
+      "weight_i8_bytes_hex": "eval\\assets\\vgg16_like_96_p256\\weights\\layers\\layer11_L11_weight_i8_bytes.hex",
+      "min": -2,
+      "max": 2,
+      "num_weights": 147456
+    },
+    {
+      "layer_id": 12,
+      "layer_name": "L12",
+      "shape_f_c_k_k": [
+        128,
+        128,
+        3,
+        3
+      ],
+      "weight_i8_npy": "eval\\assets\\vgg16_like_96_p256\\weights\\layers\\layer12_L12_weight_i8.npy",
+      "weight_i8_bytes_hex": "eval\\assets\\vgg16_like_96_p256\\weights\\layers\\layer12_L12_weight_i8_bytes.hex",
+      "min": -2,
+      "max": 2,
+      "num_weights": 147456
+    }
+  ]
+}

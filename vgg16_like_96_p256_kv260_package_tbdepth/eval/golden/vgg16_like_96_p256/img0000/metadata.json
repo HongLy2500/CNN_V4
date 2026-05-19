@@ -1,0 +1,553 @@
+{
+  "script": "gen_fixedpoint_golden.py",
+  "descriptor": "eval\\models\\vgg16_like_96_p256.json",
+  "model_name": "vgg16_like_96_p256",
+  "input_npy": "eval\\assets\\vgg16_like_96_p256\\inputs\\img0000\\input_uint8_hwc.npy",
+  "input_shape_hwc": [
+    96,
+    96,
+    3
+  ],
+  "weights_dir": "eval\\assets\\vgg16_like_96_p256\\weights",
+  "weights_metadata": "eval\\assets\\vgg16_like_96_p256\\weights\\metadata.json",
+  "num_layers_run": 13,
+  "store_policy": "saturate_u8",
+  "compute_dtype": "float64",
+  "device": "cpu",
+  "output_tensor_layout": "HWC",
+  "output_dtype": "uint8",
+  "linear_hex_pack": {
+    "file": "eval\\golden\\vgg16_like_96_p256\\img0000\\expected_final_ofm_linear_u32le.hex",
+    "flatten_order": "HWC NumPy row-major",
+    "word_format": "4 uint8 bytes per 32-bit word, little-endian",
+    "num_u32_words": 288,
+    "warning": "This is a simple linear pack. Use an RTL-specific OFM packer if CNN_V4 writes DDR in a tiled/banked layout."
+  },
+  "files": {
+    "golden_final_ofm_uint8_hwc_npy": "eval\\golden\\vgg16_like_96_p256\\img0000\\golden_final_ofm_uint8_hwc.npy",
+    "expected_final_ofm_linear_u32le_hex": "eval\\golden\\vgg16_like_96_p256\\img0000\\expected_final_ofm_linear_u32le.hex"
+  },
+  "warnings": [],
+  "layers": [
+    {
+      "layer_id": 0,
+      "layer_name": "L0",
+      "weight_npy": "D:\\sdh\\CNN_V4\\vgg16_like_96_p256_kv260_package_tbdepth\\eval\\assets\\vgg16_like_96_p256\\weights\\layers\\layer00_L0_weight_i8.npy",
+      "input_shape_hwc": [
+        96,
+        96,
+        3
+      ],
+      "weight_shape_f_c_k_k": [
+        16,
+        3,
+        3,
+        3
+      ],
+      "conv_shape_hwc": [
+        96,
+        96,
+        16
+      ],
+      "output_shape_hwc": [
+        96,
+        96,
+        16
+      ],
+      "relu_en": true,
+      "pool_en": false,
+      "pool_k": 2,
+      "pool_stride": 2,
+      "conv_stride": 1,
+      "padding_top_bottom_left_right": [
+        1,
+        1,
+        1,
+        1
+      ],
+      "store_policy": "saturate_u8",
+      "output_npy": "eval\\golden\\vgg16_like_96_p256\\img0000\\layer00_L0\\ofm_uint8_hwc.npy",
+      "output_hex_linear_u32le": null
+    },
+    {
+      "layer_id": 1,
+      "layer_name": "L1",
+      "weight_npy": "D:\\sdh\\CNN_V4\\vgg16_like_96_p256_kv260_package_tbdepth\\eval\\assets\\vgg16_like_96_p256\\weights\\layers\\layer01_L1_weight_i8.npy",
+      "input_shape_hwc": [
+        96,
+        96,
+        16
+      ],
+      "weight_shape_f_c_k_k": [
+        16,
+        16,
+        3,
+        3
+      ],
+      "conv_shape_hwc": [
+        96,
+        96,
+        16
+      ],
+      "output_shape_hwc": [
+        48,
+        48,
+        16
+      ],
+      "relu_en": true,
+      "pool_en": true,
+      "pool_k": 2,
+      "pool_stride": 2,
+      "conv_stride": 1,
+      "padding_top_bottom_left_right": [
+        1,
+        1,
+        1,
+        1
+      ],
+      "store_policy": "saturate_u8",
+      "output_npy": "eval\\golden\\vgg16_like_96_p256\\img0000\\layer01_L1\\ofm_uint8_hwc.npy",
+      "output_hex_linear_u32le": null
+    },
+    {
+      "layer_id": 2,
+      "layer_name": "L2",
+      "weight_npy": "D:\\sdh\\CNN_V4\\vgg16_like_96_p256_kv260_package_tbdepth\\eval\\assets\\vgg16_like_96_p256\\weights\\layers\\layer02_L2_weight_i8.npy",
+      "input_shape_hwc": [
+        48,
+        48,
+        16
+      ],
+      "weight_shape_f_c_k_k": [
+        32,
+        16,
+        3,
+        3
+      ],
+      "conv_shape_hwc": [
+        48,
+        48,
+        32
+      ],
+      "output_shape_hwc": [
+        48,
+        48,
+        32
+      ],
+      "relu_en": true,
+      "pool_en": false,
+      "pool_k": 2,
+      "pool_stride": 2,
+      "conv_stride": 1,
+      "padding_top_bottom_left_right": [
+        1,
+        1,
+        1,
+        1
+      ],
+      "store_policy": "saturate_u8",
+      "output_npy": "eval\\golden\\vgg16_like_96_p256\\img0000\\layer02_L2\\ofm_uint8_hwc.npy",
+      "output_hex_linear_u32le": null
+    },
+    {
+      "layer_id": 3,
+      "layer_name": "L3",
+      "weight_npy": "D:\\sdh\\CNN_V4\\vgg16_like_96_p256_kv260_package_tbdepth\\eval\\assets\\vgg16_like_96_p256\\weights\\layers\\layer03_L3_weight_i8.npy",
+      "input_shape_hwc": [
+        48,
+        48,
+        32
+      ],
+      "weight_shape_f_c_k_k": [
+        32,
+        32,
+        3,
+        3
+      ],
+      "conv_shape_hwc": [
+        48,
+        48,
+        32
+      ],
+      "output_shape_hwc": [
+        24,
+        24,
+        32
+      ],
+      "relu_en": true,
+      "pool_en": true,
+      "pool_k": 2,
+      "pool_stride": 2,
+      "conv_stride": 1,
+      "padding_top_bottom_left_right": [
+        1,
+        1,
+        1,
+        1
+      ],
+      "store_policy": "saturate_u8",
+      "output_npy": "eval\\golden\\vgg16_like_96_p256\\img0000\\layer03_L3\\ofm_uint8_hwc.npy",
+      "output_hex_linear_u32le": null
+    },
+    {
+      "layer_id": 4,
+      "layer_name": "L4",
+      "weight_npy": "D:\\sdh\\CNN_V4\\vgg16_like_96_p256_kv260_package_tbdepth\\eval\\assets\\vgg16_like_96_p256\\weights\\layers\\layer04_L4_weight_i8.npy",
+      "input_shape_hwc": [
+        24,
+        24,
+        32
+      ],
+      "weight_shape_f_c_k_k": [
+        64,
+        32,
+        3,
+        3
+      ],
+      "conv_shape_hwc": [
+        24,
+        24,
+        64
+      ],
+      "output_shape_hwc": [
+        24,
+        24,
+        64
+      ],
+      "relu_en": true,
+      "pool_en": false,
+      "pool_k": 2,
+      "pool_stride": 2,
+      "conv_stride": 1,
+      "padding_top_bottom_left_right": [
+        1,
+        1,
+        1,
+        1
+      ],
+      "store_policy": "saturate_u8",
+      "output_npy": "eval\\golden\\vgg16_like_96_p256\\img0000\\layer04_L4\\ofm_uint8_hwc.npy",
+      "output_hex_linear_u32le": null
+    },
+    {
+      "layer_id": 5,
+      "layer_name": "L5",
+      "weight_npy": "D:\\sdh\\CNN_V4\\vgg16_like_96_p256_kv260_package_tbdepth\\eval\\assets\\vgg16_like_96_p256\\weights\\layers\\layer05_L5_weight_i8.npy",
+      "input_shape_hwc": [
+        24,
+        24,
+        64
+      ],
+      "weight_shape_f_c_k_k": [
+        64,
+        64,
+        3,
+        3
+      ],
+      "conv_shape_hwc": [
+        24,
+        24,
+        64
+      ],
+      "output_shape_hwc": [
+        24,
+        24,
+        64
+      ],
+      "relu_en": true,
+      "pool_en": false,
+      "pool_k": 2,
+      "pool_stride": 2,
+      "conv_stride": 1,
+      "padding_top_bottom_left_right": [
+        1,
+        1,
+        1,
+        1
+      ],
+      "store_policy": "saturate_u8",
+      "output_npy": "eval\\golden\\vgg16_like_96_p256\\img0000\\layer05_L5\\ofm_uint8_hwc.npy",
+      "output_hex_linear_u32le": null
+    },
+    {
+      "layer_id": 6,
+      "layer_name": "L6",
+      "weight_npy": "D:\\sdh\\CNN_V4\\vgg16_like_96_p256_kv260_package_tbdepth\\eval\\assets\\vgg16_like_96_p256\\weights\\layers\\layer06_L6_weight_i8.npy",
+      "input_shape_hwc": [
+        24,
+        24,
+        64
+      ],
+      "weight_shape_f_c_k_k": [
+        64,
+        64,
+        3,
+        3
+      ],
+      "conv_shape_hwc": [
+        24,
+        24,
+        64
+      ],
+      "output_shape_hwc": [
+        12,
+        12,
+        64
+      ],
+      "relu_en": true,
+      "pool_en": true,
+      "pool_k": 2,
+      "pool_stride": 2,
+      "conv_stride": 1,
+      "padding_top_bottom_left_right": [
+        1,
+        1,
+        1,
+        1
+      ],
+      "store_policy": "saturate_u8",
+      "output_npy": "eval\\golden\\vgg16_like_96_p256\\img0000\\layer06_L6\\ofm_uint8_hwc.npy",
+      "output_hex_linear_u32le": null
+    },
+    {
+      "layer_id": 7,
+      "layer_name": "L7",
+      "weight_npy": "D:\\sdh\\CNN_V4\\vgg16_like_96_p256_kv260_package_tbdepth\\eval\\assets\\vgg16_like_96_p256\\weights\\layers\\layer07_L7_weight_i8.npy",
+      "input_shape_hwc": [
+        12,
+        12,
+        64
+      ],
+      "weight_shape_f_c_k_k": [
+        128,
+        64,
+        3,
+        3
+      ],
+      "conv_shape_hwc": [
+        12,
+        12,
+        128
+      ],
+      "output_shape_hwc": [
+        12,
+        12,
+        128
+      ],
+      "relu_en": true,
+      "pool_en": false,
+      "pool_k": 2,
+      "pool_stride": 2,
+      "conv_stride": 1,
+      "padding_top_bottom_left_right": [
+        1,
+        1,
+        1,
+        1
+      ],
+      "store_policy": "saturate_u8",
+      "output_npy": "eval\\golden\\vgg16_like_96_p256\\img0000\\layer07_L7\\ofm_uint8_hwc.npy",
+      "output_hex_linear_u32le": null
+    },
+    {
+      "layer_id": 8,
+      "layer_name": "L8",
+      "weight_npy": "D:\\sdh\\CNN_V4\\vgg16_like_96_p256_kv260_package_tbdepth\\eval\\assets\\vgg16_like_96_p256\\weights\\layers\\layer08_L8_weight_i8.npy",
+      "input_shape_hwc": [
+        12,
+        12,
+        128
+      ],
+      "weight_shape_f_c_k_k": [
+        128,
+        128,
+        3,
+        3
+      ],
+      "conv_shape_hwc": [
+        12,
+        12,
+        128
+      ],
+      "output_shape_hwc": [
+        12,
+        12,
+        128
+      ],
+      "relu_en": true,
+      "pool_en": false,
+      "pool_k": 2,
+      "pool_stride": 2,
+      "conv_stride": 1,
+      "padding_top_bottom_left_right": [
+        1,
+        1,
+        1,
+        1
+      ],
+      "store_policy": "saturate_u8",
+      "output_npy": "eval\\golden\\vgg16_like_96_p256\\img0000\\layer08_L8\\ofm_uint8_hwc.npy",
+      "output_hex_linear_u32le": null
+    },
+    {
+      "layer_id": 9,
+      "layer_name": "L9",
+      "weight_npy": "D:\\sdh\\CNN_V4\\vgg16_like_96_p256_kv260_package_tbdepth\\eval\\assets\\vgg16_like_96_p256\\weights\\layers\\layer09_L9_weight_i8.npy",
+      "input_shape_hwc": [
+        12,
+        12,
+        128
+      ],
+      "weight_shape_f_c_k_k": [
+        128,
+        128,
+        3,
+        3
+      ],
+      "conv_shape_hwc": [
+        12,
+        12,
+        128
+      ],
+      "output_shape_hwc": [
+        6,
+        6,
+        128
+      ],
+      "relu_en": true,
+      "pool_en": true,
+      "pool_k": 2,
+      "pool_stride": 2,
+      "conv_stride": 1,
+      "padding_top_bottom_left_right": [
+        1,
+        1,
+        1,
+        1
+      ],
+      "store_policy": "saturate_u8",
+      "output_npy": "eval\\golden\\vgg16_like_96_p256\\img0000\\layer09_L9\\ofm_uint8_hwc.npy",
+      "output_hex_linear_u32le": null
+    },
+    {
+      "layer_id": 10,
+      "layer_name": "L10",
+      "weight_npy": "D:\\sdh\\CNN_V4\\vgg16_like_96_p256_kv260_package_tbdepth\\eval\\assets\\vgg16_like_96_p256\\weights\\layers\\layer10_L10_weight_i8.npy",
+      "input_shape_hwc": [
+        6,
+        6,
+        128
+      ],
+      "weight_shape_f_c_k_k": [
+        128,
+        128,
+        3,
+        3
+      ],
+      "conv_shape_hwc": [
+        6,
+        6,
+        128
+      ],
+      "output_shape_hwc": [
+        6,
+        6,
+        128
+      ],
+      "relu_en": true,
+      "pool_en": false,
+      "pool_k": 2,
+      "pool_stride": 2,
+      "conv_stride": 1,
+      "padding_top_bottom_left_right": [
+        1,
+        1,
+        1,
+        1
+      ],
+      "store_policy": "saturate_u8",
+      "output_npy": "eval\\golden\\vgg16_like_96_p256\\img0000\\layer10_L10\\ofm_uint8_hwc.npy",
+      "output_hex_linear_u32le": null
+    },
+    {
+      "layer_id": 11,
+      "layer_name": "L11",
+      "weight_npy": "D:\\sdh\\CNN_V4\\vgg16_like_96_p256_kv260_package_tbdepth\\eval\\assets\\vgg16_like_96_p256\\weights\\layers\\layer11_L11_weight_i8.npy",
+      "input_shape_hwc": [
+        6,
+        6,
+        128
+      ],
+      "weight_shape_f_c_k_k": [
+        128,
+        128,
+        3,
+        3
+      ],
+      "conv_shape_hwc": [
+        6,
+        6,
+        128
+      ],
+      "output_shape_hwc": [
+        6,
+        6,
+        128
+      ],
+      "relu_en": true,
+      "pool_en": false,
+      "pool_k": 2,
+      "pool_stride": 2,
+      "conv_stride": 1,
+      "padding_top_bottom_left_right": [
+        1,
+        1,
+        1,
+        1
+      ],
+      "store_policy": "saturate_u8",
+      "output_npy": "eval\\golden\\vgg16_like_96_p256\\img0000\\layer11_L11\\ofm_uint8_hwc.npy",
+      "output_hex_linear_u32le": null
+    },
+    {
+      "layer_id": 12,
+      "layer_name": "L12",
+      "weight_npy": "D:\\sdh\\CNN_V4\\vgg16_like_96_p256_kv260_package_tbdepth\\eval\\assets\\vgg16_like_96_p256\\weights\\layers\\layer12_L12_weight_i8.npy",
+      "input_shape_hwc": [
+        6,
+        6,
+        128
+      ],
+      "weight_shape_f_c_k_k": [
+        128,
+        128,
+        3,
+        3
+      ],
+      "conv_shape_hwc": [
+        6,
+        6,
+        128
+      ],
+      "output_shape_hwc": [
+        3,
+        3,
+        128
+      ],
+      "relu_en": true,
+      "pool_en": true,
+      "pool_k": 2,
+      "pool_stride": 2,
+      "conv_stride": 1,
+      "padding_top_bottom_left_right": [
+        1,
+        1,
+        1,
+        1
+      ],
+      "store_policy": "saturate_u8",
+      "output_npy": "eval\\golden\\vgg16_like_96_p256\\img0000\\layer12_L12\\ofm_uint8_hwc.npy",
+      "output_hex_linear_u32le": null
+    }
+  ]
+}

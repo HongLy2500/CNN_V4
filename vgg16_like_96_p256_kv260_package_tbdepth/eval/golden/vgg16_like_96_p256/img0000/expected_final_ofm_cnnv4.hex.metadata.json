@@ -1,0 +1,51 @@
+{
+  "tool": "pack_expected_ofm_for_cnn_v4.py",
+  "source_ofm": "eval\\golden\\vgg16_like_96_p256\\img0000\\golden_final_ofm_uint8_hwc.npy",
+  "source_layer_config": "eval\\configs\\vgg16_like_96_p256_layers_with_wgt_base.csv",
+  "output_hex": "eval\\golden\\vgg16_like_96_p256\\img0000\\expected_final_ofm_cnnv4.hex",
+  "layer": {
+    "selected_index": 12,
+    "layer_id": 12,
+    "layer_name": "L12",
+    "mode": 1,
+    "mode_name": "MODE2",
+    "pool_enable": true,
+    "pv_m1": 0,
+    "pf_m1": 0,
+    "pc_m2": 16,
+    "pf_m2": 16,
+    "next_layer_mode": null,
+    "next_layer_name": null
+  },
+  "ofm_tensor_hwc": [
+    3,
+    3,
+    128
+  ],
+  "store_selection": {
+    "src_mode": 1,
+    "next_mode": 1,
+    "pv_cur": 0,
+    "pv_next": 1,
+    "pc": 16,
+    "pool_enable": true,
+    "store_pack": 16,
+    "reason": "M2->M2 store: PC lanes"
+  },
+  "pack": {
+    "h": 3,
+    "w": 3,
+    "f": 128,
+    "store_pack": 16,
+    "word_lanes": 16,
+    "groups_per_row": 1,
+    "num_words": 384,
+    "expected_layer_num_words": 384,
+    "layout": "OFM DMA linear readback: [channel][row][group], word lanes are consecutive spatial columns"
+  },
+  "notes": [
+    "Expected hex matches ofm_buffer DMA linear readback, not simple HWC flatten.",
+    "Invalid/tail lanes are zero-filled; OFM DDR should be cleared before hardware run.",
+    "For final MODE1 layer, control_unit_top uses next_mode=current and pv_next=1 fallback, so store_pack=1 unless overridden."
+  ]
+}
