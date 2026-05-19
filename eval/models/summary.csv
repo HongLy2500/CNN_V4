@@ -1,6 +1,0 @@
-model_name,benchmark_kind,paper_reported_conv_layers,num_layers_in_descriptor,total_gops,max_h,max_w,max_c_in,max_f_out,num_current_rtl_ready_layers,num_layers_with_warnings
-alexnet_conv5,canonical_convolutional_workload,5,5,1.311133,224,224,384,384,0,5
-vgg16_conv13,canonical_convolutional_workload,13,13,30.693261,224,224,512,512,0,13
-efficientnet_b0_dcp18_blockconv_surrogate,dcp_style_convolutional_workload_surrogate,18,18,1.099908,224,224,320,1280,0,18
-googlenet_v1_inception_conv_ops_expanded,canonical_graph_convolutional_workload,22,57,3.163296,224,224,832,384,1,56
-efficientnet_b0_prefix9_cnn_v4_current,current_rtl_regression_descriptor,9,9,0.396555,224,224,80,192,8,1

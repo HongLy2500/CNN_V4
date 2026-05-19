@@ -450,8 +450,8 @@ def main() -> int:
         ],
     }
     meta_path.parent.mkdir(parents=True, exist_ok=True)
-    with meta_path.open("w") as f:
-        json.dump(metadata, f, indent=2)
+    with meta_path.open("w") as meta_f:
+        json.dump(metadata, meta_f, indent=2)
 
     if args.word_count_out:
         wc_path = Path(args.word_count_out)

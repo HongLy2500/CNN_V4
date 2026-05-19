@@ -2170,6 +2170,17 @@ always_ff @(posedge clk or negedge rst_n) begin
   end
 end
 
+always_ff @(posedge clk) begin : DBG_M1_ROW_ADV_GUARD_MON
+    if (rst_n && (cur_cfg_s.mode == MODE1) && m1_out_row_done_pulse) begin
+        $display("DBG_M1_ROW_ADV_GUARD t=%0t layer=%0d out_row=%0d row_done=1 first_pending=%0d adv=%0d",
+            $time,
+            dbg_layer_idx,
+            m1_out_row,
+            m1_pady1_first_row_pending_q,
+            ifm_m1_advance_row
+        );
+    end
+end
 
 
 endmodule

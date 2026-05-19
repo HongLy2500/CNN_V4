@@ -317,4 +317,20 @@ module addr_gen_ifm_m1 #(
     end
   end
 
+`ifndef SYNTHESIS
+always_ff @(posedge clk) begin : DBG_M1_AG_PADY_MAP
+    if (rst_n && issue_fire && (K_cur == 4'd3) && (out_row < 16'd12)) begin
+        $display("DBG_M1_AG_PADY_MAP t=%0t out_row=%0d ky=%0d local_row=%0d zero=%0d col=%0d ch=%0d",
+            $time,
+            out_row,
+            issue_row_q,
+            issue_local_row_s,
+            issue_zero_pad_s,
+            issue_col_q,
+            target_channel_q
+        );
+    end
+end
+`endif
+
 endmodule

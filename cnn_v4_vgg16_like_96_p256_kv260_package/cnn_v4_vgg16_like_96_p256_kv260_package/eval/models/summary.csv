@@ -1,0 +1,2 @@
+benchmark,input,layers,k,stride,pad,pool,ptotal,pv_max,pf_max,pc,output
+vgg16_like_96_p256,96x96x3,13,3,1,1,2x2 optional,256,16,16,16,3x3x128

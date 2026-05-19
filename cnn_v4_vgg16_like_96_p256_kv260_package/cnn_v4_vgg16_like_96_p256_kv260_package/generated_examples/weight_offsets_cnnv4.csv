@@ -1,0 +1,14 @@
+layer_id,layer_name,mode,mode_name,wgt_ddr_base_word,offset_ddr_words,offset_physical_words,num_ddr_words,num_physical_words,ptotal,ddr_word_lanes,subwords_per_physical,shape_f_c_k_k,pv_m1,pf_m1,pc_m2,pf_m2,weight_i8_npy
+0,L0,0,MODE1,65536,0,0,32,2,256,16,16,16x3x3x3,16,16,0,0,/tmp/vggw/layers/layer00_L0_weight_i8.npy
+1,L1,0,MODE1,65568,32,2,144,9,256,16,16,16x16x3x3,16,16,0,0,/tmp/vggw/layers/layer01_L1_weight_i8.npy
+2,L2,0,MODE1,65712,176,11,288,18,256,16,16,32x16x3x3,16,16,0,0,/tmp/vggw/layers/layer02_L2_weight_i8.npy
+3,L3,0,MODE1,66000,464,29,576,36,256,16,16,32x32x3x3,16,16,0,0,/tmp/vggw/layers/layer03_L3_weight_i8.npy
+4,L4,0,MODE1,66576,1040,65,1152,72,256,16,16,64x32x3x3,16,16,0,0,/tmp/vggw/layers/layer04_L4_weight_i8.npy
+5,L5,0,MODE1,67728,2192,137,2304,144,256,16,16,64x64x3x3,16,16,0,0,/tmp/vggw/layers/layer05_L5_weight_i8.npy
+6,L6,0,MODE1,70032,4496,281,2304,144,256,16,16,64x64x3x3,16,16,0,0,/tmp/vggw/layers/layer06_L6_weight_i8.npy
+7,L7,1,MODE2,72336,6800,425,4608,288,256,16,16,128x64x3x3,0,0,16,16,/tmp/vggw/layers/layer07_L7_weight_i8.npy
+8,L8,1,MODE2,76944,11408,713,9216,576,256,16,16,128x128x3x3,0,0,16,16,/tmp/vggw/layers/layer08_L8_weight_i8.npy
+9,L9,1,MODE2,86160,20624,1289,9216,576,256,16,16,128x128x3x3,0,0,16,16,/tmp/vggw/layers/layer09_L9_weight_i8.npy
+10,L10,1,MODE2,95376,29840,1865,9216,576,256,16,16,128x128x3x3,0,0,16,16,/tmp/vggw/layers/layer10_L10_weight_i8.npy
+11,L11,1,MODE2,104592,39056,2441,9216,576,256,16,16,128x128x3x3,0,0,16,16,/tmp/vggw/layers/layer11_L11_weight_i8.npy
+12,L12,1,MODE2,113808,48272,3017,9216,576,256,16,16,128x128x3x3,0,0,16,16,/tmp/vggw/layers/layer12_L12_weight_i8.npy
