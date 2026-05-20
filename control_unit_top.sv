@@ -3,19 +3,19 @@
 module control_unit_top
   import cnn_layer_desc_pkg::*;
 #(
-  parameter int PTOTAL           = 256,
+  parameter int PTOTAL           = 128,
   parameter int DATA_W           = 8,
-  parameter int PF_MAX           = 16,
+  parameter int PF_MAX           = 8,
   parameter int PV_MAX           = 16,
-  parameter int PC_MODE2         = 16,
+  parameter int PC_MODE2         = 8,
   parameter int PF_MODE2         = 16,
-  parameter int C_MAX            = 512,
-  parameter int W_MAX            = 224,
-  parameter int H_MAX            = 224,
-  parameter int HT               = 8,
-  parameter int K_MAX            = 7,
-  parameter int F_MAX            = 512,
-  parameter int WGT_DEPTH        = 4096,
+  parameter int C_MAX            = 64,
+  parameter int W_MAX            = 32,
+  parameter int H_MAX            = 32,
+  parameter int HT               = 4,
+  parameter int K_MAX            = 3,
+  parameter int F_MAX            = 64,
+  parameter int WGT_DEPTH        = 512,
   parameter int OFM_LINEAR_DEPTH = 4096,
   parameter int CFG_DEPTH        = 64,
   parameter int DDR_ADDR_W       = `CNN_DDR_ADDR_W,
@@ -1674,7 +1674,8 @@ module control_unit_top
         sm_stream_row_base_s      = m1_sm_row_g_i[ROW_W-1:0];
         sm_stream_num_rows_s      = ROW_W'(1);
         sm_stream_col_base_s = m1_sm_col_blk_g_i * ((next_cfg_s.pv_m1 == 0) ? 16'd1 : next_cfg_s.pv_m1);
-        sm_stream_m1_row_slot_l_s = m1_sm_row_slot_l_i[BUF_ROW_W-1:0];
+        sm_stream_m1_row_slot_l_s = '0;
+	sm_stream_m1_row_slot_l_s[$bits(m1_sm_row_slot_l_i)-1:0] = m1_sm_row_slot_l_i;
         sm_stream_m1_ch_blk_g_s   = m1_sm_ch_blk_g_i;
       end
       else if (sm_m2_mgr_active_s && sm_m2_active && m2_sm_req_valid_i) begin

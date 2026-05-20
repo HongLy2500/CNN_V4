@@ -1,14 +1,14 @@
 module mode2_compute_top #(
   parameter int DATA_W    = 8,
   parameter int PSUM_W    = 32,
-  parameter int K_MAX     = 7,
-  parameter int PC        = 16,
+  parameter int K_MAX     = 3,
+  parameter int PC        = 8,
   parameter int PF        = 16,
-  parameter int HOUT_MAX  = 224,
-  parameter int WOUT_MAX  = 224,
+  parameter int HOUT_MAX  = 32,
+  parameter int WOUT_MAX  = 32,
   // Maximum filter count visible to pooling_mode2 row buffers.
   // Keep this >= largest F_cur used by Mode 2 benchmarks.
-  parameter int F_MAX     = 512,
+  parameter int F_MAX     = 64,
   parameter int WB_LANES  = PF*PC,
   parameter int WB_ADDR_W = 12
 )(

@@ -1,11 +1,11 @@
 module ifm_buffer #(
     parameter int DATA_W = 8,
-    parameter int PV_MAX = 16,
+    parameter int PV_MAX = 8,
     parameter int PC     = 16,    // fixed for mode 2, also WT = PC
-    parameter int C_MAX  = 512,
-    parameter int W_MAX  = 224,
-    parameter int H_MAX  = 224,
-    parameter int HT     = 8,    // fixed tile height for mode 1
+    parameter int C_MAX  = 64,
+    parameter int W_MAX  = 32,
+    parameter int H_MAX  = 32,
+    parameter int HT     = 4,    // fixed tile height for mode 1
     // DEPTH must cover both layouts:
     //   mode 1: HT rows * W_MAX words/row
     //   mode 2: H_MAX rows, because mode-2 folds cgrp into the bank index:

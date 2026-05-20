@@ -1,0 +1,47 @@
+{
+  "script": "pack_ifm_for_cnn_v4.py",
+  "purpose": "Pack initial IFM tensor into CNN_V4 DDR layout for IFM preload",
+  "input_npy": "eval\\assets\\vgg16_like_32_p128\\inputs\\img0000\\input_uint8_hwc.npy",
+  "output_hex": "eval\\assets\\vgg16_like_32_p128\\inputs\\img0000\\ifm_ddr_cnnv4.hex",
+  "input_layout": "HWC",
+  "input_shape_hwc": [
+    32,
+    32,
+    3
+  ],
+  "input_dtype": "uint8",
+  "mode_encoding": "RTL: 0=MODE1, 1=MODE2",
+  "config": {
+    "h": 32,
+    "w": 32,
+    "c": 3,
+    "dse_layer_name": "L0",
+    "mode": 0,
+    "mode_name": "MODE1",
+    "pv_cur": 8
+  },
+  "layout": {
+    "layout": "mode1_channel_row_colgroup",
+    "mode": 0,
+    "pv_cur": 8,
+    "word_lanes": 8,
+    "h": 32,
+    "w": 32,
+    "c": 3,
+    "col_groups": 4,
+    "num_words": 384,
+    "formula": "word_index = ch * H * ceil(W/Pv) + row * ceil(W/Pv) + col_group"
+  },
+  "word_pack": {
+    "data_width_bits": 8,
+    "word_lanes": 8,
+    "word_bits": 64,
+    "endianness": "little-endian lanes: lane0 -> bits[7:0]",
+    "hex_digits_per_line": 16
+  },
+  "notes": [
+    "This packs only the external DDR initial IFM for layer 0 / selected layer.",
+    "Inter-layer OFM->IFM refill/handoff is handled by RTL, not by this script.",
+    "For run_kv260_eval.tcl, keep word_lanes=4 unless your runner supports wider words."
+  ]
+}

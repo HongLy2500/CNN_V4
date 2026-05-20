@@ -1,11 +1,11 @@
 module data_register_mode1 #(
   parameter int K_MAX   = 7,
-  parameter int W_MAX   = 224,
+  parameter int W_MAX   = 32,
   parameter int DATA_W  = 8,
-  parameter int PV_MAX  = 16,
+  parameter int PV_MAX  = 8,
   // Kept for backward compatibility with existing named-parameter
   // instantiations while mode-1 data path is logically Pv-wide.
-  parameter int PTOTAL  = 256
+  parameter int PTOTAL  = 128
 )(
   input  logic clk,
   input  logic rst_n,

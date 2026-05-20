@@ -4,9 +4,9 @@ module weight_buffer #(
   // In the integrated design this should be PTOTAL.
   parameter int WORD_LANES = 16,
   // Logical read width for mode 1.
-  parameter int PF_MAX     =512,
+  parameter int PF_MAX     = 64,
   parameter int ADDR_W     = 12,
-  parameter int DEPTH      = 4096
+  parameter int DEPTH      = 512
 )(
   input  logic clk,
   input  logic rst_n,
@@ -59,9 +59,13 @@ module weight_buffer #(
   localparam int WORD_W    = WORD_LANES * DATA_W;
   localparam int BASE_W    = (WORD_LANES > 1) ? $clog2(WORD_LANES) : 1;
 
+  (* ram_style = "block" *)
   logic [WORD_W-1:0]       mem0 [0:DEPTH-1];
+  (* ram_style = "block" *)
   logic [WORD_W-1:0]       mem1 [0:DEPTH-1];
+  (* ram_style = "block" *)
   logic [WORD_LANES-1:0]   keep0[0:DEPTH-1];
+  (* ram_style = "block" *)
   logic [WORD_LANES-1:0]   keep1[0:DEPTH-1];
 
   // Registered raw/full-word read request

@@ -1,11 +1,11 @@
 module pooling_mode1 #(
   parameter int DATA_W   = 32,
   parameter int OUT_W    = DATA_W,
-  parameter int PV_MAX   = 16,
+  parameter int PV_MAX   = 8,
   parameter int PF_MAX   = 16,
-  parameter int PTOTAL   = 256,
-  parameter int F_MAX    = 512,
-  parameter int WOUT_MAX = 224
+  parameter int PTOTAL   = 128,
+  parameter int F_MAX    = 64,
+  parameter int WOUT_MAX = 32
 )(
   input  logic clk,
   input  logic rst_n,

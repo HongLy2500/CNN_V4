@@ -1,11 +1,11 @@
 module ce_mode2_top #(
   parameter int DATA_W    = 8,
   parameter int PSUM_W    = 32,
-  parameter int K_MAX     = 7,
+  parameter int K_MAX     = 3,
   parameter int PC        = 16,
-  parameter int PF        = 16,
-  parameter int HOUT_MAX  = 224,
-  parameter int WOUT_MAX  = 224,
+  parameter int PF        = 8,
+  parameter int HOUT_MAX  = 32,
+  parameter int WOUT_MAX  = 32,
   // Physical word width shared with weight_buffer.WORD_LANES.
   // Mode 2 consumes the low PF*PC logical lanes from this physical word.
   parameter int WB_LANES  = 32,

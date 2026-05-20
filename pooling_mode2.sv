@@ -1,10 +1,10 @@
 module pooling_mode2 #(
   parameter int DATA_W = 32,   // width after ReLU / MAC output
   parameter int OUT_W  = DATA_W,
-  parameter int PF     = 16,    // fixed filter parallelism in mode 2
-  parameter int W_MAX  = 224,
-  parameter int H_MAX  = 224,
-  parameter int F_MAX  = 512
+  parameter int PF     = 8,    // fixed filter parallelism in mode 2
+  parameter int W_MAX  = 32,
+  parameter int H_MAX  = 32,
+  parameter int F_MAX  = 64
 )(
   input  logic clk,
   input  logic rst_n,

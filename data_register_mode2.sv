@@ -1,5 +1,5 @@
 module data_register_mode2 #(
-  parameter int K_MAX   = 7,
+  parameter int K_MAX   = 3,
   parameter int DATA_W  = 8,
   parameter int PC      = 16
 )(

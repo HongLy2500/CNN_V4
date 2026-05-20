@@ -2,13 +2,14 @@ module ofm_buffer #(
     parameter int DATA_W   = 8,    // stored OFM width
     parameter int M1_IN_W  = DATA_W, // input width from pooling_mode1/compute top
     parameter int M2_IN_W  = DATA_W, // input width from pooling_mode2/compute top
-    parameter int PV_MAX   = 16,
-    parameter int PC       = 16,
+    parameter int PV_MAX   = 8,
+    parameter int OFM_ROW_STRIDE = 4,
+    parameter int PC       = 8,
     parameter int PF       = 16,
-    parameter int PTOTAL   = 256,
-    parameter int C_MAX    = 512,
-    parameter int H_MAX    = 224,
-    parameter int W_MAX    = 224,
+    parameter int PTOTAL   = 128,
+    parameter int C_MAX    = 64,
+    parameter int H_MAX    = 32,
+    parameter int W_MAX    = 32,
     // Full-FM storage: one bank per channel, one word holds up to PV_MAX pixels.
     //
     // Row-aligned storage: every logical OFM row starts at a fixed physical
@@ -22,8 +23,8 @@ module ofm_buffer #(
     // port.  Existing tests that set DEPTH=H_MAX*W_MAX keep the old safe
     // stride W_MAX.  Full-scale Table-VI tests can set DEPTH=H_MAX*16, which
     // gives OFM_ROW_STRIDE=16.
-    parameter int DEPTH    = H_MAX * W_MAX,
-    parameter int OFM_ROW_STRIDE = (H_MAX > 0) ? (DEPTH / H_MAX) : W_MAX,
+    parameter int DEPTH    = H_MAX * OFM_ROW_STRIDE
+,
     parameter int TAG_W    = 8
 )(
     input  logic clk,
@@ -407,6 +408,10 @@ module ofm_buffer #(
     // ============================================================
     // Latch layer configuration / stream state / write path
     // ============================================================
+    logic [BANK_W-1:0]  stream_bank_v;
+    logic [DEPTH_W-1:0] phys_addr_v;
+    logic [PV_MAX-1:0]  expected_keep_v;
+    logic [TAG_W-1:0]   stream_src_tag_v;
     always_ff @(posedge clk or negedge rst_n) begin
         integer i_tok;
         integer pf_idx;
@@ -1188,12 +1193,8 @@ module ofm_buffer #(
     logic [15:0] abs_row_v;
     logic [15:0] abs_col_base_v;
     logic [15:0] phys_grp_v;
-    logic [DEPTH_W-1:0] phys_addr_v;
-    logic [PV_MAX-1:0]  expected_keep_v;
     logic               word_ready_v;
     logic [WORD_W-1:0]  stream_word_v;
-    logic [BANK_W-1:0]  stream_bank_v;
-    logic [TAG_W-1:0]   stream_src_tag_v;
     logic               m1_to_m2_runtime_exact_v;
 
     always_comb begin

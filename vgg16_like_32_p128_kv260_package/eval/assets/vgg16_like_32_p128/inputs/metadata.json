@@ -1,0 +1,87 @@
+{
+  "source": "ImageNet ILSVRC2012 validation images",
+  "preprocess": "RGB + resize/center-crop to target HxW + raw uint8 HWC",
+  "normalization": "none",
+  "tensor_layout": "HWC",
+  "hex_pack": "HWC flatten, 4 uint8 per 32-bit word, little-endian",
+  "height": 32,
+  "width": 32,
+  "channels": 3,
+  "images": [
+    {
+      "image_id": "img0000",
+      "original_file": "D:\\sdh\\ILSVRC2012_img_val\\ILSVRC2012_val_00000001.JPEG",
+      "npy": "eval\\assets\\vgg16_like_32_p128\\inputs\\img0000\\input_uint8_hwc.npy",
+      "hex": "eval\\assets\\vgg16_like_32_p128\\inputs\\img0000\\input_uint8_hwc_u32le.hex",
+      "preview_png": "eval\\assets\\vgg16_like_32_p128\\inputs\\img0000\\input_preview.png",
+      "shape_hwc": [
+        32,
+        32,
+        3
+      ],
+      "num_pixels": 1024,
+      "num_bytes": 3072,
+      "num_u32_words": 768
+    },
+    {
+      "image_id": "img0001",
+      "original_file": "D:\\sdh\\ILSVRC2012_img_val\\ILSVRC2012_val_00000002.JPEG",
+      "npy": "eval\\assets\\vgg16_like_32_p128\\inputs\\img0001\\input_uint8_hwc.npy",
+      "hex": "eval\\assets\\vgg16_like_32_p128\\inputs\\img0001\\input_uint8_hwc_u32le.hex",
+      "preview_png": "eval\\assets\\vgg16_like_32_p128\\inputs\\img0001\\input_preview.png",
+      "shape_hwc": [
+        32,
+        32,
+        3
+      ],
+      "num_pixels": 1024,
+      "num_bytes": 3072,
+      "num_u32_words": 768
+    },
+    {
+      "image_id": "img0002",
+      "original_file": "D:\\sdh\\ILSVRC2012_img_val\\ILSVRC2012_val_00000003.JPEG",
+      "npy": "eval\\assets\\vgg16_like_32_p128\\inputs\\img0002\\input_uint8_hwc.npy",
+      "hex": "eval\\assets\\vgg16_like_32_p128\\inputs\\img0002\\input_uint8_hwc_u32le.hex",
+      "preview_png": "eval\\assets\\vgg16_like_32_p128\\inputs\\img0002\\input_preview.png",
+      "shape_hwc": [
+        32,
+        32,
+        3
+      ],
+      "num_pixels": 1024,
+      "num_bytes": 3072,
+      "num_u32_words": 768
+    },
+    {
+      "image_id": "img0003",
+      "original_file": "D:\\sdh\\ILSVRC2012_img_val\\ILSVRC2012_val_00000004.JPEG",
+      "npy": "eval\\assets\\vgg16_like_32_p128\\inputs\\img0003\\input_uint8_hwc.npy",
+      "hex": "eval\\assets\\vgg16_like_32_p128\\inputs\\img0003\\input_uint8_hwc_u32le.hex",
+      "preview_png": "eval\\assets\\vgg16_like_32_p128\\inputs\\img0003\\input_preview.png",
+      "shape_hwc": [
+        32,
+        32,
+        3
+      ],
+      "num_pixels": 1024,
+      "num_bytes": 3072,
+      "num_u32_words": 768
+    },
+    {
+      "image_id": "img0004",
+      "original_file": "D:\\sdh\\ILSVRC2012_img_val\\ILSVRC2012_val_00000005.JPEG",
+      "npy": "eval\\assets\\vgg16_like_32_p128\\inputs\\img0004\\input_uint8_hwc.npy",
+      "hex": "eval\\assets\\vgg16_like_32_p128\\inputs\\img0004\\input_uint8_hwc_u32le.hex",
+      "preview_png": "eval\\assets\\vgg16_like_32_p128\\inputs\\img0004\\input_preview.png",
+      "shape_hwc": [
+        32,
+        32,
+        3
+      ],
+      "num_pixels": 1024,
+      "num_bytes": 3072,
+      "num_u32_words": 768
+    }
+  ]
+}

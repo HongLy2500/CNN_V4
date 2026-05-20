@@ -1,0 +1,2 @@
+benchmark,input_h,input_w,max_c,max_f,layers,ptotal,pv,pf,pc,final_h,final_w,final_c
+vgg16_like_32_p128,32,32,64,64,13,128,8,16,8,1,1,64

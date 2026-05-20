@@ -1,0 +1,14 @@
+layer_id,layer_name,mode,mode_name,wgt_ddr_base_word,offset_ddr_words,offset_physical_words,num_ddr_words,num_physical_words,ptotal,ddr_word_lanes,subwords_per_physical,shape_f_c_k_k,pv_m1,pf_m1,pc_m2,pf_m2,weight_i8_npy
+0,L0,0,MODE1,32768,0,0,64,4,128,8,16,16x3x3x3,8,16,0,0,eval\assets\vgg16_like_32_p128\weights\layers\layer00_L0_weight_i8.npy
+1,L1,0,MODE1,32832,64,4,288,18,128,8,16,16x16x3x3,8,16,0,0,eval\assets\vgg16_like_32_p128\weights\layers\layer01_L1_weight_i8.npy
+2,L2,0,MODE1,33120,352,22,576,36,128,8,16,32x16x3x3,8,16,0,0,eval\assets\vgg16_like_32_p128\weights\layers\layer02_L2_weight_i8.npy
+3,L3,0,MODE1,33696,928,58,1152,72,128,8,16,32x32x3x3,8,16,0,0,eval\assets\vgg16_like_32_p128\weights\layers\layer03_L3_weight_i8.npy
+4,L4,1,MODE2,34848,2080,130,2304,144,128,8,16,64x32x3x3,0,0,8,16,eval\assets\vgg16_like_32_p128\weights\layers\layer04_L4_weight_i8.npy
+5,L5,1,MODE2,37152,4384,274,4608,288,128,8,16,64x64x3x3,0,0,8,16,eval\assets\vgg16_like_32_p128\weights\layers\layer05_L5_weight_i8.npy
+6,L6,1,MODE2,41760,8992,562,4608,288,128,8,16,64x64x3x3,0,0,8,16,eval\assets\vgg16_like_32_p128\weights\layers\layer06_L6_weight_i8.npy
+7,L7,1,MODE2,46368,13600,850,4608,288,128,8,16,64x64x3x3,0,0,8,16,eval\assets\vgg16_like_32_p128\weights\layers\layer07_L7_weight_i8.npy
+8,L8,1,MODE2,50976,18208,1138,4608,288,128,8,16,64x64x3x3,0,0,8,16,eval\assets\vgg16_like_32_p128\weights\layers\layer08_L8_weight_i8.npy
+9,L9,1,MODE2,55584,22816,1426,4608,288,128,8,16,64x64x3x3,0,0,8,16,eval\assets\vgg16_like_32_p128\weights\layers\layer09_L9_weight_i8.npy
+10,L10,1,MODE2,60192,27424,1714,4608,288,128,8,16,64x64x3x3,0,0,8,16,eval\assets\vgg16_like_32_p128\weights\layers\layer10_L10_weight_i8.npy
+11,L11,1,MODE2,64800,32032,2002,4608,288,128,8,16,64x64x3x3,0,0,8,16,eval\assets\vgg16_like_32_p128\weights\layers\layer11_L11_weight_i8.npy
+12,L12,1,MODE2,69408,36640,2290,4608,288,128,8,16,64x64x3x3,0,0,8,16,eval\assets\vgg16_like_32_p128\weights\layers\layer12_L12_weight_i8.npy

@@ -1,0 +1,33 @@
+{
+  "benchmark": "vgg16_like_32_p128",
+  "data_w": 8,
+  "psum_w": 32,
+  "ptotal": 128,
+  "pv_max": 8,
+  "pf_max": 16,
+  "pc_mode2": 8,
+  "pf_mode2": 16,
+  "h_max": 32,
+  "w_max": 32,
+  "c_max": 64,
+  "f_max": 64,
+  "k_max": 3,
+  "ht": 4,
+  "cfg_depth": 16,
+  "ddr_word_bits": 64,
+  "ddr_word_bytes": 8,
+  "ofm_row_stride": 4,
+  "ofm_bank_depth": 128,
+  "ofm_linear_depth": 8192,
+  "wgt_depth": 512,
+  "ddr_bases_word": {
+    "ifm": "0x00000",
+    "wgt": "0x08000",
+    "ofm": "0xF0000"
+  },
+  "notes": [
+    "Board-safe VGG16-like 13-conv profile. Config descriptors are local to the KV260 eval top, not in cnn_layer_desc_pkg.sv.",
+    "Use stable cnn_layer_desc_pkg.sv with DIM_W=16 and type-only package.",
+    "AXI_DATA_W=DDR_WORD_W=64 for PV_MAX=8; reconnect/regenerate BD if previous IP had 128-bit AXI port."
+  ]
+}

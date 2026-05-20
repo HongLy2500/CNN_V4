@@ -1,13 +1,13 @@
 module ce_mode1_top #(
   parameter int DATA_W     = 8,
   parameter int PSUM_W     = 32,
-  parameter int K_MAX      = 7,
-  parameter int W_MAX      = 224,
-  parameter int PV_MAX     = 16,
+  parameter int K_MAX      = 3,
+  parameter int W_MAX      = 32,
+  parameter int PV_MAX     = 8,
   parameter int PF_MAX     = 16,
-  parameter int PTOTAL     = 256,
-  parameter int HOUT_MAX   = 224,
-  parameter int WOUT_MAX   = 224,
+  parameter int PTOTAL     = 128,
+  parameter int HOUT_MAX   = 32,
+  parameter int WOUT_MAX   = 32,
   // Mode-1 weight path:
   // - weight_buffer stores physical PTOTAL-lane words per address
   // - the mode-1 read port returns one Pf-wide logical chunk per cycle
