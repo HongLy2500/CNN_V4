@@ -2,10 +2,16 @@
   "tool": "gen_vgg16_like_weights.py",
   "source": "deterministic INT8 generated weights",
   "layers_csv": "eval\\configs\\vgg16_like_32_p128_layers.csv",
-  "pattern": "deterministic_small",
+  "pattern": "balanced_sparse_varied",
   "seed": 0,
+  "nonzero_per_filter": 6,
+  "max_abs_weight": 2,
   "tensor_layout": "F,C,K,K",
   "dtype": "int8",
+  "notes": [
+    "Sparse varied patterns are for functional verification, not trained-model accuracy.",
+    "They intentionally avoid dense accumulation to reduce full saturation after many layers."
+  ],
   "layers": [
     {
       "layer_id": 0,
@@ -19,8 +25,15 @@
       "weight_i8_npy": "eval\\assets\\vgg16_like_32_p128\\weights\\layers\\layer00_L0_weight_i8.npy",
       "weight_i8_bytes_hex": "eval\\assets\\vgg16_like_32_p128\\weights\\layers\\layer00_L0_weight_i8_bytes.hex",
       "min": -2,
-      "max": 2,
-      "num_weights": 432
+      "max": 1,
+      "num_weights": 432,
+      "nonzero_weights": 96,
+      "density": 0.2222222222222222,
+      "unique_values": [
+        -2,
+        0,
+        1
+      ]
     },
     {
       "layer_id": 1,
@@ -34,8 +47,15 @@
       "weight_i8_npy": "eval\\assets\\vgg16_like_32_p128\\weights\\layers\\layer01_L1_weight_i8.npy",
       "weight_i8_bytes_hex": "eval\\assets\\vgg16_like_32_p128\\weights\\layers\\layer01_L1_weight_i8_bytes.hex",
       "min": -2,
-      "max": 2,
-      "num_weights": 2304
+      "max": 1,
+      "num_weights": 2304,
+      "nonzero_weights": 96,
+      "density": 0.041666666666666664,
+      "unique_values": [
+        -2,
+        0,
+        1
+      ]
     },
     {
       "layer_id": 2,
@@ -49,8 +69,15 @@
       "weight_i8_npy": "eval\\assets\\vgg16_like_32_p128\\weights\\layers\\layer02_L2_weight_i8.npy",
       "weight_i8_bytes_hex": "eval\\assets\\vgg16_like_32_p128\\weights\\layers\\layer02_L2_weight_i8_bytes.hex",
       "min": -2,
-      "max": 2,
-      "num_weights": 4608
+      "max": 1,
+      "num_weights": 4608,
+      "nonzero_weights": 192,
+      "density": 0.041666666666666664,
+      "unique_values": [
+        -2,
+        0,
+        1
+      ]
     },
     {
       "layer_id": 3,
@@ -64,8 +91,15 @@
       "weight_i8_npy": "eval\\assets\\vgg16_like_32_p128\\weights\\layers\\layer03_L3_weight_i8.npy",
       "weight_i8_bytes_hex": "eval\\assets\\vgg16_like_32_p128\\weights\\layers\\layer03_L3_weight_i8_bytes.hex",
       "min": -2,
-      "max": 2,
-      "num_weights": 9216
+      "max": 1,
+      "num_weights": 9216,
+      "nonzero_weights": 192,
+      "density": 0.020833333333333332,
+      "unique_values": [
+        -2,
+        0,
+        1
+      ]
     },
     {
       "layer_id": 4,
@@ -79,8 +113,15 @@
       "weight_i8_npy": "eval\\assets\\vgg16_like_32_p128\\weights\\layers\\layer04_L4_weight_i8.npy",
       "weight_i8_bytes_hex": "eval\\assets\\vgg16_like_32_p128\\weights\\layers\\layer04_L4_weight_i8_bytes.hex",
       "min": -2,
-      "max": 2,
-      "num_weights": 18432
+      "max": 1,
+      "num_weights": 18432,
+      "nonzero_weights": 384,
+      "density": 0.020833333333333332,
+      "unique_values": [
+        -2,
+        0,
+        1
+      ]
     },
     {
       "layer_id": 5,
@@ -94,8 +135,15 @@
       "weight_i8_npy": "eval\\assets\\vgg16_like_32_p128\\weights\\layers\\layer05_L5_weight_i8.npy",
       "weight_i8_bytes_hex": "eval\\assets\\vgg16_like_32_p128\\weights\\layers\\layer05_L5_weight_i8_bytes.hex",
       "min": -2,
-      "max": 2,
-      "num_weights": 36864
+      "max": 1,
+      "num_weights": 36864,
+      "nonzero_weights": 384,
+      "density": 0.010416666666666666,
+      "unique_values": [
+        -2,
+        0,
+        1
+      ]
     },
     {
       "layer_id": 6,
@@ -109,8 +157,15 @@
       "weight_i8_npy": "eval\\assets\\vgg16_like_32_p128\\weights\\layers\\layer06_L6_weight_i8.npy",
       "weight_i8_bytes_hex": "eval\\assets\\vgg16_like_32_p128\\weights\\layers\\layer06_L6_weight_i8_bytes.hex",
       "min": -2,
-      "max": 2,
-      "num_weights": 36864
+      "max": 1,
+      "num_weights": 36864,
+      "nonzero_weights": 384,
+      "density": 0.010416666666666666,
+      "unique_values": [
+        -2,
+        0,
+        1
+      ]
     },
     {
       "layer_id": 7,
@@ -124,8 +179,15 @@
       "weight_i8_npy": "eval\\assets\\vgg16_like_32_p128\\weights\\layers\\layer07_L7_weight_i8.npy",
       "weight_i8_bytes_hex": "eval\\assets\\vgg16_like_32_p128\\weights\\layers\\layer07_L7_weight_i8_bytes.hex",
       "min": -2,
-      "max": 2,
-      "num_weights": 36864
+      "max": 1,
+      "num_weights": 36864,
+      "nonzero_weights": 384,
+      "density": 0.010416666666666666,
+      "unique_values": [
+        -2,
+        0,
+        1
+      ]
     },
     {
       "layer_id": 8,
@@ -139,8 +201,15 @@
       "weight_i8_npy": "eval\\assets\\vgg16_like_32_p128\\weights\\layers\\layer08_L8_weight_i8.npy",
       "weight_i8_bytes_hex": "eval\\assets\\vgg16_like_32_p128\\weights\\layers\\layer08_L8_weight_i8_bytes.hex",
       "min": -2,
-      "max": 2,
-      "num_weights": 36864
+      "max": 1,
+      "num_weights": 36864,
+      "nonzero_weights": 384,
+      "density": 0.010416666666666666,
+      "unique_values": [
+        -2,
+        0,
+        1
+      ]
     },
     {
       "layer_id": 9,
@@ -154,8 +223,15 @@
       "weight_i8_npy": "eval\\assets\\vgg16_like_32_p128\\weights\\layers\\layer09_L9_weight_i8.npy",
       "weight_i8_bytes_hex": "eval\\assets\\vgg16_like_32_p128\\weights\\layers\\layer09_L9_weight_i8_bytes.hex",
       "min": -2,
-      "max": 2,
-      "num_weights": 36864
+      "max": 1,
+      "num_weights": 36864,
+      "nonzero_weights": 384,
+      "density": 0.010416666666666666,
+      "unique_values": [
+        -2,
+        0,
+        1
+      ]
     },
     {
       "layer_id": 10,
@@ -169,8 +245,15 @@
       "weight_i8_npy": "eval\\assets\\vgg16_like_32_p128\\weights\\layers\\layer10_L10_weight_i8.npy",
       "weight_i8_bytes_hex": "eval\\assets\\vgg16_like_32_p128\\weights\\layers\\layer10_L10_weight_i8_bytes.hex",
       "min": -2,
-      "max": 2,
-      "num_weights": 36864
+      "max": 1,
+      "num_weights": 36864,
+      "nonzero_weights": 384,
+      "density": 0.010416666666666666,
+      "unique_values": [
+        -2,
+        0,
+        1
+      ]
     },
     {
       "layer_id": 11,
@@ -184,8 +267,15 @@
       "weight_i8_npy": "eval\\assets\\vgg16_like_32_p128\\weights\\layers\\layer11_L11_weight_i8.npy",
       "weight_i8_bytes_hex": "eval\\assets\\vgg16_like_32_p128\\weights\\layers\\layer11_L11_weight_i8_bytes.hex",
       "min": -2,
-      "max": 2,
-      "num_weights": 36864
+      "max": 1,
+      "num_weights": 36864,
+      "nonzero_weights": 384,
+      "density": 0.010416666666666666,
+      "unique_values": [
+        -2,
+        0,
+        1
+      ]
     },
     {
       "layer_id": 12,
@@ -199,8 +289,15 @@
       "weight_i8_npy": "eval\\assets\\vgg16_like_32_p128\\weights\\layers\\layer12_L12_weight_i8.npy",
       "weight_i8_bytes_hex": "eval\\assets\\vgg16_like_32_p128\\weights\\layers\\layer12_L12_weight_i8_bytes.hex",
       "min": -2,
-      "max": 2,
-      "num_weights": 36864
+      "max": 1,
+      "num_weights": 36864,
+      "nonzero_weights": 384,
+      "density": 0.010416666666666666,
+      "unique_values": [
+        -2,
+        0,
+        1
+      ]
     }
   ]
 }

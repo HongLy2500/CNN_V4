@@ -15,8 +15,8 @@ Default tensor convention
 -------------------------
 Input .npy  : uint8 HWC
 Weight .npy : int8 [F, C, K, K]
-Layer output: uint8 HWC after optional ReLU/store and optional max-pooling
-Hex output  : HWC flatten, 4 uint8 values per 32-bit word, little-endian
+Layer output: uint8 HWC raw bytes after optional ReLU/store and optional max-pooling
+Hex output  : HWC flatten, 4 raw uint8 bytes per 32-bit word, little-endian
 
 Important
 ---------
@@ -216,10 +216,69 @@ def check_groups(layers: List[Dict[str, Any]]) -> None:
         )
 
 
+SIGNED_STORE_POLICIES = {"saturate_s8", "saturate_s8_relu"}
+
+
+def is_signed_store_policy(policy: str) -> bool:
+    return policy in SIGNED_STORE_POLICIES
+
+
+def uint8_raw_to_signed_numpy(arr_u8: np.ndarray) -> np.ndarray:
+    """Interpret raw uint8 bytes as signed int8 values, then widen."""
+    if arr_u8.dtype != np.uint8:
+        raise ValueError(f"Expected uint8 raw bytes, got {arr_u8.dtype}")
+    return arr_u8.view(np.int8).astype(np.int16)
+
+
+def tensor_uint8_raw_to_signed(tensor_u8: torch.Tensor) -> torch.Tensor:
+    """Interpret a torch uint8 tensor as raw signed int8 bytes and widen to int16."""
+    t_i16 = tensor_u8.to(torch.int16)
+    return torch.where(t_i16 >= 128, t_i16 - 256, t_i16)
+
+
+def input_raw_to_compute_numpy(arr_u8: np.ndarray, interpretation: str, compute_dtype: str) -> np.ndarray:
+    """Convert stored input bytes into the numeric values seen by signed/unsigned RTL compute."""
+    np_dtype = np.float64 if compute_dtype == "float64" else np.float32
+    if interpretation == "u8":
+        return arr_u8.astype(np_dtype)
+    if interpretation == "s8_raw":
+        return uint8_raw_to_signed_numpy(arr_u8).astype(np_dtype)
+    raise ValueError(f"Unsupported input interpretation: {interpretation}")
+
+
+def stored_u8_tensor_to_compute(tensor_u8: torch.Tensor, policy: str, dtype: torch.dtype) -> torch.Tensor:
+    """Convert stored layer bytes into numeric values for pooling/next-stage style operations."""
+    if is_signed_store_policy(policy):
+        return tensor_uint8_raw_to_signed(tensor_u8).to(dtype=dtype)
+    return tensor_u8.to(dtype=dtype)
+
+
 def store_to_u8(tensor: torch.Tensor, policy: str) -> torch.Tensor:
-    """Convert integer-valued tensor to uint8 according to RTL store policy."""
+    """Convert integer-valued tensor to raw uint8 bytes according to RTL store policy.
+
+    saturate_s8:
+      clamp to signed INT8 [-128, 127], then store the raw two's-complement byte.
+      With relu_en=1 before store, this naturally becomes [0, 127], matching RTL
+      signed 8-bit ReLU/pooling saturation.
+
+    saturate_s8_relu:
+      force clamp to [0, 127] regardless of layer relu_en, useful for debug vectors.
+
+    saturate_u8:
+      legacy unsigned policy [0, 255].
+    """
     if policy == "saturate_u8":
         return torch.clamp(tensor, 0, 255).to(torch.uint8)
+
+    if policy == "saturate_s8":
+        t_i64 = torch.round(tensor).to(torch.int64)
+        t_i64 = torch.clamp(t_i64, -128, 127)
+        return torch.bitwise_and(t_i64, 0xFF).to(torch.uint8)
+
+    if policy == "saturate_s8_relu":
+        t_i64 = torch.round(tensor).to(torch.int64)
+        t_i64 = torch.clamp(t_i64, 0, 127)
+        return torch.bitwise_and(t_i64, 0xFF).to(torch.uint8)
 
     if policy == "low8_u8":
         # PyTorch bitwise ops require integer tensors. Round first in case the compute tensor is floating.
@@ -240,6 +299,7 @@ def run_conv_relu_pool_layer(
     w_fckk_i8: np.ndarray,
     layer: Dict[str, Any],
     store_policy: str,
+    input_interpretation: str,
     compute_dtype: str,
     device: torch.device,
 ) -> Tuple[np.ndarray, np.ndarray]:
@@ -266,8 +326,10 @@ def run_conv_relu_pool_layer(
 
     dtype = torch.float64 if compute_dtype == "float64" else torch.float32
 
-    # HWC -> NCHW
-    x = torch.from_numpy(x_hwc_u8.astype(np.float64 if compute_dtype == "float64" else np.float32))
+    # HWC raw bytes -> numeric tensor -> NCHW.
+    # For signed INT8 RTL, raw bytes 0x80..0xFF must be interpreted as -128..-1.
+    x_np = input_raw_to_compute_numpy(x_hwc_u8, input_interpretation, compute_dtype)
+    x = torch.from_numpy(x_np)
     x = x.permute(2, 0, 1).unsqueeze(0).to(device=device, dtype=dtype)
 
     w = torch.from_numpy(w_fckk_i8.astype(np.float64 if compute_dtype == "float64" else np.float32))
@@ -296,7 +358,8 @@ def run_conv_relu_pool_layer(
         pool_stride = as_int(pool_cfg.get("stride", pool_k), pool_k)
         pool_pad = as_int(pool_cfg.get("pad", 0), 0)
         # Pool operates on the stored 8-bit ReLU/conv output, matching a Conv -> ReLU -> Pooling pipeline.
-        y_pool_in = y_u8.to(torch.float64 if compute_dtype == "float64" else torch.float32)
+        # For signed INT8 storage, raw bytes are interpreted as signed before max-pool.
+        y_pool_in = stored_u8_tensor_to_compute(y_u8, store_policy, torch.float64 if compute_dtype == "float64" else torch.float32)
         y_pool = F.max_pool2d(y_pool_in, kernel_size=pool_k, stride=pool_stride, padding=pool_pad)
         y_pool_u8 = store_to_u8(torch.round(y_pool).to(torch.int64), store_policy)
         final_hwc = y_pool_u8.squeeze(0).permute(1, 2, 0).contiguous().cpu().numpy()
@@ -373,9 +436,22 @@ def main() -> int:
     parser.add_argument("--out-dir", required=True, help="Output directory for golden tensors and expected hex.")
     parser.add_argument(
         "--store-policy",
-        choices=["saturate_u8", "low8_u8"],
-        default="saturate_u8",
-        help="How each layer output is converted to uint8 before feeding the next layer.",
+        choices=["saturate_s8", "saturate_s8_relu", "saturate_u8", "low8_u8"],
+        default="saturate_s8",
+        help=(
+            "How each layer output is converted to raw uint8 bytes before feeding the next layer. "
+            "Use saturate_s8 for current signed-DATA_W RTL: clamp to [-128,127] and store two's-complement bytes. "
+            "With relu_en=1 this clamps to [0,127]."
+        ),
+    )
+    parser.add_argument(
+        "--input-interpretation",
+        choices=["auto", "u8", "s8_raw"],
+        default="auto",
+        help=(
+            "How to interpret input .npy uint8 bytes during convolution. "
+            "auto uses s8_raw for signed store policies and u8 for legacy unsigned policies."
+        ),
     )
     parser.add_argument(
         "--compute-dtype",
@@ -428,6 +504,10 @@ def main() -> int:
     weights_dir = Path(args.weights_dir)
     out_dir = Path(args.out_dir)
 
+    input_interpretation = args.input_interpretation
+    if input_interpretation == "auto":
+        input_interpretation = "s8_raw" if is_signed_store_policy(args.store_policy) else "u8"
+
     if out_dir.exists() and any(out_dir.iterdir()) and not args.overwrite:
         raise SystemExit(
             f"ERROR: Output directory already exists and is not empty: {out_dir}\n"
@@ -466,7 +546,7 @@ def main() -> int:
     print(f"Weights dir: {weights_dir}")
     print(f"Output dir : {out_dir}")
     print(f"Layers     : {len(layers)}")
-    print(f"Policy     : store={args.store_policy}, compute_dtype={args.compute_dtype}\n")
+    print(f"Policy     : store={args.store_policy}, input_interpretation={input_interpretation}, compute_dtype={args.compute_dtype}\n")
 
     for idx, layer in enumerate(layers):
         layer_id = as_int(layer.get("id", idx), idx)
@@ -482,6 +562,7 @@ def main() -> int:
             w_fckk_i8=weight,
             layer=layer,
             store_policy=args.store_policy,
+            input_interpretation=input_interpretation,
             compute_dtype=args.compute_dtype,
             device=device,
         )
@@ -557,10 +638,15 @@ def main() -> int:
         "weights_metadata": str(weights_metadata_path) if weights_metadata_path is not None else None,
         "num_layers_run": len(layers),
         "store_policy": args.store_policy,
+        "input_interpretation": input_interpretation,
         "compute_dtype": args.compute_dtype,
         "device": args.device,
         "output_tensor_layout": "HWC",
-        "output_dtype": "uint8",
+        "output_dtype": "uint8 raw bytes",
+        "output_value_semantics": (
+            "signed int8 two's-complement raw bytes" if is_signed_store_policy(args.store_policy)
+            else "unsigned uint8 raw bytes"
+        ),
         "linear_hex_pack": {
             "file": str(final_hex),
             "flatten_order": "HWC NumPy row-major",

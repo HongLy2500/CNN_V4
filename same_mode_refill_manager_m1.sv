@@ -58,23 +58,27 @@ module same_mode_refill_manager_m1 #(
   output logic                    ready_fifo_full
 );
 
+  localparam int SLOT_W  = (HT <= 1) ? 1 : $clog2(HT);
   localparam int DEPTH_W = (TOKEN_DEPTH <= 1) ? 1 : $clog2(TOKEN_DEPTH+1);
+  localparam int IDX_W   = (TOKEN_DEPTH <= 1) ? 1 : $clog2(TOKEN_DEPTH);
 
-  typedef struct packed {
-    logic [$clog2(HT)-1:0] row_slot_l;
-    logic [H_W-1:0]        row_g;
-    logic [COLG_W-1:0]     col_blk_g;
-    logic [CHG_W-1:0]      ch_blk_g;
-  } free_tok_t;
+  // --------------------------------------------------------------------------
+  // Token storage
+  // --------------------------------------------------------------------------
+  // Do not use array-of-struct for the stored tokens.  Vivado can report
+  // "both Set and reset with same priority" on individual struct fields after
+  // expanding dynamic-index writes.  Payload is split into simple field arrays
+  // and is intentionally NOT reset; valid bits/counts define whether a slot is
+  // meaningful.
 
-  typedef struct packed {
-    logic [H_W-1:0]        row_g;
-    logic [COLG_W-1:0]     col_blk_g;
-    logic [CHG_W-1:0]      ch_blk_g;
-  } ready_tok_t;
+  logic [SLOT_W-1:0]  free_row_slot_l_q [0:TOKEN_DEPTH-1];
+  logic [H_W-1:0]     free_row_g_q      [0:TOKEN_DEPTH-1];
+  logic [COLG_W-1:0]  free_col_blk_g_q  [0:TOKEN_DEPTH-1];
+  logic [CHG_W-1:0]   free_ch_blk_g_q   [0:TOKEN_DEPTH-1];
 
-  free_tok_t  free_mem  [0:TOKEN_DEPTH-1];
-  ready_tok_t ready_mem [0:TOKEN_DEPTH-1];
+  logic [H_W-1:0]     ready_row_g_q     [0:TOKEN_DEPTH-1];
+  logic [COLG_W-1:0]  ready_col_blk_g_q [0:TOKEN_DEPTH-1];
+  logic [CHG_W-1:0]   ready_ch_blk_g_q  [0:TOKEN_DEPTH-1];
 
   logic [TOKEN_DEPTH-1:0] free_v_q,  free_v_d;
   logic [TOKEN_DEPTH-1:0] ready_v_q, ready_v_d;
@@ -83,186 +87,273 @@ module same_mode_refill_manager_m1 #(
   logic [DEPTH_W-1:0] ready_count_q, ready_count_d;
 
   logic req_pending_q, req_pending_d;
-  free_tok_t req_tok_q, req_tok_d;
+  logic [SLOT_W-1:0]  req_row_slot_l_q, req_row_slot_l_d;
+  logic [H_W-1:0]     req_row_g_q,      req_row_g_d;
+  logic [COLG_W-1:0]  req_col_blk_g_q,  req_col_blk_g_d;
+  logic [CHG_W-1:0]   req_ch_blk_g_q,   req_ch_blk_g_d;
 
   logic overflow_err_q, overflow_err_d;
 
-  integer i;
-
-  function automatic logic id_match_fr(
-    input free_tok_t f,
-    input ready_tok_t r
-  );
-    begin
-      id_match_fr = (f.row_g     == r.row_g) &&
-                    (f.col_blk_g == r.col_blk_g) &&
-                    (f.ch_blk_g  == r.ch_blk_g);
-    end
-  endfunction
-
+  // Match / empty search results.
   logic found_ready_match_free;
   logic found_free_match_ready;
   logic [TOKEN_DEPTH-1:0] free_match_mask, ready_match_mask;
-  logic [$clog2(TOKEN_DEPTH)-1:0] free_match_idx, ready_match_idx;
+  logic [IDX_W-1:0] free_match_idx, ready_match_idx;
 
-  logic [TOKEN_DEPTH-1:0] free_first_empty_mask, ready_first_empty_mask;
   logic free_has_empty, ready_has_empty;
-  logic [$clog2(TOKEN_DEPTH)-1:0] free_empty_idx, ready_empty_idx;
+  logic [IDX_W-1:0] free_empty_idx, ready_empty_idx;
 
-  free_tok_t  in_free_tok;
-  ready_tok_t in_ready_tok;
+  // Transaction decisions.
+  logic free_to_req;
+  logic ready_to_req;
+  logic free_enqueue;
+  logic ready_enqueue;
+  logic free_store_has_space;
+  logic ready_store_has_space;
+  logic [IDX_W-1:0] free_store_idx;
+  logic [IDX_W-1:0] ready_store_idx;
 
-  assign in_free_tok.row_slot_l = free_row_slot_l;
-  assign in_free_tok.row_g      = free_row_g;
-  assign in_free_tok.col_blk_g  = free_col_blk_g;
-  assign in_free_tok.ch_blk_g   = free_ch_blk_g;
+  // Valid-bit update masks.  This avoids multiple procedural assignments to the
+  // same valid vector elements in different branches.
+  logic [TOKEN_DEPTH-1:0] free_set_mask,  free_clr_mask;
+  logic [TOKEN_DEPTH-1:0] ready_set_mask, ready_clr_mask;
 
-  assign in_ready_tok.row_g     = ready_row_g;
-  assign in_ready_tok.col_blk_g = ready_col_blk_g;
-  assign in_ready_tok.ch_blk_g  = ready_ch_blk_g;
+  // Payload write enables.  The actual stored payload fields are written only
+  // in one sequential loop below, one clear priority point per field.
+  logic [TOKEN_DEPTH-1:0] free_payload_we;
+  logic [TOKEN_DEPTH-1:0] ready_payload_we;
 
+  // --------------------------------------------------------------------------
+  // Associative search: stored FREE vs incoming READY, stored READY vs incoming FREE.
+  // --------------------------------------------------------------------------
   always_comb begin
-    free_match_mask         = '0;
-    ready_match_mask        = '0;
-    free_match_idx          = '0;
-    ready_match_idx         = '0;
-    found_free_match_ready  = 1'b0;
-    found_ready_match_free  = 1'b0;
+    free_match_mask        = '0;
+    ready_match_mask       = '0;
+    free_match_idx         = '0;
+    ready_match_idx        = '0;
+    found_free_match_ready = 1'b0;
+    found_ready_match_free = 1'b0;
 
-    free_first_empty_mask   = '0;
-    ready_first_empty_mask  = '0;
-    free_has_empty          = 1'b0;
-    ready_has_empty         = 1'b0;
-    free_empty_idx          = '0;
-    ready_empty_idx         = '0;
+    free_has_empty         = 1'b0;
+    ready_has_empty        = 1'b0;
+    free_empty_idx         = '0;
+    ready_empty_idx        = '0;
 
-    for (i = 0; i < TOKEN_DEPTH; i++) begin
-      if (free_v_q[i] && id_match_fr(free_mem[i], in_ready_tok))
-        free_match_mask[i] = 1'b1;
-      if (ready_v_q[i] && id_match_fr(in_free_tok, ready_mem[i]))
-        ready_match_mask[i] = 1'b1;
-
-      if (!free_has_empty && !free_v_q[i]) begin
-        free_has_empty = 1'b1;
-        free_empty_idx = i[$clog2(TOKEN_DEPTH)-1:0];
+    for (int scan_i = 0; scan_i < TOKEN_DEPTH; scan_i = scan_i + 1) begin
+      if (free_v_q[scan_i] &&
+          (free_row_g_q[scan_i]     == ready_row_g) &&
+          (free_col_blk_g_q[scan_i] == ready_col_blk_g) &&
+          (free_ch_blk_g_q[scan_i]  == ready_ch_blk_g)) begin
+        free_match_mask[scan_i] = 1'b1;
       end
-      if (!ready_has_empty && !ready_v_q[i]) begin
+
+      if (ready_v_q[scan_i] &&
+          (ready_row_g_q[scan_i]     == free_row_g) &&
+          (ready_col_blk_g_q[scan_i] == free_col_blk_g) &&
+          (ready_ch_blk_g_q[scan_i]  == free_ch_blk_g)) begin
+        ready_match_mask[scan_i] = 1'b1;
+      end
+
+      if (!free_has_empty && !free_v_q[scan_i]) begin
+        free_has_empty = 1'b1;
+        free_empty_idx = scan_i;
+      end
+
+      if (!ready_has_empty && !ready_v_q[scan_i]) begin
         ready_has_empty = 1'b1;
-        ready_empty_idx = i[$clog2(TOKEN_DEPTH)-1:0];
+        ready_empty_idx = scan_i;
       end
     end
 
-    for (i = 0; i < TOKEN_DEPTH; i++) begin
-      if (!found_free_match_ready && free_match_mask[i]) begin
+    for (int scan_i = 0; scan_i < TOKEN_DEPTH; scan_i = scan_i + 1) begin
+      if (!found_free_match_ready && free_match_mask[scan_i]) begin
         found_free_match_ready = 1'b1;
-        free_match_idx         = i[$clog2(TOKEN_DEPTH)-1:0];
+        free_match_idx         = scan_i;
       end
-      if (!found_ready_match_free && ready_match_mask[i]) begin
+      if (!found_ready_match_free && ready_match_mask[scan_i]) begin
         found_ready_match_free = 1'b1;
-        ready_match_idx        = i[$clog2(TOKEN_DEPTH)-1:0];
+        ready_match_idx        = scan_i;
       end
     end
   end
 
+  // --------------------------------------------------------------------------
+  // Next-state control.  Payload arrays are not written here; this block only
+  // creates payload write-enable masks and valid-bit masks.
+  // --------------------------------------------------------------------------
   always_comb begin
-    free_v_d       = free_v_q;
-    ready_v_d      = ready_v_q;
-    free_count_d   = free_count_q;
-    ready_count_d  = ready_count_q;
-    req_pending_d  = req_pending_q;
-    req_tok_d      = req_tok_q;
-    overflow_err_d = overflow_err_q;
+    free_count_d       = free_count_q;
+    ready_count_d      = ready_count_q;
+    req_pending_d      = req_pending_q;
+    req_row_slot_l_d   = req_row_slot_l_q;
+    req_row_g_d        = req_row_g_q;
+    req_col_blk_g_d    = req_col_blk_g_q;
+    req_ch_blk_g_d     = req_ch_blk_g_q;
+    overflow_err_d     = overflow_err_q;
 
-    // consume pending request on handshake
+    free_to_req           = 1'b0;
+    ready_to_req          = 1'b0;
+    free_enqueue          = 1'b0;
+    ready_enqueue         = 1'b0;
+    free_store_has_space  = 1'b0;
+    ready_store_has_space = 1'b0;
+    free_store_idx        = free_empty_idx;
+    ready_store_idx       = ready_empty_idx;
+
+    free_set_mask         = '0;
+    free_clr_mask         = '0;
+    ready_set_mask        = '0;
+    ready_clr_mask        = '0;
+    free_payload_we       = '0;
+    ready_payload_we      = '0;
+
+    // Consume a pending request on handshake first.  This permits same-cycle
+    // accept of an old request and generation of a new request.
     if (req_pending_q && refill_req_ready) begin
       req_pending_d = 1'b0;
     end
 
-    // free token arrives
+    // Incoming FREE token.
     if (free_valid) begin
       if (!req_pending_d && found_ready_match_free) begin
-        req_pending_d                 = 1'b1;
-        req_tok_d.row_slot_l          = free_row_slot_l;
-        req_tok_d.row_g               = free_row_g;
-        req_tok_d.col_blk_g           = free_col_blk_g;
-        req_tok_d.ch_blk_g            = free_ch_blk_g;
-        ready_v_d[ready_match_idx]    = 1'b0;
-        if (ready_count_q != 0)
-          ready_count_d = ready_count_q - 1'b1;
-      end
-      else if (free_has_empty) begin
-        free_v_d[free_empty_idx]      = 1'b1;
-        free_count_d                  = free_count_q + 1'b1;
-      end
-      else begin
-        overflow_err_d = 1'b1;
+        free_to_req        = 1'b1;
+        req_pending_d      = 1'b1;
+        req_row_slot_l_d   = free_row_slot_l;
+        req_row_g_d        = free_row_g;
+        req_col_blk_g_d    = free_col_blk_g;
+        req_ch_blk_g_d     = free_ch_blk_g;
+        ready_clr_mask[ready_match_idx] = 1'b1;
+        if (ready_count_d != 0)
+          ready_count_d = ready_count_d - 1'b1;
+      end else begin
+        free_enqueue = 1'b1;
       end
     end
 
-    // ready token arrives
+    // Incoming READY token.
     if (ready_valid) begin
       if (!req_pending_d && found_free_match_ready) begin
-        req_pending_d                 = 1'b1;
-        req_tok_d                     = free_mem[free_match_idx];
-        free_v_d[free_match_idx]      = 1'b0;
+        ready_to_req       = 1'b1;
+        req_pending_d      = 1'b1;
+        req_row_slot_l_d   = free_row_slot_l_q[free_match_idx];
+        req_row_g_d        = free_row_g_q[free_match_idx];
+        req_col_blk_g_d    = free_col_blk_g_q[free_match_idx];
+        req_ch_blk_g_d     = free_ch_blk_g_q[free_match_idx];
+        free_clr_mask[free_match_idx] = 1'b1;
         if (free_count_d != 0)
           free_count_d = free_count_d - 1'b1;
+      end else begin
+        ready_enqueue = 1'b1;
       end
-      else if (ready_has_empty) begin
-        ready_v_d[ready_empty_idx]    = 1'b1;
-        ready_count_d                 = ready_count_q + 1'b1;
-      end
-      else begin
+    end
+
+    // Direct same-cycle FREE/READY match if neither matched existing storage.
+    if (free_enqueue && ready_enqueue && !req_pending_d &&
+        (free_row_g     == ready_row_g) &&
+        (free_col_blk_g == ready_col_blk_g) &&
+        (free_ch_blk_g  == ready_ch_blk_g)) begin
+      free_enqueue    = 1'b0;
+      ready_enqueue   = 1'b0;
+      req_pending_d   = 1'b1;
+      req_row_slot_l_d = free_row_slot_l;
+      req_row_g_d      = free_row_g;
+      req_col_blk_g_d  = free_col_blk_g;
+      req_ch_blk_g_d   = free_ch_blk_g;
+    end
+
+    // Reuse a slot that was consumed earlier in this cycle, if no empty slot
+    // existed before the cycle.
+    free_store_has_space  = free_has_empty  || ready_to_req;
+    ready_store_has_space = ready_has_empty || free_to_req;
+    free_store_idx        = free_has_empty  ? free_empty_idx  : free_match_idx;
+    ready_store_idx       = ready_has_empty ? ready_empty_idx : ready_match_idx;
+
+    if (free_enqueue) begin
+      if (free_store_has_space) begin
+        free_set_mask[free_store_idx] = 1'b1;
+        free_payload_we[free_store_idx] = 1'b1;
+        free_count_d = free_count_d + 1'b1;
+      end else begin
         overflow_err_d = 1'b1;
       end
     end
 
-    // write arriving tokens into memories
-    if (free_valid && (!req_pending_d || !found_ready_match_free) && free_has_empty) begin
-      // handled in sequential memory write
+    if (ready_enqueue) begin
+      if (ready_store_has_space) begin
+        ready_set_mask[ready_store_idx] = 1'b1;
+        ready_payload_we[ready_store_idx] = 1'b1;
+        ready_count_d = ready_count_d + 1'b1;
+      end else begin
+        overflow_err_d = 1'b1;
+      end
     end
-    if (ready_valid && (!req_pending_d || !found_free_match_ready) && ready_has_empty) begin
-      // handled in sequential memory write
+
+    free_v_d  = (free_v_q  & ~free_clr_mask)  | free_set_mask;
+    ready_v_d = (ready_v_q & ~ready_clr_mask) | ready_set_mask;
+  end
+
+  // --------------------------------------------------------------------------
+  // Registers.
+  //
+  // Vivado note:
+  //   Payload token arrays are intentionally updated in a separate clock-only
+  //   process below.  Do not put them in this async-reset process, otherwise
+  //   Vivado may report "both Set and reset with same priority" for each
+  //   payload field even when the reset branch does not explicitly assign it.
+  // --------------------------------------------------------------------------
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      free_v_q         <= '0;
+      ready_v_q        <= '0;
+      free_count_q     <= '0;
+      ready_count_q    <= '0;
+      req_pending_q    <= 1'b0;
+      req_row_slot_l_q <= '0;
+      req_row_g_q      <= '0;
+      req_col_blk_g_q  <= '0;
+      req_ch_blk_g_q   <= '0;
+      overflow_err_q   <= 1'b0;
+    end else begin
+      free_v_q         <= free_v_d;
+      ready_v_q        <= ready_v_d;
+      free_count_q     <= free_count_d;
+      ready_count_q    <= ready_count_d;
+      req_pending_q    <= req_pending_d;
+      req_row_slot_l_q <= req_row_slot_l_d;
+      req_row_g_q      <= req_row_g_d;
+      req_col_blk_g_q  <= req_col_blk_g_d;
+      req_ch_blk_g_q   <= req_ch_blk_g_d;
+      overflow_err_q   <= overflow_err_d;
     end
   end
 
-  always_ff @(posedge clk or negedge rst_n) begin
-    if (!rst_n) begin
-      free_v_q       <= '0;
-      ready_v_q      <= '0;
-      free_count_q   <= '0;
-      ready_count_q  <= '0;
-      req_pending_q  <= 1'b0;
-      req_tok_q      <= '0;
-      overflow_err_q <= 1'b0;
-    end
-    else begin
-      free_v_q       <= free_v_d;
-      ready_v_q      <= ready_v_d;
-      free_count_q   <= free_count_d;
-      ready_count_q  <= ready_count_d;
-      req_pending_q  <= req_pending_d;
-      req_tok_q      <= req_tok_d;
-      overflow_err_q <= overflow_err_d;
-
-      if (free_valid && (!( !req_pending_d && found_ready_match_free)) && free_has_empty) begin
-        free_mem[free_empty_idx] <= in_free_tok;
+  // Token payload store: no reset by design.  A payload entry is meaningful
+  // only when the corresponding valid bit in free_v_q/ready_v_q is set.
+  always_ff @(posedge clk) begin
+    for (int seq_i = 0; seq_i < TOKEN_DEPTH; seq_i = seq_i + 1) begin
+      if (free_payload_we[seq_i]) begin
+        free_row_slot_l_q[seq_i] <= free_row_slot_l;
+        free_row_g_q[seq_i]      <= free_row_g;
+        free_col_blk_g_q[seq_i]  <= free_col_blk_g;
+        free_ch_blk_g_q[seq_i]   <= free_ch_blk_g;
       end
 
-      if (ready_valid && (!( !req_pending_d && found_free_match_ready)) && ready_has_empty) begin
-        ready_mem[ready_empty_idx] <= in_ready_tok;
+      if (ready_payload_we[seq_i]) begin
+        ready_row_g_q[seq_i]     <= ready_row_g;
+        ready_col_blk_g_q[seq_i] <= ready_col_blk_g;
+        ready_ch_blk_g_q[seq_i]  <= ready_ch_blk_g;
       end
     end
   end
 
   assign refill_req_valid   = req_pending_q;
-  assign refill_row_slot_l  = req_tok_q.row_slot_l;
-  assign refill_row_g       = req_tok_q.row_g;
-  assign refill_col_blk_g   = req_tok_q.col_blk_g;
-  assign refill_ch_blk_g    = req_tok_q.ch_blk_g;
+  assign refill_row_slot_l  = req_row_slot_l_q;
+  assign refill_row_g       = req_row_g_q;
+  assign refill_col_blk_g   = req_col_blk_g_q;
+  assign refill_ch_blk_g    = req_ch_blk_g_q;
 
-  assign free_fifo_full     = (free_count_q == TOKEN_DEPTH[DEPTH_W-1:0]);
-  assign ready_fifo_full    = (ready_count_q == TOKEN_DEPTH[DEPTH_W-1:0]);
+  assign free_fifo_full     = (free_count_q >= TOKEN_DEPTH);
+  assign ready_fifo_full    = (ready_count_q >= TOKEN_DEPTH);
   assign busy               = req_pending_q || (free_count_q != 0) || (ready_count_q != 0);
   assign error              = overflow_err_q;
 

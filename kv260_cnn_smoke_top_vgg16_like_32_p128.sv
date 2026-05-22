@@ -29,7 +29,7 @@ module kv260_cnn_smoke_top_vgg16_like_32_p128
   parameter int AXI_DATA_W = DDR_WORD_W,
   parameter int AXI_ID_W = 1,
   parameter logic [AXI_ADDR_W-1:0] AXI_DDR_BASE_ADDR = 40'h0000_7000_0000,
-  parameter int WR_FIFO_DEPTH = 64
+  parameter int WR_FIFO_DEPTH = 128
 )(
   input  logic clk,
   input  logic rst_n,

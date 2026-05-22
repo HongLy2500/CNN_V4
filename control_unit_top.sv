@@ -240,9 +240,6 @@ module control_unit_top
   localparam int COL_W     = (W_MAX <= 1) ? 1 : $clog2(W_MAX+1);
   localparam int BUF_ROW_W = (H_MAX <= 1) ? 1 : $clog2(H_MAX);
   localparam int TILE_W    = (((W_MAX + PC_MODE2 - 1) / PC_MODE2) <= 1) ? 1 : $clog2(((W_MAX + PC_MODE2 - 1) / PC_MODE2) + 1);
-  localparam int M1Q_AW    = (SM_M1_RDY_Q_DEPTH <= 1) ? 1 : $clog2(SM_M1_RDY_Q_DEPTH+1);
-  localparam int M2Q_AW    = (SM_M2_RDY_Q_DEPTH <= 1) ? 1 : $clog2(SM_M2_RDY_Q_DEPTH+1);
-  localparam int M1FQ_AW   = (HT <= 1) ? 1 : $clog2(HT+1);
 
   // OFM->IFM stream command kind. Metadata only; payload/stream priority
   // remains unchanged. This prevents ofm_buffer from inferring stream type
@@ -251,18 +248,6 @@ module control_unit_top
   localparam logic [1:0] OFM_STRM_M1_DIRECT = 2'd1;
   localparam logic [1:0] OFM_STRM_M2_DIRECT = 2'd2;
   localparam logic [1:0] OFM_STRM_M1_TO_M2  = 2'd3;
-
-  typedef struct packed {
-    logic [15:0] row_g;
-    logic [15:0] col_blk_g;
-    logic [15:0] ch_blk_g;
-  } m1_rdy_tok_t;
-
-  typedef struct packed {
-    logic [15:0] row_g;
-    logic [15:0] col_g;
-    logic [15:0] cgrp_g;
-  } m2_rdy_tok_t;
 
   logic start_q, start_pulse;
   always_ff @(posedge clk or negedge rst_n) begin
@@ -322,26 +307,9 @@ module control_unit_top
   logic kick_compute_dispatch_s;
   logic dispatch_m2_start_s, dispatch_m2_step_en_s;
 
-  typedef enum logic [2:0] {
-    M2TS_IDLE,
-    M2TS_START_TILE,
-    M2TS_WAIT_TILE,
-    M2TS_DDR_REQ,
-    M2TS_DDR_WAIT,
-    M2TS_OFM_REQ,
-    M2TS_OFM_WAIT
-  } m2_tile_state_t;
-
-  m2_tile_state_t m2_tile_state_q;
-  logic [TILE_W-1:0] m2_tile_idx_q;
-  logic [15:0]       m2_tile_base_s;
-  logic [15:0]       m2_tile_count_s;
-  logic [15:0]       m2_num_tiles_s;
-  logic              m2_tile_last_s;
-  logic              m2_tile_layer_done_pulse_s;
-  logic              m2_ifm_tile_load_req_s;
-  logic              m2_runtime_stream_req_s;
-  logic              m2_runtime_stream_done_pulse_s;
+  // Old resident horizontal Mode-2 tile scheduler state has been removed.
+  // Mode2 now follows the same layer-level compute-dispatch lifecycle as Mode1.
+  // The public tile-window outputs below remain tied off for interface compatibility.
 
   logic weight_bank_layer_done_s;
   layer_desc_t wgt_dma_cfg_s;
@@ -385,10 +353,7 @@ module control_unit_top
   logic             ofm2ifm_free_claim_s;
 
   logic [15:0]      ofm2ifm_h_q;
-  logic [15:0]      ofm2ifm_w_q;
-  logic [15:0]      ofm2ifm_c_q;
   logic [15:0]      ofm2ifm_pv_q;
-  logic [15:0]      ofm2ifm_pf_q;
   logic [15:0]      ofm2ifm_num_col_blks_q;
   logic [15:0]      ofm2ifm_num_ch_blks_q;
   logic [ROW_W-1:0] ofm2ifm_initial_rows_q;
@@ -403,6 +368,9 @@ module control_unit_top
   logic [ROW_W-1:0] ofm2ifm_dst_h_eff_s;
   logic [7:0]       ofm2ifm_dst_layer_id_q;
   logic             ofm2ifm_in_dst_layer_s;
+  logic [15:0]      ofm2ifm_next_col_blks_s;
+  logic [15:0]      ofm2ifm_next_ch_blks_s;
+  logic [ROW_W-1:0] ofm2ifm_initial_rows_s;
 
   // Same-mode M2 OFM->IFM handoff.
   // Follow the Mode-1 lifecycle: stream only the initial IFM window before
@@ -419,15 +387,12 @@ module control_unit_top
   logic [15:0]      m2_ofm2ifm_col_blk_q;
   logic [15:0]      m2_ofm2ifm_cgrp_q;
   logic [ROW_W-1:0] m2_ofm2ifm_num_rows_q;
-  logic [15:0]      m2_ofm2ifm_num_col_blks_q;
   logic [15:0]      m2_ofm2ifm_num_cgrps_q;
   logic [15:0]      m2_ofm2ifm_w_q;
   logic [15:0]      m2_ofm2ifm_initial_cols_q;
   logic [15:0]      m2_ofm2ifm_col_end_q;
-  logic [15:0]      m2_ofm2ifm_runtime_col_base_q;
   logic [7:0]       m2_ofm2ifm_src_layer_id_q;
   logic [7:0]       m2_ofm2ifm_dst_layer_id_q;
-  logic             m2_ofm2ifm_seen_dst_q;
   logic             m2_ofm2ifm_in_dst_layer_s;
   logic             m2_ofm2ifm_ctx_cur_to_next_s;
   logic             m2_ofm2ifm_need_arm_s;
@@ -451,6 +416,8 @@ module control_unit_top
   logic             m2_ofm2ifm_src_mode2_q;
   logic             m2_ofm2ifm_runtime_src_mode2_q;
   logic             m2_ofm2ifm_stream_src_mode2_s;
+  logic [15:0]      m2_ofm2ifm_init_cols_s;
+  logic [15:0]      m2_ofm2ifm_init_cgrps_s;
 
   localparam int M2FQ_DEPTH = (SM_M2_RDY_Q_DEPTH < 2) ? 2 : SM_M2_RDY_Q_DEPTH;
   localparam int M2FQ_PTR_W = (M2FQ_DEPTH <= 1) ? 1 : $clog2(M2FQ_DEPTH);
@@ -458,7 +425,6 @@ module control_unit_top
   localparam logic [M2FQ_CNT_W-1:0] M2FQ_DEPTH_C = M2FQ_CNT_W'(M2FQ_DEPTH);
   logic [15:0] m2_free_fifo_row_g_q  [0:M2FQ_DEPTH-1];
   logic [15:0] m2_free_fifo_col_g_q  [0:M2FQ_DEPTH-1];
-  logic [15:0] m2_free_fifo_col_l_q  [0:M2FQ_DEPTH-1];
   logic [15:0] m2_free_fifo_cgrp_g_q [0:M2FQ_DEPTH-1];
   logic        m2_free_fifo_src_mode2_q [0:M2FQ_DEPTH-1];
   logic [M2FQ_PTR_W-1:0] m2_free_fifo_rptr_q;
@@ -470,7 +436,6 @@ module control_unit_top
   logic m2_free_fifo_overflow_q;
   logic [15:0] m2_free_head_row_g_s;
   logic [15:0] m2_free_head_col_g_s;
-  logic [15:0] m2_free_head_col_l_s;
   logic [15:0] m2_free_head_cgrp_g_s;
   logic        m2_free_head_src_mode2_s;
   logic m1_to_m2_transition_ready_s;
@@ -487,33 +452,9 @@ module control_unit_top
   assign m2_out_col_g_s = m2_out_col;
 
   // Mode-2 tile-window outputs.
-  // Mode1 has no control-level compute tile scheduler.  To make Mode2 follow
-  // the same scheduler model, control_unit_top no longer slices Mode2 compute
-  // into resident horizontal tiles.  The interface ports are kept for
-  // compatibility; a zero count asks the tile-aware Mode2 datapath to use the
-  // full/remaining output width.
-  always_comb begin
-    if (PC_MODE2 != 0)
-      m2_num_tiles_s = (cur_cfg_s.w_out + 16'(PC_MODE2) - 16'd1) / 16'(PC_MODE2);
-    else
-      m2_num_tiles_s = 16'd0;
-
-    m2_tile_base_s = 16'(m2_tile_idx_q) * 16'(PC_MODE2);
-
-    if ((cur_cfg_s.w_out == 0) || (m2_tile_base_s >= cur_cfg_s.w_out)) begin
-      m2_tile_count_s = 16'd0;
-    end
-    else if ((m2_tile_base_s + 16'(PC_MODE2)) <= cur_cfg_s.w_out) begin
-      m2_tile_count_s = 16'(PC_MODE2);
-    end
-    else begin
-      m2_tile_count_s = cur_cfg_s.w_out - m2_tile_base_s;
-    end
-
-    m2_tile_last_s = (m2_num_tiles_s == 16'd0) ? 1'b1 :
-                     ((16'(m2_tile_idx_q) + 16'd1) >= m2_num_tiles_s);
-  end
-
+  // Mode1 has no control-level compute tile scheduler.  Mode2 also uses the
+  // layer-level compute dispatcher; these ports are tied off for interface
+  // compatibility with tile-aware datapath variants.
   assign m2_tile_col_base_g = 16'd0;
   assign m2_tile_col_count  = 16'd0;
 
@@ -529,21 +470,8 @@ module control_unit_top
   logic [15:0] ldm_m2_free_col_l_s;
   logic [15:0] ldm_m2_free_cgrp_g_s;
 
-  // Internal mode-1 free-token metadata expander.
-  // ifm_buffer only reports that one physical row slot became free; control_unit
-  // expands that row event into the (row_slot,row_g,col_blk_g,ch_blk_g) tuples
-  // expected by same_mode_refill_manager_m1.
-  logic [$clog2(HT)-1:0] m1f_row_slot_fifo [0:HT-1];
-  logic [15:0]           m1f_row_g_fifo    [0:HT-1];
-  logic [M1FQ_AW-1:0]    m1f_head_q, m1f_tail_q, m1f_count_q;
-  logic                  m1f_scan_active_q;
-  logic [$clog2(HT)-1:0] m1f_scan_row_slot_q;
-  logic [15:0]           m1f_scan_row_g_q, m1f_scan_col_blk_q, m1f_scan_ch_blk_q;
-  logic                  m1f_overflow_q;
-  logic                  m1f_emit_valid_s;
-  logic [$clog2(HT)-1:0] m1f_emit_row_slot_l_s;
-  logic [15:0]           m1f_emit_row_g_s, m1f_emit_col_blk_g_s, m1f_emit_ch_blk_g_s;
-  logic [15:0]           m1_next_num_col_blks_s, m1_next_num_ch_blks_s;
+  // Legacy same-mode M1 manager/free-token expander declarations kept only as
+  // tie-off signals.  The active design uses the internal tiled OFM->IFM path.
 
   // True current-layer OFM size as stored in ofm_buffer for mode 1.
   // Keep these expressions aligned with ofm_cfg_h_out/ofm_cfg_w_out so the
@@ -584,9 +512,6 @@ module control_unit_top
   logic [BUF_ROW_W-1:0]  sm_stream_m1_row_slot_l_s;
   logic [15:0]           sm_stream_m1_ch_blk_g_s;
   logic [15:0]           sm_stream_m2_cgrp_g_s;
-  logic                  sm_exec_active_q, sm_exec_mode_q;
-  logic [$clog2(HT)-1:0] sm_exec_m1_row_slot_l_q;
-  logic [15:0]           sm_exec_row_g_q, sm_exec_col_base_g_q;
 
   // Same-mode activity windows
   logic sm_m1_active, sm_m2_active;
@@ -607,17 +532,11 @@ module control_unit_top
   assign rst_n_sm_m2        = rst_n && sm_m2_mgr_active_s;
 
   // --------------------------------------------------------------------------
-  // Ready-token serializer queues for OFM-side vector tokens
+  // Legacy same-mode ready-token serializer queues are disabled.  Keep only
+  // scalar/status tie-off signals; do not synthesize queue memories.
   // --------------------------------------------------------------------------
-  m1_rdy_tok_t m1q_mem [0:SM_M1_RDY_Q_DEPTH-1];
-  logic [M1Q_AW-1:0] m1q_count_q;
-  logic              m1q_overflow_q;
 
-  m2_rdy_tok_t m2q_mem [0:SM_M2_RDY_Q_DEPTH-1];
-  logic [M2Q_AW-1:0] m2q_count_q;
-  logic              m2q_overflow_q;
-
-  // Scalarized ready tokens into managers
+  // Scalarized ready tokens into legacy managers
   logic        m1_ready_tok_valid_s;
   logic [15:0] m1_ready_tok_row_g_s, m1_ready_tok_col_blk_g_s, m1_ready_tok_ch_blk_g_s;
   logic        m2_ready_tok_valid_s;
@@ -677,9 +596,6 @@ module control_unit_top
   // next layer. The true config handoff still happens only on layer advance or
   // on the special mode1->mode2 transition stream.
   assign use_next_ifm_cfg = next_valid_s && (advance_layer_s || kick_transition_stream_s);
-
-  assign m1_next_num_col_blks_s = (next_cfg_s.pv_m1 == 0) ? 16'd1 : ((next_cfg_s.w_in + next_cfg_s.pv_m1 - 1) / next_cfg_s.pv_m1);
-  assign m1_next_num_ch_blks_s  = (next_cfg_s.pf_m1 == 0) ? 16'd1 : ((next_cfg_s.c_in + next_cfg_s.pf_m1 - 1) / next_cfg_s.pf_m1);
 
   always_comb begin
     logic [$clog2(C_MAX+1)-1:0] ifm_cur_c_in_v;
@@ -832,21 +748,21 @@ module control_unit_top
     end
   end
 
-  always_ff @(posedge clk or negedge rst_n) begin : PROC_OFM2IFM_M1_TILED_REFILL
-    logic [15:0] next_col_blks_v;
-    logic [15:0] next_ch_blks_v;
-    logic [ROW_W-1:0] initial_rows_v;
+  assign ofm2ifm_next_col_blks_s = (next_cfg_s.pv_m1 == 0) ? 16'd1 :
+                                     ((next_cfg_s.w_in + next_cfg_s.pv_m1 - 16'd1) / next_cfg_s.pv_m1);
+  assign ofm2ifm_next_ch_blks_s  = (next_cfg_s.pf_m1 == 0) ? 16'd1 :
+                                     ((next_cfg_s.c_in + next_cfg_s.pf_m1 - 16'd1) / next_cfg_s.pf_m1);
+  assign ofm2ifm_initial_rows_s  = (next_cfg_s.h_in < 16'(HT)) ?
+                                     next_cfg_s.h_in[ROW_W-1:0] : ROW_W'(HT);
 
+  always_ff @(posedge clk or negedge rst_n) begin : PROC_OFM2IFM_M1_TILED_REFILL
     if (!rst_n) begin
       ofm2ifm_active_q          <= 1'b0;
       ofm2ifm_initial_ready_q   <= 1'b0;
       ofm2ifm_runtime_pending_q <= 1'b0;
       ofm2ifm_stream_busy_q     <= 1'b0;
       ofm2ifm_h_q               <= '0;
-      ofm2ifm_w_q               <= '0;
-      ofm2ifm_c_q               <= '0;
       ofm2ifm_pv_q              <= '0;
-      ofm2ifm_pf_q              <= '0;
       ofm2ifm_num_col_blks_q    <= '0;
       ofm2ifm_num_ch_blks_q     <= '0;
       ofm2ifm_initial_rows_q    <= '0;
@@ -866,11 +782,6 @@ module control_unit_top
         ofm2ifm_dst_layer_id_q    <= '0;
       end
       else begin
-        next_col_blks_v = (next_cfg_s.pv_m1 == 0) ? 16'd1 :
-                          ((next_cfg_s.w_in + next_cfg_s.pv_m1 - 1) / next_cfg_s.pv_m1);
-        next_ch_blks_v  = (next_cfg_s.pf_m1 == 0) ? 16'd1 :
-                          ((next_cfg_s.c_in + next_cfg_s.pf_m1 - 1) / next_cfg_s.pf_m1);
-        initial_rows_v  = (next_cfg_s.h_in < 16'(HT)) ? next_cfg_s.h_in[ROW_W-1:0] : ROW_W'(HT);
 
         // Start an M1->M1 handoff after the current OFM is fully written.
         // Save next-layer dimensions because cur/next_cfg will change on
@@ -882,14 +793,11 @@ module control_unit_top
           ofm2ifm_runtime_pending_q <= 1'b0;
           ofm2ifm_stream_busy_q     <= 1'b0;
           ofm2ifm_h_q               <= next_cfg_s.h_in;
-          ofm2ifm_w_q               <= next_cfg_s.w_in;
-          ofm2ifm_c_q               <= next_cfg_s.c_in;
           ofm2ifm_pv_q              <= (next_cfg_s.pv_m1 == 0) ? 16'd1 : next_cfg_s.pv_m1;
-          ofm2ifm_pf_q              <= (next_cfg_s.pf_m1 == 0) ? 16'd1 : next_cfg_s.pf_m1;
-          ofm2ifm_num_col_blks_q    <= (next_col_blks_v == 0) ? 16'd1 : next_col_blks_v;
-          ofm2ifm_num_ch_blks_q     <= (next_ch_blks_v  == 0) ? 16'd1 : next_ch_blks_v;
-          ofm2ifm_initial_rows_q    <= initial_rows_v;
-          ofm2ifm_next_row_q        <= initial_rows_v;
+          ofm2ifm_num_col_blks_q    <= (ofm2ifm_next_col_blks_s == 0) ? 16'd1 : ofm2ifm_next_col_blks_s;
+          ofm2ifm_num_ch_blks_q     <= (ofm2ifm_next_ch_blks_s  == 0) ? 16'd1 : ofm2ifm_next_ch_blks_s;
+          ofm2ifm_initial_rows_q    <= ofm2ifm_initial_rows_s;
+          ofm2ifm_next_row_q        <= ofm2ifm_initial_rows_s;
           ofm2ifm_row_q             <= '0;
           ofm2ifm_col_blk_q         <= '0;
           ofm2ifm_ch_blk_q          <= '0;
@@ -977,27 +885,10 @@ module control_unit_top
   // --------------------------------------------------------------------------
   // Mode-2 compute tile scheduler compatibility
   // --------------------------------------------------------------------------
-  // Mode2 is intentionally aligned with Mode1's scheduler model in this
-  // control unit: kick_compute_s starts one whole layer through
-  // compute_dispatcher, and dispatch_compute_done_s is the layer-done pulse.
-  // The old resident horizontal-tile FSM is kept reset/inert only to preserve
-  // existing signal names used elsewhere in this file.
-  assign m2_ifm_tile_load_req_s = 1'b0;
-  assign m2_runtime_stream_req_s = 1'b0;
-
-  always_ff @(posedge clk or negedge rst_n) begin : PROC_M2_COMPUTE_TILE_SCHED
-    if (!rst_n) begin
-      m2_tile_state_q <= M2TS_IDLE;
-      m2_tile_idx_q   <= '0;
-      m2_tile_layer_done_pulse_s <= 1'b0;
-    end
-    else begin
-      m2_tile_state_q <= M2TS_IDLE;
-      m2_tile_idx_q   <= '0;
-      m2_tile_layer_done_pulse_s <= 1'b0;
-    end
-  end
-
+  // Old resident horizontal-tile scheduler logic is intentionally removed from
+  // synthesis.  Mode2 is aligned with Mode1: one kick_compute_s starts one
+  // whole layer through compute_dispatcher and dispatch_compute_done_s is the
+  // layer-done pulse.
 
   // --------------------------------------------------------------------------
   // Same-mode M2 OFM->IFM refill (Mode2-only, Mode1-style lifecycle)
@@ -1062,7 +953,6 @@ module control_unit_top
 
   assign m2_free_head_row_g_s       = m2_free_fifo_row_g_q[m2_free_fifo_rptr_q];
   assign m2_free_head_col_g_s       = m2_free_fifo_col_g_q[m2_free_fifo_rptr_q];
-  assign m2_free_head_col_l_s       = m2_free_fifo_col_l_q[m2_free_fifo_rptr_q];
   assign m2_free_head_cgrp_g_s      = m2_free_fifo_cgrp_g_q[m2_free_fifo_rptr_q];
   assign m2_free_head_src_mode2_s   = m2_free_fifo_src_mode2_q[m2_free_fifo_rptr_q];
 
@@ -1122,10 +1012,25 @@ module control_unit_top
                                        ? m2_ofm2ifm_runtime_src_mode2_q
                                        : m2_ofm2ifm_src_mode2_q;
 
-  always_ff @(posedge clk or negedge rst_n) begin : PROC_OFM2IFM_M2_TILED_REFILL
-    logic [15:0] init_cols_v;
-    logic [15:0] init_cgrps_v;
+  // Store Mode2 runtime free-token payload without reset.  Only the FIFO
+  // pointers/count are reset; payload is meaningful only when count != 0.
+  // Keeping payload out of an async-reset process avoids RAM/register-array
+  // reset-pattern warnings and reduces synthesis work.
+  always_ff @(posedge clk) begin : PROC_M2_FREE_FIFO_PAYLOAD
+    if (m2_free_fifo_push_s) begin
+      m2_free_fifo_row_g_q[m2_free_fifo_wptr_q]       <= ldm_m2_free_row_g_s;
+      m2_free_fifo_col_g_q[m2_free_fifo_wptr_q]       <= ldm_m2_free_col_g_s;
+      m2_free_fifo_cgrp_g_q[m2_free_fifo_wptr_q]      <= ldm_m2_free_cgrp_g_s;
+      m2_free_fifo_src_mode2_q[m2_free_fifo_wptr_q]   <= m2_ofm2ifm_src_mode2_q;
+    end
+  end
 
+  assign m2_ofm2ifm_init_cols_s  = (next_cfg_s.w_in == 0) ? 16'd1 :
+                                     ((next_cfg_s.w_in < 16'(PC_MODE2)) ? next_cfg_s.w_in : 16'(PC_MODE2));
+  assign m2_ofm2ifm_init_cgrps_s = (next_cfg_s.c_in == 0) ? 16'd1 :
+                                     ((next_cfg_s.c_in + 16'(PC_MODE2) - 16'd1) / 16'(PC_MODE2));
+
+  always_ff @(posedge clk or negedge rst_n) begin : PROC_OFM2IFM_M2_TILED_REFILL
     if (!rst_n) begin
       m2_ofm2ifm_active_q          <= 1'b0;
       m2_ofm2ifm_ready_q           <= 1'b0;
@@ -1135,17 +1040,13 @@ module control_unit_top
       m2_ofm2ifm_col_blk_q         <= '0;
       m2_ofm2ifm_cgrp_q            <= '0;
       m2_ofm2ifm_num_rows_q        <= '0;
-      m2_ofm2ifm_num_col_blks_q    <= '0;
       m2_ofm2ifm_num_cgrps_q       <= '0;
       m2_ofm2ifm_w_q               <= '0;
       m2_ofm2ifm_initial_cols_q    <= '0;
       m2_ofm2ifm_col_end_q         <= '0;
-      m2_ofm2ifm_runtime_col_base_q<= '0;
       m2_ofm2ifm_runtime_q         <= 1'b0;
-      m2_runtime_stream_done_pulse_s <= 1'b0;
       m2_ofm2ifm_src_layer_id_q    <= '0;
       m2_ofm2ifm_dst_layer_id_q    <= '0;
-      m2_ofm2ifm_seen_dst_q        <= 1'b0;
       m2_ofm2ifm_src_mode2_q       <= 1'b1;
       m2_ofm2ifm_runtime_src_mode2_q <= 1'b1;
       m2_free_fifo_rptr_q          <= '0;
@@ -1156,7 +1057,6 @@ module control_unit_top
       m2_producer_done_layer_id_q  <= '0;
     end
     else begin
-      m2_runtime_stream_done_pulse_s <= 1'b0;
 
       if (abort) begin
         m2_ofm2ifm_active_q          <= 1'b0;
@@ -1167,17 +1067,14 @@ module control_unit_top
         m2_ofm2ifm_col_blk_q         <= '0;
         m2_ofm2ifm_cgrp_q            <= '0;
         m2_ofm2ifm_num_rows_q        <= '0;
-        m2_ofm2ifm_num_col_blks_q    <= '0;
-        m2_ofm2ifm_num_cgrps_q       <= '0;
+          m2_ofm2ifm_num_cgrps_q       <= '0;
         m2_ofm2ifm_w_q               <= '0;
         m2_ofm2ifm_initial_cols_q    <= '0;
         m2_ofm2ifm_col_end_q         <= '0;
-        m2_ofm2ifm_runtime_col_base_q<= '0;
-        m2_ofm2ifm_runtime_q         <= 1'b0;
+          m2_ofm2ifm_runtime_q         <= 1'b0;
         m2_ofm2ifm_src_layer_id_q    <= '0;
         m2_ofm2ifm_dst_layer_id_q    <= '0;
-        m2_ofm2ifm_seen_dst_q        <= 1'b0;
-        m2_ofm2ifm_src_mode2_q       <= 1'b1;
+          m2_ofm2ifm_src_mode2_q       <= 1'b1;
         m2_ofm2ifm_runtime_src_mode2_q <= 1'b1;
         m2_free_fifo_rptr_q          <= '0;
         m2_free_fifo_wptr_q          <= '0;
@@ -1215,10 +1112,6 @@ module control_unit_top
         // This is based on producer OFM done + current->next context mismatch,
         // not on the dispatch_compute_done_s pulse.
         if (m2_ofm2ifm_arm_s) begin
-          init_cols_v  = (next_cfg_s.w_in == 0) ? 16'd1 :
-                         ((next_cfg_s.w_in < 16'(PC_MODE2)) ? next_cfg_s.w_in : 16'(PC_MODE2));
-          init_cgrps_v = (next_cfg_s.c_in == 0) ? 16'd1 :
-                         ((next_cfg_s.c_in + 16'(PC_MODE2) - 16'd1) / 16'(PC_MODE2));
 
           m2_ofm2ifm_active_q       <= 1'b1;
           m2_ofm2ifm_ready_q        <= 1'b0;
@@ -1229,15 +1122,12 @@ module control_unit_top
           m2_ofm2ifm_col_blk_q      <= '0;
           m2_ofm2ifm_cgrp_q         <= '0;
           m2_ofm2ifm_num_rows_q     <= next_cfg_s.h_in[ROW_W-1:0];
-          m2_ofm2ifm_num_col_blks_q <= init_cols_v;
-          m2_ofm2ifm_num_cgrps_q    <= (init_cgrps_v == 0) ? 16'd1 : init_cgrps_v;
-          m2_ofm2ifm_initial_cols_q <= init_cols_v;
-          m2_ofm2ifm_col_end_q      <= init_cols_v;
-          m2_ofm2ifm_runtime_col_base_q <= 16'd0;
+          m2_ofm2ifm_num_cgrps_q    <= (m2_ofm2ifm_init_cgrps_s == 0) ? 16'd1 : m2_ofm2ifm_init_cgrps_s;
+          m2_ofm2ifm_initial_cols_q <= m2_ofm2ifm_init_cols_s;
+          m2_ofm2ifm_col_end_q      <= m2_ofm2ifm_init_cols_s;
           m2_ofm2ifm_w_q            <= next_cfg_s.w_in;
           m2_ofm2ifm_src_layer_id_q <= cur_cfg_s.layer_id[7:0];
           m2_ofm2ifm_dst_layer_id_q <= next_cfg_s.layer_id[7:0];
-          m2_ofm2ifm_seen_dst_q     <= 1'b0;
           // New current->next Mode2 context: source OFM layout is Mode2.
           // Drop any stale runtime tokens that belonged to the previous
           // destination context; they are no longer needed once the producer
@@ -1250,10 +1140,6 @@ module control_unit_top
         end
 
         if (!m2_ofm2ifm_arm_s && m1_to_m2_transition_ready_s) begin
-          init_cols_v  = (next_cfg_s.w_in == 0) ? 16'd1 :
-                         ((next_cfg_s.w_in < 16'(PC_MODE2)) ? next_cfg_s.w_in : 16'(PC_MODE2));
-          init_cgrps_v = (next_cfg_s.c_in == 0) ? 16'd1 :
-                         ((next_cfg_s.c_in + 16'(PC_MODE2) - 16'd1) / 16'(PC_MODE2));
           m2_ofm2ifm_active_q       <= 1'b1;
           m2_ofm2ifm_ready_q        <= 1'b1;
           m2_ofm2ifm_runtime_q      <= 1'b0;
@@ -1263,15 +1149,12 @@ module control_unit_top
           m2_ofm2ifm_col_blk_q      <= '0;
           m2_ofm2ifm_cgrp_q         <= '0;
           m2_ofm2ifm_num_rows_q     <= next_cfg_s.h_in[ROW_W-1:0];
-          m2_ofm2ifm_num_col_blks_q <= init_cols_v;
-          m2_ofm2ifm_num_cgrps_q    <= (init_cgrps_v == 0) ? 16'd1 : init_cgrps_v;
-          m2_ofm2ifm_initial_cols_q <= init_cols_v;
-          m2_ofm2ifm_col_end_q      <= init_cols_v;
-          m2_ofm2ifm_runtime_col_base_q <= 16'd0;
+          m2_ofm2ifm_num_cgrps_q    <= (m2_ofm2ifm_init_cgrps_s == 0) ? 16'd1 : m2_ofm2ifm_init_cgrps_s;
+          m2_ofm2ifm_initial_cols_q <= m2_ofm2ifm_init_cols_s;
+          m2_ofm2ifm_col_end_q      <= m2_ofm2ifm_init_cols_s;
           m2_ofm2ifm_w_q            <= next_cfg_s.w_in;
           m2_ofm2ifm_src_layer_id_q <= cur_cfg_s.layer_id[7:0];
           m2_ofm2ifm_dst_layer_id_q <= next_cfg_s.layer_id[7:0];
-          m2_ofm2ifm_seen_dst_q     <= 1'b0;
           // M1->M2 transition context: source OFM layout is Mode1.
           // Clear stale runtime tokens from any older context.
           m2_ofm2ifm_src_mode2_q    <= 1'b0;
@@ -1289,21 +1172,15 @@ module control_unit_top
           m2_ofm2ifm_runtime_q          <= 1'b1;
           m2_ofm2ifm_row_q              <= ROW_W'(m2_free_head_row_g_s);
           m2_ofm2ifm_col_blk_q          <= m2_free_head_col_g_s;
-          m2_ofm2ifm_runtime_col_base_q <= m2_free_head_col_g_s;
           m2_ofm2ifm_col_end_q          <= m2_free_head_col_g_s + 16'd1;
           m2_ofm2ifm_cgrp_q             <= m2_free_head_cgrp_g_s;
           m2_ofm2ifm_runtime_src_mode2_q <= m2_free_head_src_mode2_s;
         end
 
         if (m2_free_fifo_push_s) begin
-          m2_free_fifo_row_g_q[m2_free_fifo_wptr_q]  <= ldm_m2_free_row_g_s;
-          m2_free_fifo_col_g_q[m2_free_fifo_wptr_q]  <= ldm_m2_free_col_g_s;
-          m2_free_fifo_col_l_q[m2_free_fifo_wptr_q]  <= ldm_m2_free_col_l_s;
-          m2_free_fifo_cgrp_g_q[m2_free_fifo_wptr_q] <= ldm_m2_free_cgrp_g_s;
           // Capture the source layout with the token.  This prevents a stale
           // M1->M2 transition context from being reused after the next layer
           // becomes an M2->M2 producer/consumer pair.
-          m2_free_fifo_src_mode2_q[m2_free_fifo_wptr_q] <= m2_ofm2ifm_src_mode2_q;
           if (m2_free_fifo_wptr_q == M2FQ_PTR_W'(M2FQ_DEPTH-1))
             m2_free_fifo_wptr_q <= '0;
           else
@@ -1370,16 +1247,13 @@ module control_unit_top
             m2_ofm2ifm_row_q              <= '0;
             m2_ofm2ifm_col_blk_q          <= '0;
             m2_ofm2ifm_cgrp_q             <= '0;
-            m2_ofm2ifm_runtime_col_base_q <= '0;
             m2_ofm2ifm_col_end_q          <= m2_ofm2ifm_initial_cols_q;
-            m2_runtime_stream_done_pulse_s <= 1'b1;
           end
         end
 
         if (!m2_ofm2ifm_arm_s &&
             m2_ofm2ifm_active_q && m2_ofm2ifm_ready_q &&
             (cur_cfg_s.layer_id[7:0] == m2_ofm2ifm_dst_layer_id_q)) begin
-          m2_ofm2ifm_seen_dst_q <= 1'b1;
         end
 
         // Retire the previous source->destination refill context only after
@@ -1391,7 +1265,6 @@ module control_unit_top
             !m2_ofm2ifm_runtime_q && !m2_ofm2ifm_stream_busy_q) begin
           m2_ofm2ifm_active_q   <= 1'b0;
           m2_ofm2ifm_ready_q    <= 1'b0;
-          m2_ofm2ifm_seen_dst_q <= 1'b0;
         end
       end
     end
@@ -1461,290 +1334,72 @@ module control_unit_top
                                                          ((cur_cfg_s.pf_m2[7:0] != 8'd0) ? cur_cfg_s.pf_m2[7:0] : 8'd1));
 
   // --------------------------------------------------------------------------
-  // M1 ready-token queue: captures all vector tokens from OFM side
-  // and emits one scalar token/cycle to same_mode_refill_manager_m1.
+  // Legacy same-mode refill manager path is intentionally disabled.
+  //
+  // Current design uses:
+  //   - Mode1: internal tiled OFM->IFM initial-tile manager.
+  //   - Mode2: custom Mode1-style initial/runtime OFM->IFM path below.
+  //
+  // The old vector-token queues, M1 free-token expander, same-mode manager
+  // instances, and sm_exec FSM were hard-disabled by sm_m1_mgr_active_s=0 and
+  // sm_m2_mgr_active_s=0, but still synthesized and then pruned by Vivado.
+  // Tie them off explicitly so synthesis does not build unused queues/FSMs.
   // --------------------------------------------------------------------------
-  integer j, wr_idx;
-  always_ff @(posedge clk or negedge rst_n_sm_m1) begin
-    if (!rst_n_sm_m1) begin
-      m1q_count_q    <= '0;
-      m1q_overflow_q <= 1'b0;
-      for (int i = 0; i < SM_M1_RDY_Q_DEPTH; i++) begin
-        m1q_mem[i] <= '0;
-      end
-    end
-    else begin
-      // pop one token if we are issuing to manager this cycle
-      if (m1_ready_tok_valid_s) begin
-        for (j = 0; j < SM_M1_RDY_Q_DEPTH-1; j++) begin
-          m1q_mem[j] <= m1q_mem[j+1];
-        end
-        m1q_mem[SM_M1_RDY_Q_DEPTH-1] <= '0;
-        if (m1q_count_q != 0)
-          m1q_count_q <= m1q_count_q - 1'b1;
-      end
+  assign m1_ready_tok_valid_s     = 1'b0;
+  assign m1_ready_tok_row_g_s     = 16'd0;
+  assign m1_ready_tok_col_blk_g_s = 16'd0;
+  assign m1_ready_tok_ch_blk_g_s  = 16'd0;
 
-      // append incoming valid vector tokens
-      wr_idx = m1q_count_q - (m1_ready_tok_valid_s ? 1 : 0);
-      for (int i = 0; i < PTOTAL; i++) begin
-        if (sm_m1_mgr_active_s && m1_sm_ready_valid[i]) begin
-          if (wr_idx < SM_M1_RDY_Q_DEPTH) begin
-            m1q_mem[wr_idx].row_g     <= m1_sm_ready_row_g[i];
-            m1q_mem[wr_idx].col_blk_g <= m1_sm_ready_colgrp_g[i];
-            m1q_mem[wr_idx].ch_blk_g  <= m1_sm_ready_bank[i];
-            wr_idx = wr_idx + 1;
-          end
-          else begin
-            m1q_overflow_q <= 1'b1;
-          end
-        end
-      end
-      m1q_count_q <= wr_idx[M1Q_AW-1:0];
-    end
-  end
+  assign m2_ready_tok_valid_s     = 1'b0;
+  assign m2_ready_tok_row_g_s     = 16'd0;
+  assign m2_ready_tok_col_g_s     = 16'd0;
+  assign m2_ready_tok_cgrp_g_s    = 16'd0;
 
-  assign m1_ready_tok_valid_s     = sm_m1_mgr_active_s && (m1q_count_q != 0) && !m1_sm_ready_full_s;
-  assign m1_ready_tok_row_g_s     = m1q_mem[0].row_g;
-  assign m1_ready_tok_col_blk_g_s = m1q_mem[0].col_blk_g;
-  assign m1_ready_tok_ch_blk_g_s  = m1q_mem[0].ch_blk_g;
+  assign m1_sm_req_valid_i        = 1'b0;
+  assign m1_sm_req_ready_i        = 1'b0;
+  assign m1_sm_row_slot_l_i       = '0;
+  assign m1_sm_row_g_i            = 16'd0;
+  assign m1_sm_col_blk_g_i        = 16'd0;
+  assign m1_sm_ch_blk_g_i         = 16'd0;
 
-  // --------------------------------------------------------------------------
-  // M2 ready-token queue
-  // --------------------------------------------------------------------------
-  always_ff @(posedge clk or negedge rst_n_sm_m2) begin
-    if (!rst_n_sm_m2) begin
-      m2q_count_q    <= '0;
-      m2q_overflow_q <= 1'b0;
-      for (int i = 0; i < SM_M2_RDY_Q_DEPTH; i++) begin
-        m2q_mem[i] <= '0;
-      end
-    end
-    else begin
-      if (m2_ready_tok_valid_s) begin
-        for (j = 0; j < SM_M2_RDY_Q_DEPTH-1; j++) begin
-          m2q_mem[j] <= m2q_mem[j+1];
-        end
-        m2q_mem[SM_M2_RDY_Q_DEPTH-1] <= '0;
-        if (m2q_count_q != 0)
-          m2q_count_q <= m2q_count_q - 1'b1;
-      end
+  assign m2_sm_req_valid_i        = 1'b0;
+  assign m2_sm_req_ready_i        = 1'b0;
+  assign m2_sm_row_g_i            = 16'd0;
+  assign m2_sm_col_g_i            = 16'd0;
+  assign m2_sm_col_l_i            = 16'd0;
+  assign m2_sm_cgrp_g_i           = 16'd0;
 
-      wr_idx = m2q_count_q - (m2_ready_tok_valid_s ? 1 : 0);
-      for (int i = 0; i < PF_MODE2; i++) begin
-        if (sm_m2_mgr_active_s && sm_m2_active && m2_sm_ready_valid[i]) begin
-          if (wr_idx < SM_M2_RDY_Q_DEPTH) begin
-            m2q_mem[wr_idx].row_g  <= m2_sm_ready_row_g[i];
-            // ofm_buffer exports the GLOBAL column base of the ready PC-wide
-            // segment on the legacy-named *_colbase_g port; manager_m2 matches
-            // that value as ready_col_g.
-            m2q_mem[wr_idx].col_g  <= m2_sm_ready_colbase_g[i];
-            m2q_mem[wr_idx].cgrp_g <= m2_sm_ready_bank[i];
-            wr_idx = wr_idx + 1;
-          end
-          else begin
-            m2q_overflow_q <= 1'b1;
-          end
-        end
-      end
-      m2q_count_q <= wr_idx[M2Q_AW-1:0];
-    end
-  end
+  assign m1_sm_busy_s             = 1'b0;
+  assign m1_sm_error_s            = 1'b0;
+  assign m1_sm_free_full_s        = 1'b0;
+  assign m1_sm_ready_full_s       = 1'b0;
+  assign m2_sm_busy_s             = 1'b0;
+  assign m2_sm_error_s            = 1'b0;
+  assign m2_sm_free_full_s        = 1'b0;
+  assign m2_sm_ready_full_s       = 1'b0;
 
-  assign m2_ready_tok_valid_s = sm_m2_mgr_active_s && sm_m2_active && (m2q_count_q != 0) && !m2_sm_ready_full_s;
-  assign m2_ready_tok_row_g_s = m2q_mem[0].row_g;
-  assign m2_ready_tok_col_g_s = m2q_mem[0].col_g;
-  assign m2_ready_tok_cgrp_g_s= m2q_mem[0].cgrp_g;
 
-  // --------------------------------------------------------------------------
-  // Mode-1 free-token metadata expander
-  // --------------------------------------------------------------------------
-  assign m1f_emit_valid_s      = sm_m1_mgr_active_s && m1f_scan_active_q && !m1_sm_free_full_s;
-  assign m1f_emit_row_slot_l_s = m1f_scan_row_slot_q;
-  assign m1f_emit_row_g_s      = m1f_scan_row_g_q;
-  assign m1f_emit_col_blk_g_s  = m1f_scan_col_blk_q;
-  assign m1f_emit_ch_blk_g_s   = m1f_scan_ch_blk_q;
+  assign sm_stream_start_s         = 1'b0;
+  assign sm_stream_kind_s          = OFM_STRM_IDLE;
+  assign sm_stream_row_base_s      = '0;
+  assign sm_stream_num_rows_s      = '0;
+  assign sm_stream_col_base_s      = '0;
+  assign sm_stream_m1_row_slot_l_s = '0;
+  assign sm_stream_m1_ch_blk_g_s   = 16'd0;
+  assign sm_stream_m2_cgrp_g_s     = 16'd0;
 
-  always_ff @(posedge clk or negedge rst_n_sm_m1) begin : PROC_M1_FREE_EXPAND
-    integer cnt_tmp, head_tmp, tail_tmp;
-    integer num_col_tmp, num_ch_tmp;
-    logic   take_free_now;
+  // External visibility mirrors for legacy same-mode refill requests.
+  assign m1_sm_refill_req_valid   = 1'b0;
+  assign m1_sm_refill_row_slot_l  = '0;
+  assign m1_sm_refill_row_g       = 16'd0;
+  assign m1_sm_refill_col_blk_g   = 16'd0;
+  assign m1_sm_refill_ch_blk_g    = 16'd0;
 
-    if (!rst_n_sm_m1) begin
-      m1f_head_q         <= '0;
-      m1f_tail_q         <= '0;
-      m1f_count_q        <= '0;
-      m1f_scan_active_q  <= 1'b0;
-      m1f_scan_row_slot_q<= '0;
-      m1f_scan_row_g_q   <= '0;
-      m1f_scan_col_blk_q <= '0;
-      m1f_scan_ch_blk_q  <= '0;
-      m1f_overflow_q     <= 1'b0;
-    end
-    else begin
-      cnt_tmp  = m1f_count_q;
-      head_tmp = m1f_head_q;
-      tail_tmp = m1f_tail_q;
-
-      // Accept only free rows that belong to the next layer IFM.
-      // In M1->M1 with pooling, the current layer can free more conv rows than
-      // the next layer needs after pooling. Passing those extra rows to the
-      // same-mode manager leaves unmatched free tokens and can keep it busy.
-      take_free_now = m1_free_valid &&
-                      sm_m1_mgr_active_s &&
-                      !init_ifm_refill_claim_s &&
-                      !ofm2ifm_free_claim_s &&
-                      (m1_free_row_g < next_cfg_s.h_in);
-
-      // If the pending-free FIFO is empty and the scanner is idle, consume the
-      // incoming free token directly. Do not enqueue then dequeue in the same
-      // clock, because the FIFO write uses nonblocking assignment and the read
-      // would see the old/X value.
-      if (!m1f_scan_active_q && (cnt_tmp == 0) && take_free_now) begin
-        m1f_scan_active_q   <= 1'b1;
-        m1f_scan_row_slot_q <= m1_free_row_slot_l;
-        m1f_scan_row_g_q    <= m1_free_row_g;
-        m1f_scan_col_blk_q  <= '0;
-        m1f_scan_ch_blk_q   <= '0;
-      end
-      else begin
-        if (take_free_now) begin
-          if (cnt_tmp < HT) begin
-            m1f_row_slot_fifo[tail_tmp] <= m1_free_row_slot_l;
-            m1f_row_g_fifo[tail_tmp]    <= m1_free_row_g;
-            tail_tmp = (tail_tmp + 1) % HT;
-            cnt_tmp  = cnt_tmp + 1;
-          end
-          else begin
-            m1f_overflow_q <= 1'b1;
-          end
-        end
-
-        if (!m1f_scan_active_q && (cnt_tmp > 0)) begin
-          m1f_scan_active_q   <= 1'b1;
-          m1f_scan_row_slot_q <= m1f_row_slot_fifo[head_tmp];
-          m1f_scan_row_g_q    <= m1f_row_g_fifo[head_tmp];
-          m1f_scan_col_blk_q  <= '0;
-          m1f_scan_ch_blk_q   <= '0;
-          head_tmp = (head_tmp + 1) % HT;
-          cnt_tmp  = cnt_tmp - 1;
-        end
-        else if (m1f_emit_valid_s) begin
-          num_col_tmp = (m1_next_num_col_blks_s == 0) ? 1 : m1_next_num_col_blks_s;
-          num_ch_tmp  = (m1_next_num_ch_blks_s  == 0) ? 1 : m1_next_num_ch_blks_s;
-
-          if ((m1f_scan_ch_blk_q + 1) < num_ch_tmp[15:0]) begin
-            m1f_scan_ch_blk_q <= m1f_scan_ch_blk_q + 1'b1;
-          end
-          else begin
-            m1f_scan_ch_blk_q <= '0;
-            if ((m1f_scan_col_blk_q + 1) < num_col_tmp[15:0]) begin
-              m1f_scan_col_blk_q <= m1f_scan_col_blk_q + 1'b1;
-            end
-            else begin
-              m1f_scan_col_blk_q <= '0;
-              m1f_scan_active_q  <= 1'b0;
-            end
-          end
-        end
-      end
-
-      m1f_head_q  <= head_tmp[M1FQ_AW-1:0];
-      m1f_tail_q  <= tail_tmp[M1FQ_AW-1:0];
-      m1f_count_q <= cnt_tmp[M1FQ_AW-1:0];
-    end
-  end
-
-  // --------------------------------------------------------------------------
-  // Internal same-mode refill command controller
-  // --------------------------------------------------------------------------
-  always_comb begin
-    sm_stream_start_s         = 1'b0;
-    sm_stream_kind_s          = OFM_STRM_IDLE;
-    sm_stream_row_base_s      = '0;
-    sm_stream_num_rows_s      = '0;
-    sm_stream_col_base_s      = '0;
-    sm_stream_m1_row_slot_l_s = '0;
-    sm_stream_m1_ch_blk_g_s   = '0;
-    sm_stream_m2_cgrp_g_s     = '0;
-
-    if (!sm_exec_active_q && !transition_busy_s && !trans_ifm_stream_start_s && !ofm_ifm_stream_busy) begin
-      if (sm_m1_mgr_active_s && m1_sm_req_valid_i) begin
-        sm_stream_start_s         = 1'b1;
-        sm_stream_kind_s          = OFM_STRM_M1_DIRECT;
-        sm_stream_row_base_s      = m1_sm_row_g_i[ROW_W-1:0];
-        sm_stream_num_rows_s      = ROW_W'(1);
-        sm_stream_col_base_s = m1_sm_col_blk_g_i * ((next_cfg_s.pv_m1 == 0) ? 16'd1 : next_cfg_s.pv_m1);
-        sm_stream_m1_row_slot_l_s = '0;
-	sm_stream_m1_row_slot_l_s[$bits(m1_sm_row_slot_l_i)-1:0] = m1_sm_row_slot_l_i;
-        sm_stream_m1_ch_blk_g_s   = m1_sm_ch_blk_g_i;
-      end
-      else if (sm_m2_mgr_active_s && sm_m2_active && m2_sm_req_valid_i) begin
-        sm_stream_start_s         = 1'b1;
-        sm_stream_kind_s          = OFM_STRM_M2_DIRECT;
-        sm_stream_row_base_s      = m2_sm_row_g_i[ROW_W-1:0];
-        sm_stream_num_rows_s      = ROW_W'(1);
-        sm_stream_col_base_s      = m2_sm_col_g_i[COL_W-1:0];
-        sm_stream_m2_cgrp_g_s     = m2_sm_cgrp_g_i;
-      end
-    end
-  end
-
-  assign m1_sm_req_ready_i = sm_m1_mgr_active_s && (
-                             (sm_stream_start_s && m1_sm_req_valid_i) ||
-                             (sm_exec_active_q && !sm_exec_mode_q &&
-                              (m1_sm_row_slot_l_i == sm_exec_m1_row_slot_l_q) &&
-                              (m1_sm_row_g_i      == sm_exec_row_g_q)));
-
-  assign m2_sm_req_ready_i = sm_m2_mgr_active_s && sm_m2_active && (
-                             (sm_stream_start_s && !m1_sm_req_valid_i && m2_sm_req_valid_i) ||
-                             (sm_exec_active_q && sm_exec_mode_q &&
-                              (m2_sm_row_g_i == sm_exec_row_g_q) &&
-                              (m2_sm_col_g_i == sm_exec_col_base_g_q)));
-
-  always_ff @(posedge clk or negedge rst_n) begin
-    if (!rst_n) begin
-      sm_exec_active_q       <= 1'b0;
-      sm_exec_mode_q         <= 1'b0;
-      sm_exec_m1_row_slot_l_q<= '0;
-      sm_exec_row_g_q        <= '0;
-      sm_exec_col_base_g_q   <= '0;
-    end
-    else begin
-      if (!sm_exec_active_q) begin
-        if (sm_stream_start_s && m1_sm_req_valid_i && sm_m1_mgr_active_s) begin
-          sm_exec_active_q        <= 1'b1;
-          sm_exec_mode_q          <= 1'b0;
-          sm_exec_m1_row_slot_l_q <= m1_sm_row_slot_l_i;
-          sm_exec_row_g_q         <= m1_sm_row_g_i;
-          sm_exec_col_base_g_q    <= (m1_sm_col_blk_g_i * ((next_cfg_s.pv_m1 == 0) ? 16'd1 : next_cfg_s.pv_m1));
-        end
-        else if (sm_stream_start_s && !m1_sm_req_valid_i && m2_sm_req_valid_i && sm_m2_mgr_active_s && sm_m2_active) begin
-          sm_exec_active_q        <= 1'b1;
-          sm_exec_mode_q          <= 1'b1;
-          sm_exec_m1_row_slot_l_q <= '0;
-          sm_exec_row_g_q         <= m2_sm_row_g_i;
-          sm_exec_col_base_g_q    <= m2_sm_col_g_i;
-        end
-      end
-      else if (ofm_ifm_stream_done) begin
-        sm_exec_active_q <= 1'b0;
-      end
-    end
-  end
-
-  // External visibility mirrors for same-mode requests. These are no longer
-  // integration hooks; the control unit consumes the requests internally.
-  assign m1_sm_refill_req_valid   = m1_sm_req_valid_i;
-  assign m1_sm_refill_row_slot_l  = m1_sm_row_slot_l_i;
-  assign m1_sm_refill_row_g       = m1_sm_row_g_i;
-  assign m1_sm_refill_col_blk_g   = m1_sm_col_blk_g_i;
-  assign m1_sm_refill_ch_blk_g    = m1_sm_ch_blk_g_i;
-
-  assign m2_sm_refill_req_valid   = sm_m2_mgr_active_s && m2_sm_req_valid_i;
-  assign m2_sm_refill_row_g       = m2_sm_row_g_i;
-  assign m2_sm_refill_col_g       = m2_sm_col_g_i;
-  assign m2_sm_refill_col_l       = m2_sm_col_l_i;
-  assign m2_sm_refill_cgrp_g      = m2_sm_cgrp_g_i;
+  assign m2_sm_refill_req_valid   = 1'b0;
+  assign m2_sm_refill_row_g       = 16'd0;
+  assign m2_sm_refill_col_g       = 16'd0;
+  assign m2_sm_refill_col_l       = 16'd0;
+  assign m2_sm_refill_cgrp_g      = 16'd0;
 
   // --------------------------------------------------------------------------
   // Sub-block instantiation
@@ -1877,78 +1532,13 @@ module control_unit_top
     .m2_free_cgrp_g(ldm_m2_free_cgrp_g_s)
   );
 
-  // Same-mode refill managers
-  same_mode_refill_manager_m1 #(
-    .HT(HT), .H_W(16), .COLG_W(16), .CHG_W(16)
-  ) u_same_mode_refill_manager_m1 (
-    .clk(clk), .rst_n(rst_n_sm_m1),
-    .cfg_cur_h_out(cur_m1_ofm_h_for_sm_s), .cfg_cur_w_out(cur_m1_ofm_w_for_sm_s), .cfg_cur_f_out(cur_cfg_s.f_out),
-    .cfg_next_h_in(next_cfg_s.h_in), .cfg_next_w_in(next_cfg_s.w_in), .cfg_next_c_in(next_cfg_s.c_in),
-    .cfg_next_pv(next_cfg_s.pv_m1), .cfg_next_pf(next_cfg_s.pf_m1),
-    .free_valid(m1f_emit_valid_s),
-    .free_row_slot_l(m1f_emit_row_slot_l_s),
-    .free_row_g(m1f_emit_row_g_s),
-    .free_col_blk_g(m1f_emit_col_blk_g_s),
-    .free_ch_blk_g(m1f_emit_ch_blk_g_s),
-    .ready_valid(m1_ready_tok_valid_s),
-    .ready_row_g(m1_ready_tok_row_g_s),
-    .ready_col_blk_g(m1_ready_tok_col_blk_g_s),
-    .ready_ch_blk_g(m1_ready_tok_ch_blk_g_s),
-    .refill_req_valid(m1_sm_req_valid_i),
-    .refill_req_ready(m1_sm_req_ready_i),
-    .refill_row_slot_l(m1_sm_row_slot_l_i),
-    .refill_row_g(m1_sm_row_g_i),
-    .refill_col_blk_g(m1_sm_col_blk_g_i),
-    .refill_ch_blk_g(m1_sm_ch_blk_g_i),
-    .busy(m1_sm_busy_s),
-    .error(m1_sm_error_s),
-    .free_fifo_full(m1_sm_free_full_s),
-    .ready_fifo_full(m1_sm_ready_full_s)
-  );
-
-  same_mode_refill_manager_m2 #(
-    .H_W(16), .COLG_W(16), .COLL_W(16), .CGRP_W(16)
-  ) u_same_mode_refill_manager_m2 (
-    .clk(clk), .rst_n(rst_n_sm_m2),
-    .cfg_cur_h_out(cur_m2_final_h_out_s), .cfg_cur_w_out(cur_m2_final_w_out_s), .cfg_cur_f_out(cur_cfg_s.f_out),
-    .cfg_next_h_in(next_cfg_s.h_in), .cfg_next_w_in(next_cfg_s.w_in), .cfg_next_c_in(next_cfg_s.c_in),
-    .cfg_next_pc(next_cfg_s.pc_m2), .cfg_next_pf(next_cfg_s.pf_m2),
-    .free_valid(sm_m2_mgr_active_s && ldm_m2_free_valid_s && sm_m2_active),
-    .free_row_g(ldm_m2_free_row_g_s),
-    .free_col_g(ldm_m2_free_col_g_s),
-    .free_col_l(ldm_m2_free_col_l_s),
-    .free_cgrp_g(ldm_m2_free_cgrp_g_s),
-    .ready_valid(sm_m2_mgr_active_s && m2_ready_tok_valid_s),
-    .ready_row_g(m2_ready_tok_row_g_s),
-    .ready_col_g(m2_ready_tok_col_g_s),
-    .ready_cgrp_g(m2_ready_tok_cgrp_g_s),
-    .refill_req_valid(m2_sm_req_valid_i),
-    .refill_req_ready(m2_sm_req_ready_i),
-    .refill_row_g(m2_sm_row_g_i),
-    .refill_col_g(m2_sm_col_g_i),
-    .refill_col_l(m2_sm_col_l_i),
-    .refill_cgrp_g(m2_sm_cgrp_g_i),
-    .busy(m2_sm_busy_s),
-    .error(m2_sm_error_s),
-    .free_fifo_full(m2_sm_free_full_s),
-    .ready_fifo_full(m2_sm_ready_full_s)
-  );
-
-  assign sm_m1_drain_idle_s = !m1_sm_busy_s &&
-                              (m1q_count_q == '0) &&
-                              (m1f_count_q == '0) &&
-                              !m1f_scan_active_q;
-
-  assign sm_m2_drain_idle_s = !m2_sm_busy_s &&
-                              (m2q_count_q == '0);
-
-  assign same_mode_legacy_drain_done_s = (sm_m1_mgr_active_s || (sm_m2_mgr_active_s && sm_m2_active)) &&
-                                  ofm_layer_write_done &&
-                                  !sm_exec_active_q &&
-                                  !sm_stream_start_s &&
-                                  !ofm_ifm_stream_busy &&
-                                  ((sm_m1_mgr_active_s && sm_m1_drain_idle_s) ||
-                                   (sm_m2_mgr_active_s && sm_m2_active && sm_m2_drain_idle_s));
+  // Same-mode legacy refill managers are not instantiated in this integration.
+  // They are tied off above because sm_m1_mgr_active_s/sm_m2_mgr_active_s are
+  // intentionally 0.  Drain completion for active same-mode paths is produced
+  // by the internal Mode1/Mode2 OFM->IFM paths below.
+  assign sm_m1_drain_idle_s = 1'b1;
+  assign sm_m2_drain_idle_s = 1'b1;
+  assign same_mode_legacy_drain_done_s = 1'b0;
 
   assign same_mode_drain_done_s = sm_m1_active ?
                                   same_mode_initial_tile_ready_s :
@@ -2015,11 +1605,10 @@ module control_unit_top
                                         (((cur_cfg_s.mode == MODE2) && m2_ofm2ifm_stream_start_s) ? m2_ofm2ifm_cgrp_q : sm_stream_m2_cgrp_g_s);
 
   assign control_error_s = m1_sm_error_s |
-                           m1q_overflow_q | m1f_overflow_q |
                            m2_free_fifo_overflow_q |
                            m1_sm_free_full_s | m1_sm_ready_full_s |
                            (sm_m2_mgr_active_s ?
-                            (m2_sm_error_s | m2q_overflow_q |
+                            (m2_sm_error_s |
                              m2_sm_free_full_s | m2_sm_ready_full_s) : 1'b0);
 
   assign any_error_s = phase_error_s | local_error_s | transition_error_s | ofm_error | control_error_s;
@@ -2036,152 +1625,6 @@ module control_unit_top
     .dbg_layer_idx(dbg_layer_idx), .dbg_mode(dbg_mode),
     .dbg_weight_bank(dbg_weight_bank), .dbg_error_vec(dbg_error_vec)
   );
-
-// -----------------------------------------------------------------------------
-// DEBUG ONLY: Mode2 next-path lifecycle monitor
-// Define DBG_M2_NEXTPATH_MON to enable. Does not change datapath behavior.
-// -----------------------------------------------------------------------------
-
-logic [7:0] dbg_np_layer_q;
-logic       dbg_np_active_q;
-logic       dbg_np_ready_q;
-logic       dbg_np_req_q;
-logic       dbg_np_grant_q;
-logic       dbg_np_acc_q;
-logic       dbg_np_m2_start_q;
-logic       dbg_np_m2_busy_q;
-logic       dbg_np_ofm_start_q;
-logic       dbg_np_ofm_busy_q;
-logic       dbg_np_ofm_done_q;
-logic       dbg_np_ofm_layer_done_q;
-logic       dbg_np_next_path_done_q;
-logic       dbg_np_advance_q;
-logic [31:0] dbg_np_stuck_cnt_q;
-
-always_ff @(posedge clk or negedge rst_n) begin
-  if (!rst_n) begin
-    dbg_np_layer_q          <= '0;
-    dbg_np_active_q         <= 1'b0;
-    dbg_np_ready_q          <= 1'b0;
-    dbg_np_req_q            <= 1'b0;
-    dbg_np_grant_q          <= 1'b0;
-    dbg_np_acc_q            <= 1'b0;
-    dbg_np_m2_start_q       <= 1'b0;
-    dbg_np_m2_busy_q        <= 1'b0;
-    dbg_np_ofm_start_q      <= 1'b0;
-    dbg_np_ofm_busy_q       <= 1'b0;
-    dbg_np_ofm_done_q       <= 1'b0;
-    dbg_np_ofm_layer_done_q <= 1'b0;
-    dbg_np_next_path_done_q <= 1'b0;
-    dbg_np_advance_q        <= 1'b0;
-    dbg_np_stuck_cnt_q      <= 32'd0;
-  end
-  else begin
-    dbg_np_layer_q          <= cur_cfg_s.layer_id[7:0];
-    dbg_np_active_q         <= m2_ofm2ifm_active_q;
-    dbg_np_ready_q          <= m2_ofm2ifm_ready_q;
-    dbg_np_req_q            <= m2_ofm2ifm_stream_req_s;
-    dbg_np_grant_q          <= m2_ofm2ifm_stream_grant_s;
-    dbg_np_acc_q            <= m2_ofm2ifm_stream_accepted_s;
-    dbg_np_m2_start_q       <= m2_ofm2ifm_stream_start_s;
-    dbg_np_m2_busy_q        <= m2_ofm2ifm_stream_busy_q;
-    dbg_np_ofm_start_q      <= ofm_ifm_stream_start;
-    dbg_np_ofm_busy_q       <= ofm_ifm_stream_busy;
-    dbg_np_ofm_done_q       <= ofm_ifm_stream_done;
-    dbg_np_ofm_layer_done_q <= ofm_layer_write_done;
-    dbg_np_next_path_done_q <= sched_next_path_done_s;
-    dbg_np_advance_q        <= advance_layer_s;
-
-    if ((cur_cfg_s.layer_id[7:0] != dbg_np_layer_q) ||
-        (m2_ofm2ifm_active_q != dbg_np_active_q) ||
-        (m2_ofm2ifm_ready_q != dbg_np_ready_q) ||
-        (m2_ofm2ifm_stream_req_s != dbg_np_req_q) ||
-        (m2_ofm2ifm_stream_grant_s != dbg_np_grant_q) ||
-        (m2_ofm2ifm_stream_accepted_s != dbg_np_acc_q) ||
-        (m2_ofm2ifm_stream_start_s != dbg_np_m2_start_q) ||
-        (m2_ofm2ifm_stream_busy_q != dbg_np_m2_busy_q) ||
-        (ofm_ifm_stream_start != dbg_np_ofm_start_q) ||
-        (ofm_ifm_stream_busy != dbg_np_ofm_busy_q) ||
-        (ofm_ifm_stream_done != dbg_np_ofm_done_q) ||
-        (ofm_layer_write_done != dbg_np_ofm_layer_done_q) ||
-        (sched_next_path_done_s != dbg_np_next_path_done_q) ||
-        (advance_layer_s != dbg_np_advance_q)) begin
-
-      $display("DBG_M2_EDGE t=%0t layer=%0d next=%0d mode=%0d next_mode=%0d active=%0b ready=%0b src=%0d dst=%0d ctx_cur_next=%0b row=%0d col=%0d cgrp=%0d req=%0b grant=%0b acc=%0b m2_start=%0b m2_busy=%0b ofm_start=%0b ofm_busy=%0b ofm_done=%0b ofm_layer_done=%0b next_done=%0b advance=%0b runtime=%0b free_v=%0b free_take=%0b",
-               $time,
-               cur_cfg_s.layer_id[7:0],
-               next_cfg_s.layer_id[7:0],
-               cur_cfg_s.mode,
-               next_cfg_s.mode,
-               m2_ofm2ifm_active_q,
-               m2_ofm2ifm_ready_q,
-               m2_ofm2ifm_src_layer_id_q,
-               m2_ofm2ifm_dst_layer_id_q,
-               m2_ofm2ifm_ctx_cur_to_next_s,
-               m2_ofm2ifm_row_q,
-               m2_ofm2ifm_col_blk_q,
-               m2_ofm2ifm_cgrp_q,
-               m2_ofm2ifm_stream_req_s,
-               m2_ofm2ifm_stream_grant_s,
-               m2_ofm2ifm_stream_accepted_s,
-               m2_ofm2ifm_stream_start_s,
-               m2_ofm2ifm_stream_busy_q,
-               ofm_ifm_stream_start,
-               ofm_ifm_stream_busy,
-               ofm_ifm_stream_done,
-               ofm_layer_write_done,
-               sched_next_path_done_s,
-               advance_layer_s,
-               m2_ofm2ifm_runtime_q,
-               m2_free_entry_valid_s,
-               m2_free_entry_take_s);
-    end
-
-    if ((cur_cfg_s.layer_id[7:0] == 8'd1) && busy && !done) begin
-      dbg_np_stuck_cnt_q <= dbg_np_stuck_cnt_q + 32'd1;
-
-      if (dbg_np_stuck_cnt_q[15:0] == 16'hffff) begin
-        $display("DBG_M2_STUCK t=%0t layer=%0d next=%0d active=%0b ready=%0b src=%0d dst=%0d row=%0d col=%0d cgrp=%0d req=%0b grant=%0b acc=%0b m2_start=%0b m2_busy=%0b ofm_start=%0b ofm_busy=%0b ofm_done=%0b ofm_layer_done=%0b next_done=%0b advance=%0b",
-                 $time,
-                 cur_cfg_s.layer_id[7:0],
-                 next_cfg_s.layer_id[7:0],
-                 m2_ofm2ifm_active_q,
-                 m2_ofm2ifm_ready_q,
-                 m2_ofm2ifm_src_layer_id_q,
-                 m2_ofm2ifm_dst_layer_id_q,
-                 m2_ofm2ifm_row_q,
-                 m2_ofm2ifm_col_blk_q,
-                 m2_ofm2ifm_cgrp_q,
-                 m2_ofm2ifm_stream_req_s,
-                 m2_ofm2ifm_stream_grant_s,
-                 m2_ofm2ifm_stream_accepted_s,
-                 m2_ofm2ifm_stream_start_s,
-                 m2_ofm2ifm_stream_busy_q,
-                 ofm_ifm_stream_start,
-                 ofm_ifm_stream_busy,
-                 ofm_ifm_stream_done,
-                 ofm_layer_write_done,
-                 sched_next_path_done_s,
-                 advance_layer_s);
-      end
-    end
-    else begin
-      dbg_np_stuck_cnt_q <= 32'd0;
-    end
-  end
-end
-
-always_ff @(posedge clk) begin : DBG_M1_ROW_ADV_GUARD_MON
-    if (rst_n && (cur_cfg_s.mode == MODE1) && m1_out_row_done_pulse) begin
-        $display("DBG_M1_ROW_ADV_GUARD t=%0t layer=%0d out_row=%0d row_done=1 first_pending=%0d adv=%0d",
-            $time,
-            dbg_layer_idx,
-            m1_out_row,
-            m1_pady1_first_row_pending_q,
-            ifm_m1_advance_row
-        );
-    end
-end
 
 
 endmodule

@@ -1,3 +1,40 @@
+module ifm_data_bram_sdp #(
+    parameter int DATA_W = 8,
+    parameter int LANES  = 8,
+    parameter int DEPTH  = 128,
+    parameter int ADDR_W = (DEPTH <= 1) ? 1 : $clog2(DEPTH)
+)(
+    input  logic clk,
+
+    input  logic                  wr_en,
+    input  logic [ADDR_W-1:0]     wr_addr,
+    input  logic [LANES-1:0]      wr_keep,
+    input  logic [LANES*DATA_W-1:0] wr_data,
+
+    input  logic                  rd_en,
+    input  logic [ADDR_W-1:0]     rd_addr,
+    output logic [LANES*DATA_W-1:0] rd_data
+);
+
+    (* ram_style = "block" *)
+    logic [LANES*DATA_W-1:0] ram [0:DEPTH-1];
+
+    always_ff @(posedge clk) begin
+        if (wr_en) begin
+            for (int lane = 0; lane < LANES; lane++) begin
+                if (wr_keep[lane]) begin
+                    ram[wr_addr][lane*DATA_W +: DATA_W] <= wr_data[lane*DATA_W +: DATA_W];
+                end
+            end
+        end
+
+        if (rd_en) begin
+            rd_data <= ram[rd_addr];
+        end
+    end
+
+endmodule
+
 module ifm_buffer #(
     parameter int DATA_W = 8,
     parameter int PV_MAX = 8,
@@ -137,6 +174,7 @@ module ifm_buffer #(
 
     localparam int WORD_W    = PV_MAX * DATA_W;
     localparam int DEPTH_W   = (DEPTH <= 1) ? 1 : $clog2(DEPTH);
+    localparam int BANK_W    = (C_MAX <= 1) ? 1 : $clog2(C_MAX);
     localparam int COL_W     = (W_MAX <= 1) ? 1 : $clog2(W_MAX);
     localparam int ROWBASE_W = (HT <= 1) ? 1 : $clog2(HT);
     localparam int HCFG_W    = $clog2(H_MAX+1);
@@ -154,15 +192,58 @@ module ifm_buffer #(
     localparam int M2_BANKS    = M2_CGRP_MAX * PC;
 
     //==================================================
-    // Physical storage
-    // C_MAX banks, each address width = PV_MAX * DATA_W
+    // Physical data storage
+    // One synchronous BRAM-style RAM per logical bank.  The logical layout is
+    // unchanged; only the storage implementation is made inference-friendly.
+    //
+    // Mode1:
+    //   bank = channel, addr = row_slot*W_MAX + col_group, lane = Pv pixel lane
+    // Mode2:
+    //   bank = cgrp*PC + col_l, addr = row, lane = PC channel lane
     //==================================================
-    (* ram_style = "block" *)
-    logic [WORD_W-1:0] mem [0:C_MAX-1][0:DEPTH-1];
+    logic                  data_wr_en   [0:C_MAX-1];
+    logic [DEPTH_W-1:0]    data_wr_addr [0:C_MAX-1];
+    logic [PV_MAX-1:0]     data_wr_keep [0:C_MAX-1];
+    logic [WORD_W-1:0]     data_wr_data [0:C_MAX-1];
+
+    logic                  data_rd_en   [0:C_MAX-1];
+    logic [DEPTH_W-1:0]    data_rd_addr [0:C_MAX-1];
+    logic [WORD_W-1:0]     data_rd_data [0:C_MAX-1];
+
+    genvar ifm_bank_gen;
+    generate
+        for (ifm_bank_gen = 0; ifm_bank_gen < C_MAX; ifm_bank_gen++) begin : G_IFM_DATA_BRAM
+            ifm_data_bram_sdp #(
+                .DATA_W(DATA_W),
+                .LANES (PV_MAX),
+                .DEPTH (DEPTH),
+                .ADDR_W(DEPTH_W)
+            ) u_data_bram (
+                .clk    (clk),
+                .wr_en  (data_wr_en  [ifm_bank_gen]),
+                .wr_addr(data_wr_addr[ifm_bank_gen]),
+                .wr_keep(data_wr_keep[ifm_bank_gen]),
+                .wr_data(data_wr_data[ifm_bank_gen]),
+                .rd_en  (data_rd_en  [ifm_bank_gen]),
+                .rd_addr(data_rd_addr[ifm_bank_gen]),
+                .rd_data(data_rd_data[ifm_bank_gen])
+            );
+        end
+    endgenerate
 
     // Mode2 rolling-slot content tag.  Mode1 never reads these tags.
-    logic                 m2_slot_valid   [0:C_MAX-1][0:DEPTH-1];
-    logic [COL_W-1:0]     m2_slot_col_tag [0:C_MAX-1][0:DEPTH-1];
+    // Flattened 1D metadata avoids Vivado 3D/record-RAM runtime warnings.
+    // Logical mapping is unchanged:
+    //   meta_idx = bank * DEPTH + addr
+    localparam int M2_SLOT_COUNT = C_MAX * DEPTH;
+    localparam int M2_SLOT_AW    = (M2_SLOT_COUNT <= 1) ? 1 : $clog2(M2_SLOT_COUNT);
+
+    logic                 m2_slot_valid_flat   [0:M2_SLOT_COUNT-1];
+    logic [COL_W-1:0]     m2_slot_col_tag_flat [0:M2_SLOT_COUNT-1];
+
+    logic [M2_SLOT_AW-1:0] m2_wr_slot_idx;
+    logic [M2_SLOT_AW-1:0] m2_rd_slot_idx;
+    logic                 m2_rd_slot_valid;
 
     //==================================================
     // Latched configuration
@@ -221,13 +302,28 @@ module ifm_buffer #(
     logic [31:0]          rd_addr_m2_u32;
 
     //==================================================
-    // Read registers
+    // Read pipeline registers
     //==================================================
-    logic              rd_valid_q;
-    logic [WORD_W-1:0] rd_data_q;
+    logic                 rd_req_valid;
+    logic [BANK_W-1:0]    rd_req_bank;
+    logic [DEPTH_W-1:0]   rd_req_addr;
 
-    assign rd_valid          = rd_valid_q;
-    assign rd_data           = rd_data_q;
+    logic                 rd_pipe_valid_q;
+    logic                 rd_pipe_mode_q;
+    logic [BANK_W-1:0]    rd_pipe_bank_q;
+    logic [$clog2(PV_MAX+1)-1:0] rd_pipe_pv_cur_q;
+    logic [$clog2(C_MAX+1)-1:0]  rd_pipe_c_in_q;
+    logic [BANK_W-1:0]    rd_pipe_bank_base_q;
+    logic [31:0]          rd_pipe_m2_cgrp_u32_q;
+    logic [31:0]          rd_pipe_m2_col_l_u32_q;
+    logic [31:0]          rd_pipe_m2_bank_u32_q;
+    logic [31:0]          rd_pipe_m2_addr_u32_q;
+
+    logic [WORD_W-1:0]    rd_bram_word;
+    logic [WORD_W-1:0]    rd_data_masked;
+
+    assign rd_valid          = rd_pipe_valid_q;
+    assign rd_data           = rd_data_masked;
     assign dma_wr_ready      = ~ofm_wr_en;
     assign ofm_wr_ready      = ~dma_wr_en;
     assign dbg_m1_row_base   = m1_row_base_q;
@@ -301,11 +397,9 @@ module ifm_buffer #(
             m1_free_valid_q       <= 1'b0;
             m1_free_row_slot_l_q  <= '0;
             m1_free_row_g_q       <= '0;
-            for (int ti = 0; ti < C_MAX; ti++) begin
-                for (int tj = 0; tj < DEPTH; tj++) begin
-                    m2_slot_valid[ti][tj]   <= 1'b0;
-                    m2_slot_col_tag[ti][tj] <= '0;
-                end
+            for (int ti = 0; ti < M2_SLOT_COUNT; ti++) begin
+                m2_slot_valid_flat[ti]   <= 1'b0;
+                m2_slot_col_tag_flat[ti] <= '0;
             end
         end
         else begin
@@ -493,21 +587,49 @@ module ifm_buffer #(
     end
 
     //==================================================
-    // Write path
+    // Mode2 metadata flat indices
     //==================================================
-    integer wlane;
+    always_comb begin
+        m2_wr_slot_idx = '0;
+        if (wr_addr_valid && (wr_bank_phys_sel < C_MAX) && (wr_addr < DEPTH)) begin
+            m2_wr_slot_idx = (wr_bank_phys_sel * DEPTH) + wr_addr;
+        end
+
+        m2_rd_slot_idx   = '0;
+        m2_rd_slot_valid = 1'b0;
+        if ((rd_m2_bank_u32 < C_MAX) && (rd_addr_m2_u32 < DEPTH)) begin
+            m2_rd_slot_idx   = (rd_m2_bank_u32 * DEPTH) + rd_addr_m2_u32;
+            m2_rd_slot_valid = 1'b1;
+        end
+    end
+
+    //==================================================
+    // Write path
+    // Data payload goes through per-bank BRAM wrapper ports.  Metadata remains
+    // unchanged and is updated only for OFM->IFM Mode2 writes as in the stable
+    // version.
+    //==================================================
+    always_comb begin
+        for (int wb = 0; wb < C_MAX; wb++) begin
+            data_wr_en  [wb] = 1'b0;
+            data_wr_addr[wb] = '0;
+            data_wr_keep[wb] = '0;
+            data_wr_data[wb] = '0;
+        end
+
+        if (wr_en_sel && wr_addr_valid && (wr_bank_phys_sel < C_MAX)) begin
+            data_wr_en  [wr_bank_phys_sel] = 1'b1;
+            data_wr_addr[wr_bank_phys_sel] = wr_addr;
+            data_wr_keep[wr_bank_phys_sel] = wr_keep_sel;
+            data_wr_data[wr_bank_phys_sel] = wr_data_sel;
+        end
+    end
+
     always_ff @(posedge clk) begin
         if (wr_en_sel && wr_addr_valid) begin
-            for (wlane = 0; wlane < PV_MAX; wlane++) begin
-                if (wr_keep_sel[wlane]) begin
-                    mem[wr_bank_phys_sel][wr_addr][wlane*DATA_W +: DATA_W]
-                        <= wr_data_sel[wlane*DATA_W +: DATA_W];
-                end
-            end
-
             if (wr_src_is_ofm && ofm_wr_mode2 && (wr_bank_phys_sel < C_MAX)) begin
-                m2_slot_valid[wr_bank_phys_sel][wr_addr]   <= 1'b1;
-                m2_slot_col_tag[wr_bank_phys_sel][wr_addr] <= ofm_wr_col_g[COL_W-1:0];
+                m2_slot_valid_flat[m2_wr_slot_idx]   <= 1'b1;
+                m2_slot_col_tag_flat[m2_wr_slot_idx] <= ofm_wr_col_g[COL_W-1:0];
             end
         end
     end
@@ -542,379 +664,103 @@ module ifm_buffer #(
 
     always_comb begin
         rd_m2_tag_hit = 1'b0;
-        if ((rd_m2_bank_u32 < C_MAX) && (rd_addr_m2_u32 < DEPTH)) begin
-            rd_m2_tag_hit = m2_slot_valid[rd_m2_bank_u32][rd_addr_m2] &&
-                            (m2_slot_col_tag[rd_m2_bank_u32][rd_addr_m2] == rd_col_g[COL_W-1:0]);
+        if (m2_rd_slot_valid) begin
+            rd_m2_tag_hit = m2_slot_valid_flat[m2_rd_slot_idx] &&
+                            (m2_slot_col_tag_flat[m2_rd_slot_idx] == rd_col_g[COL_W-1:0]);
         end
     end
 
     //==================================================
-    // Read path: 1-cycle registered output
+    // Read path
+    // The BRAM wrapper has a synchronous read port.  The request bank/address
+    // are driven before the clock edge; the selected bank output and the
+    // pipelined request metadata are used together after that edge.
     //==================================================
-    integer rlane;
+    always_comb begin
+        rd_req_valid = 1'b0;
+        rd_req_bank  = '0;
+        rd_req_addr  = '0;
+
+        if (rd_en) begin
+            if (!cfg_mode_q) begin
+                rd_req_bank  = rd_bank_base[BANK_W-1:0];
+                rd_req_addr  = rd_addr_m1;
+                rd_req_valid = (rd_bank_base < C_MAX) && (rd_addr_m1 < DEPTH);
+            end else if (rd_m2_tag_hit) begin
+                rd_req_bank  = rd_m2_bank_u32[BANK_W-1:0];
+                rd_req_addr  = rd_addr_m2;
+                rd_req_valid = (rd_m2_bank_u32 < C_MAX) && (rd_addr_m2_u32 < DEPTH);
+            end
+        end
+    end
+
+    always_comb begin
+        for (int rb = 0; rb < C_MAX; rb++) begin
+            data_rd_en  [rb] = 1'b0;
+            data_rd_addr[rb] = '0;
+        end
+
+        if (rd_req_valid) begin
+            data_rd_en  [rd_req_bank] = 1'b1;
+            data_rd_addr[rd_req_bank] = rd_req_addr;
+        end
+    end
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            rd_valid_q <= 1'b0;
-            rd_data_q  <= '0;
+            rd_pipe_valid_q        <= 1'b0;
+            rd_pipe_mode_q         <= 1'b0;
+            rd_pipe_bank_q         <= '0;
+            rd_pipe_pv_cur_q       <= '0;
+            rd_pipe_c_in_q         <= '0;
+            rd_pipe_bank_base_q    <= '0;
+            rd_pipe_m2_cgrp_u32_q  <= 32'd0;
+            rd_pipe_m2_col_l_u32_q <= 32'd0;
+            rd_pipe_m2_bank_u32_q  <= 32'd0;
+            rd_pipe_m2_addr_u32_q  <= 32'd0;
+        end else begin
+            rd_pipe_valid_q        <= rd_req_valid;
+            rd_pipe_mode_q         <= cfg_mode_q;
+            rd_pipe_bank_q         <= rd_req_bank;
+            rd_pipe_pv_cur_q       <= cfg_pv_cur_q;
+            rd_pipe_c_in_q         <= cfg_c_in_q;
+            rd_pipe_bank_base_q    <= rd_bank_base[BANK_W-1:0];
+            rd_pipe_m2_cgrp_u32_q  <= rd_m2_cgrp_u32;
+            rd_pipe_m2_col_l_u32_q <= rd_m2_col_l_u32;
+            rd_pipe_m2_bank_u32_q  <= rd_m2_bank_u32;
+            rd_pipe_m2_addr_u32_q  <= rd_addr_m2_u32;
         end
-        else begin
-            rd_valid_q <= rd_en && (!cfg_mode_q || rd_m2_tag_hit);
-            rd_data_q  <= '0;
+    end
 
-            if (rd_en) begin
-                if (!cfg_mode_q) begin
-                    for (rlane = 0; rlane < PV_MAX; rlane++) begin
-                        if (rlane < cfg_pv_cur_q) begin
-                            rd_data_q[rlane*DATA_W +: DATA_W]
-                                <= mem[rd_bank_base][rd_addr_m1][rlane*DATA_W +: DATA_W];
-                        end
-                        else begin
-                            rd_data_q[rlane*DATA_W +: DATA_W] <= '0;
-                        end
+    always_comb begin
+        rd_bram_word   = '0;
+        rd_data_masked = '0;
+
+        if (rd_pipe_bank_q < C_MAX) begin
+            rd_bram_word = data_rd_data[rd_pipe_bank_q];
+        end
+
+        if (rd_pipe_valid_q) begin
+            if (!rd_pipe_mode_q) begin
+                for (int lane = 0; lane < PV_MAX; lane++) begin
+                    if (lane < rd_pipe_pv_cur_q) begin
+                        rd_data_masked[lane*DATA_W +: DATA_W] = rd_bram_word[lane*DATA_W +: DATA_W];
                     end
                 end
-                else if (rd_m2_tag_hit) begin
-                    // MODE 2 FIXED CONTRACT:
-                    //   bank = cgrp*PC + col_l = rd_bank_base + rd_col_idx
-                    //   addr = row
-                    //   lane = pc_l = rlane
-                    //
-                    // rd_bank_base carries cgrp*PC and rd_col_idx carries col_l,
-                    // so existing upstream mode-2 address generation remains
-                    // source-compatible while the physical layout is corrected.
-                    for (rlane = 0; rlane < PV_MAX; rlane++) begin
-                        if ((rlane < PC) &&
-                            ((rd_bank_base + rlane) < cfg_c_in_q) &&
-                            (rd_m2_col_l_u32 < PC) &&
-                            (rd_m2_cgrp_u32 < M2_CGRP_MAX) &&
-                            (rd_m2_bank_u32 < C_MAX) &&
-                            (rd_addr_m2_u32 < DEPTH)) begin
-
-                            rd_data_q[rlane*DATA_W +: DATA_W]
-                                <= mem[rd_m2_bank_u32][rd_addr_m2][rlane*DATA_W +: DATA_W];
-                        end
-                        else begin
-                            rd_data_q[rlane*DATA_W +: DATA_W] <= '0;
-                        end
+            end else begin
+                for (int lane = 0; lane < PV_MAX; lane++) begin
+                    if ((lane < PC) &&
+                        ((rd_pipe_bank_base_q + lane) < rd_pipe_c_in_q) &&
+                        (rd_pipe_m2_col_l_u32_q < PC) &&
+                        (rd_pipe_m2_cgrp_u32_q < M2_CGRP_MAX) &&
+                        (rd_pipe_m2_bank_u32_q < C_MAX) &&
+                        (rd_pipe_m2_addr_u32_q < DEPTH)) begin
+                        rd_data_masked[lane*DATA_W +: DATA_W] = rd_bram_word[lane*DATA_W +: DATA_W];
                     end
                 end
             end
         end
     end
-    
 
-always_ff @(posedge clk or negedge rst_n) begin
-  if (!rst_n) begin
-    // no-op
-  end else begin
-    if (cfg_mode) begin
-
-      if (dma_wr_en && dma_wr_ready) begin
-        $display("DBG_IFM_M2_DMA_WR t=%0t bank_col_l=%0d row=%0d cgrp=%0d keep=%h data0=%0d data1=%0d",
-                 $time,
-                 dma_wr_bank,
-                 dma_wr_row_idx,
-                 dma_wr_col_idx,
-                 dma_wr_keep,
-                 $signed(dma_wr_data[0*DATA_W +: DATA_W]),
-                 $signed(dma_wr_data[1*DATA_W +: DATA_W]));
-      end
-
-      if (ofm_wr_en && ofm_wr_ready) begin
-        $display("DBG_IFM_M2_OFM_WR t=%0t bank_col_l=%0d row=%0d cgrp=%0d keep=%h data0=%0d data1=%0d",
-                 $time,
-                 ofm_wr_bank,
-                 ofm_wr_row_idx,
-                 ofm_wr_col_idx,
-                 ofm_wr_keep,
-                 $signed(ofm_wr_data[0*DATA_W +: DATA_W]),
-                 $signed(ofm_wr_data[1*DATA_W +: DATA_W]));
-      end
-
-      // Focus on reads near the problematic right edge of the resident PC window.
-      if (rd_en && ((rd_col_idx <= 2) || (rd_col_idx >= PC-2))) begin
-        $display("DBG_IFM_M2_RD t=%0t bank_base=%0d row=%0d col_l=%0d cgrp=%0d rd_valid=%0b data0=%0d data1=%0d",
-                 $time,
-                 rd_bank_base,
-                 rd_row_idx,
-                 rd_col_idx,
-                 (PC == 0) ? 0 : (rd_bank_base / PC),
-                 rd_valid,
-                 $signed(rd_data[0*DATA_W +: DATA_W]),
-                 $signed(rd_data[1*DATA_W +: DATA_W]));
-      end
-    end
-  end
-end
-
-`ifndef SYNTHESIS
-
-logic        dbg_ifm_m2_rd_q;
-logic        dbg_ifm_m2_rd_focus_q;
-logic [$clog2(C_MAX)-1:0] dbg_ifm_m2_bank_base_q;
-logic [$clog2(H_MAX)-1:0] dbg_ifm_m2_row_q;
-logic [$clog2(W_MAX)-1:0] dbg_ifm_m2_col_l_q;
-logic [31:0] dbg_ifm_m2_cgrp_q;
-logic [31:0] dbg_ifm_m2_addr_q;
-
-function automatic logic dbg_ifm_m2_col_focus(input logic [31:0] col_l);
-begin
-  dbg_ifm_m2_col_focus = (col_l <= 32'd2) || ((PC > 2) && ((col_l + 32'd2) >= PC));
-end
-endfunction
-
-always_ff @(posedge clk or negedge rst_n) begin
-  if (!rst_n) begin
-    dbg_ifm_m2_rd_q         <= 1'b0;
-    dbg_ifm_m2_rd_focus_q   <= 1'b0;
-    dbg_ifm_m2_bank_base_q  <= '0;
-    dbg_ifm_m2_row_q        <= '0;
-    dbg_ifm_m2_col_l_q      <= '0;
-    dbg_ifm_m2_cgrp_q       <= 32'd0;
-    dbg_ifm_m2_addr_q       <= 32'd0;
-  end else begin
-
-    if (cfg_mode_q) begin
-
-      if (ofm_wr_en && ofm_wr_ready && ((ofm_wr_bank <= 2) || ((PC > 2) && ((ofm_wr_bank + 16'd2) >= PC)) || (ofm_wr_row_idx < 4))) begin
-        $display("DBG_IFM_M2_OFM_WR_X t=%0t col_l=%0d row=%0d cgrp=%0d phys_bank=%0d keep=%h wr_addr_valid=%0b wr_addr=%0d data0=%0d data1=%0d", $time, ofm_wr_bank, ofm_wr_row_idx, ofm_wr_col_idx, wr_bank_phys_sel, ofm_wr_keep, wr_addr_valid, wr_addr, $signed(ofm_wr_data[0*DATA_W +: DATA_W]), $signed(ofm_wr_data[1*DATA_W +: DATA_W]));
-      end
-
-      if (rd_en && dbg_ifm_m2_col_focus(rd_col_idx)) begin
-        $display("DBG_IFM_M2_RD_REQ t=%0t bank_base=%0d row=%0d col_l=%0d cgrp=%0d phys_bank=%0d rd_addr_u32=%0d rd_addr=%0d cfg_C=%0d cfg_H=%0d cfg_W=%0d", $time, rd_bank_base, rd_row_idx, rd_col_idx, rd_m2_cgrp_u32, rd_m2_bank_u32, rd_addr_m2_u32, rd_addr_m2, cfg_c_in_q, cfg_h_in_q, cfg_w_in_q);
-      end
-
-      if (dbg_ifm_m2_rd_q && dbg_ifm_m2_rd_focus_q) begin
-        $display("DBG_IFM_M2_RD_RET t=%0t bank_base=%0d row=%0d col_l=%0d cgrp=%0d addr=%0d rd_valid=%0b data0=%0d data1=%0d cfg_C=%0d", $time, dbg_ifm_m2_bank_base_q, dbg_ifm_m2_row_q, dbg_ifm_m2_col_l_q, dbg_ifm_m2_cgrp_q, dbg_ifm_m2_addr_q, rd_valid_q, $signed(rd_data_q[0*DATA_W +: DATA_W]), $signed(rd_data_q[1*DATA_W +: DATA_W]), cfg_c_in_q);
-      end
-
-    end
-
-    dbg_ifm_m2_rd_q <= cfg_mode_q && rd_en;
-
-    if (cfg_mode_q && rd_en) begin
-      dbg_ifm_m2_bank_base_q <= rd_bank_base;
-      dbg_ifm_m2_row_q       <= rd_row_idx;
-      dbg_ifm_m2_col_l_q     <= rd_col_idx;
-      dbg_ifm_m2_cgrp_q      <= rd_m2_cgrp_u32;
-      dbg_ifm_m2_addr_q      <= rd_addr_m2_u32;
-      dbg_ifm_m2_rd_focus_q  <= dbg_ifm_m2_col_focus(rd_col_idx) || (rd_row_idx < 4);
-    end else begin
-      dbg_ifm_m2_rd_focus_q <= 1'b0;
-    end
-
-  end
-end
-
-`endif
-
-`ifndef SYNTHESIS
-
-always_ff @(posedge clk or negedge rst_n) begin : DBG_IFM_M2_PAYLOAD_PATH_MON
-  if (!rst_n) begin
-    // no-op
-  end else begin
-    if (cfg_mode_q) begin
-      // OFM->IFM write request as seen by IFM buffer
-      if (ofm_wr_en && ofm_wr_ready && ((ofm_wr_row_idx < 4) || (ofm_wr_col_idx < 2) || (ofm_wr_data[0*DATA_W +: DATA_W] == '0))) begin
-        $display("DBG_IFM_M2_OFM_WR_IN t=%0t bank_col_l=%0d row=%0d cgrp=%0d keep=%h data0=%0d data1=%0d data2=%0d data3=%0d", $time, ofm_wr_bank, ofm_wr_row_idx, ofm_wr_col_idx, ofm_wr_keep, $signed(ofm_wr_data[0*DATA_W +: DATA_W]), $signed(ofm_wr_data[1*DATA_W +: DATA_W]), $signed(ofm_wr_data[2*DATA_W +: DATA_W]), $signed(ofm_wr_data[3*DATA_W +: DATA_W]));
-      end
-
-      // Actual selected write mapping inside IFM buffer
-      if (wr_en_sel && wr_src_is_ofm && wr_addr_valid && ((wr_row_idx_sel < 4) || (wr_col_idx_sel < 2) || (wr_data_sel[0*DATA_W +: DATA_W] == '0))) begin
-        $display("DBG_IFM_M2_OFM_WR_MAP t=%0t wr_bank=%0d wr_row=%0d wr_colidx_cgrp=%0d wr_addr=%0d keep=%h data0=%0d data1=%0d data2=%0d data3=%0d", $time, wr_bank_sel, wr_row_idx_sel, wr_col_idx_sel, wr_addr, wr_keep_sel, $signed(wr_data_sel[0*DATA_W +: DATA_W]), $signed(wr_data_sel[1*DATA_W +: DATA_W]), $signed(wr_data_sel[2*DATA_W +: DATA_W]), $signed(wr_data_sel[3*DATA_W +: DATA_W]));
-      end
-
-      // Read request from addr_gen/CE
-      if (rd_en && ((rd_row_idx < 4) || (rd_col_idx < 4) || (rd_valid_q == 1'b0))) begin
-        $display("DBG_IFM_M2_RD_PATH t=%0t rd_en=%0b bank_base=%0d row=%0d col_l=%0d cgrp=%0d rd_addr_u32=%0d rd_addr=%0d rd_valid_q=%0b data0=%0d data1=%0d data2=%0d data3=%0d", $time, rd_en, rd_bank_base, rd_row_idx, rd_col_idx, rd_m2_cgrp_u32, rd_addr_m2_u32, rd_addr_m2, rd_valid_q, $signed(rd_data_q[0*DATA_W +: DATA_W]), $signed(rd_data_q[1*DATA_W +: DATA_W]), $signed(rd_data_q[2*DATA_W +: DATA_W]), $signed(rd_data_q[3*DATA_W +: DATA_W]));
-      end
-    end
-  end
-end
-
-`endif
-
-`ifndef SYNTHESIS
-
-logic        dbg_m2_wr_q;
-integer      dbg_m2_wr_bank_q;
-integer      dbg_m2_wr_addr_q;
-integer      dbg_m2_wr_row_q;
-integer      dbg_m2_wr_cgrp_q;
-integer      dbg_m2_wr_col_l_q;
-integer      dbg_m2_wr_col_g_q;
-
-always_ff @(posedge clk or negedge rst_n) begin : DBG_IFM_M2_PHYS_MAP_MON
-  if (!rst_n) begin
-    dbg_m2_wr_q       <= 1'b0;
-    dbg_m2_wr_bank_q  <= 0;
-    dbg_m2_wr_addr_q  <= 0;
-    dbg_m2_wr_row_q   <= 0;
-    dbg_m2_wr_cgrp_q  <= 0;
-    dbg_m2_wr_col_l_q <= 0;
-    dbg_m2_wr_col_g_q <= 0;
-  end else begin
-    if (dbg_m2_wr_q) begin
-      if ((dbg_m2_wr_bank_q >= 0) && (dbg_m2_wr_bank_q < C_MAX) &&
-          (dbg_m2_wr_addr_q >= 0) && (dbg_m2_wr_addr_q < DEPTH)) begin
-        $display("DBG_IFM_M2_WR_COMMIT_PHYS t=%0t bank_phys=%0d addr=%0d row=%0d cgrp=%0d col_l=%0d col_g=%0d mem0=%0d mem1=%0d mem2=%0d mem3=%0d tag_valid=%0b tag=%0d",
-          $time,
-          dbg_m2_wr_bank_q,
-          dbg_m2_wr_addr_q,
-          dbg_m2_wr_row_q,
-          dbg_m2_wr_cgrp_q,
-          dbg_m2_wr_col_l_q,
-          dbg_m2_wr_col_g_q,
-          $signed(mem[dbg_m2_wr_bank_q][dbg_m2_wr_addr_q][0*DATA_W +: DATA_W]),
-          $signed(mem[dbg_m2_wr_bank_q][dbg_m2_wr_addr_q][1*DATA_W +: DATA_W]),
-          $signed(mem[dbg_m2_wr_bank_q][dbg_m2_wr_addr_q][2*DATA_W +: DATA_W]),
-          $signed(mem[dbg_m2_wr_bank_q][dbg_m2_wr_addr_q][3*DATA_W +: DATA_W]),
-          m2_slot_valid[dbg_m2_wr_bank_q][dbg_m2_wr_addr_q],
-          m2_slot_col_tag[dbg_m2_wr_bank_q][dbg_m2_wr_addr_q]
-        );
-      end
-    end
-
-    dbg_m2_wr_q <= 1'b0;
-
-    if (wr_en_sel && wr_src_is_ofm && ofm_wr_mode2 && wr_addr_valid &&
-        (wr_row_idx_sel < 4) && (wr_col_idx_sel < 4) && (wr_bank_sel < 4)) begin
-      $display("DBG_IFM_M2_WR_REQ_PHYS t=%0t logical_col_l=%0d cgrp=%0d row=%0d col_g=%0d bank_phys_calc=%0d bank_phys_used=%0d addr_calc=%0d addr_used=%0d data0=%0d data1=%0d data2=%0d data3=%0d",
-        $time,
-        wr_bank_sel,
-        wr_col_idx_sel,
-        wr_row_idx_sel,
-        ofm_wr_col_g,
-        (wr_col_idx_sel * PC) + wr_bank_sel,
-        wr_bank_phys_sel,
-        wr_row_idx_sel,
-        wr_addr,
-        $signed(wr_data_sel[0*DATA_W +: DATA_W]),
-        $signed(wr_data_sel[1*DATA_W +: DATA_W]),
-        $signed(wr_data_sel[2*DATA_W +: DATA_W]),
-        $signed(wr_data_sel[3*DATA_W +: DATA_W])
-      );
-
-      dbg_m2_wr_q       <= 1'b1;
-      dbg_m2_wr_bank_q  <= wr_bank_phys_sel;
-      dbg_m2_wr_addr_q  <= wr_addr;
-      dbg_m2_wr_row_q   <= wr_row_idx_sel;
-      dbg_m2_wr_cgrp_q  <= wr_col_idx_sel;
-      dbg_m2_wr_col_l_q <= wr_bank_sel;
-      dbg_m2_wr_col_g_q <= ofm_wr_col_g;
-    end
-
-    if (rd_en && cfg_mode_q && (rd_row_idx < 4) && (rd_bank_base < 64) && (rd_col_idx < 4)) begin
-      $display("DBG_IFM_M2_RD_REQ_PHYS t=%0t rd_bank_base=%0d cgrp=%0d col_l=%0d row=%0d rd_col_g=%0d bank_phys_calc=%0d addr_calc=%0d rd_valid_q=%0b data0=%0d data1=%0d data2=%0d data3=%0d tag_valid=%0b tag=%0d",
-        $time,
-        rd_bank_base,
-        (rd_bank_base / PC),
-        rd_col_idx,
-        rd_row_idx,
-        rd_col_g,
-        rd_bank_base + rd_col_idx,
-        rd_row_idx,
-        rd_valid_q,
-        $signed(rd_data_q[0*DATA_W +: DATA_W]),
-        $signed(rd_data_q[1*DATA_W +: DATA_W]),
-        $signed(rd_data_q[2*DATA_W +: DATA_W]),
-        $signed(rd_data_q[3*DATA_W +: DATA_W]),
-        (((rd_bank_base + rd_col_idx) < C_MAX) && (rd_row_idx < DEPTH)) ? m2_slot_valid[rd_bank_base + rd_col_idx][rd_row_idx] : 1'b0,
-        (((rd_bank_base + rd_col_idx) < C_MAX) && (rd_row_idx < DEPTH)) ? m2_slot_col_tag[rd_bank_base + rd_col_idx][rd_row_idx] : '0
-      );
-    end
-  end
-end
-
-`endif
-
-`ifndef SYNTHESIS
-
-always_ff @(posedge clk or negedge rst_n) begin : DBG_IFM_ANY_RD_MON
-  integer dbg_bank_phys;
-  integer dbg_addr_phys;
-begin
-  if (!rst_n) begin
-  end else begin
-    if (rd_en) begin
-      dbg_bank_phys = rd_bank_base + rd_col_idx;
-      dbg_addr_phys = rd_row_idx;
-
-      $display("DBG_IFM_ANY_RD t=%0t cfg_mode=%0b rd_en=%0b rd_bank_base=%0d rd_row=%0d rd_col_idx=%0d rd_col_g=%0d calc_bank=%0d calc_addr=%0d rd_valid_q=%0b rd_data0=%0d rd_data1=%0d rd_data2=%0d rd_data3=%0d",
-        $time,
-        cfg_mode_q,
-        rd_en,
-        rd_bank_base,
-        rd_row_idx,
-        rd_col_idx,
-        rd_col_g,
-        dbg_bank_phys,
-        dbg_addr_phys,
-        rd_valid_q,
-        $signed(rd_data_q[0*DATA_W +: DATA_W]),
-        $signed(rd_data_q[1*DATA_W +: DATA_W]),
-        $signed(rd_data_q[2*DATA_W +: DATA_W]),
-        $signed(rd_data_q[3*DATA_W +: DATA_W])
-      );
-
-      if ((dbg_bank_phys >= 0) && (dbg_bank_phys < C_MAX) &&
-          (dbg_addr_phys >= 0) && (dbg_addr_phys < DEPTH)) begin
-        $display("DBG_IFM_ANY_RD_MEM t=%0t calc_bank=%0d calc_addr=%0d mem0=%0d mem1=%0d mem2=%0d mem3=%0d tag_valid=%0b tag=%0d",
-          $time,
-          dbg_bank_phys,
-          dbg_addr_phys,
-          $signed(mem[dbg_bank_phys][dbg_addr_phys][0*DATA_W +: DATA_W]),
-          $signed(mem[dbg_bank_phys][dbg_addr_phys][1*DATA_W +: DATA_W]),
-          $signed(mem[dbg_bank_phys][dbg_addr_phys][2*DATA_W +: DATA_W]),
-          $signed(mem[dbg_bank_phys][dbg_addr_phys][3*DATA_W +: DATA_W]),
-          m2_slot_valid[dbg_bank_phys][dbg_addr_phys],
-          m2_slot_col_tag[dbg_bank_phys][dbg_addr_phys]
-        );
-      end
-    end
-  end
-end
-end
-
-`endif
-
-
-`ifndef SYNTHESIS
-always_ff @(posedge clk or negedge rst_n) begin : DBG_IFM_RD_RAW_ALWAYS
-  integer b;
-  integer a;
-  if (!rst_n) begin
-  end else begin
-    if (rd_en) begin
-      b = rd_bank_base + rd_col_idx;
-      a = rd_row_idx;
-
-      $display("DBG_IFM_RD_RAW t=%0t cfg_mode=%0b rd_en=%0b rd_bank_base=%0d rd_col_idx=%0d rd_row=%0d rd_col_g=%0d calc_bank=%0d calc_addr=%0d rd_valid_q=%0b rd_data0=%0d rd_data1=%0d rd_data2=%0d rd_data3=%0d",
-        $time, cfg_mode_q, rd_en,
-        rd_bank_base, rd_col_idx, rd_row_idx, rd_col_g,
-        b, a, rd_valid_q,
-        $signed(rd_data_q[0*DATA_W +: DATA_W]),
-        $signed(rd_data_q[1*DATA_W +: DATA_W]),
-        $signed(rd_data_q[2*DATA_W +: DATA_W]),
-        $signed(rd_data_q[3*DATA_W +: DATA_W])
-      );
-
-      if ((b >= 0) && (b < C_MAX) && (a >= 0) && (a < DEPTH)) begin
-        $display("DBG_IFM_RD_RAW_MEM t=%0t calc_bank=%0d calc_addr=%0d mem0=%0d mem1=%0d mem2=%0d mem3=%0d tag_valid=%0b tag=%0d",
-          $time, b, a,
-          $signed(mem[b][a][0*DATA_W +: DATA_W]),
-          $signed(mem[b][a][1*DATA_W +: DATA_W]),
-          $signed(mem[b][a][2*DATA_W +: DATA_W]),
-          $signed(mem[b][a][3*DATA_W +: DATA_W]),
-          m2_slot_valid[b][a],
-          m2_slot_col_tag[b][a]
-        );
-      end
-    end
-  end
-end
-`endif
 
 endmodule

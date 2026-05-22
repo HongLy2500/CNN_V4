@@ -65,7 +65,6 @@ module weight_read_ctrl_mode1 #(
   // very long combinational path.
   logic [3:0]  K_q;
   logic [9:0]  C_q;
-  logic [9:0]  F_q;
   logic [7:0]  Pv_q;
   logic [7:0]  Pf_q;
   logic [15:0] Wout_q;
@@ -75,7 +74,6 @@ module weight_read_ctrl_mode1 #(
     if (!rst_n) begin
       K_q          <= '0;
       C_q          <= '0;
-      F_q          <= '0;
       Pv_q         <= '0;
       Pf_q         <= '0;
       Wout_q       <= '0;
@@ -84,7 +82,6 @@ module weight_read_ctrl_mode1 #(
     else begin
       K_q    <= K_cur;
       C_q    <= C_cur;
-      F_q    <= F_cur;
       Pv_q   <= Pv_cur;
       Pf_q   <= Pf_cur;
       Wout_q <= Wout_cur;
@@ -265,9 +262,6 @@ module weight_read_ctrl_mode1 #(
   logic [BASE_W-1:0]    cmd_base_lane_q;
   logic                 cmd_buf_sel_q;
 
-  // Metadata aligned with cmd_valid_q.
-  logic [15:0] cmd_fgroup_q, cmd_c_q;
-  logic [7:0]  cmd_ky_q, cmd_kx_q;
 
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
@@ -328,10 +322,6 @@ module weight_read_ctrl_mode1 #(
       cmd_addr_q      <= '0;
       cmd_base_lane_q <= '0;
       cmd_buf_sel_q   <= 1'b0;
-      cmd_fgroup_q    <= '0;
-      cmd_c_q         <= '0;
-      cmd_ky_q        <= '0;
-      cmd_kx_q        <= '0;
 
       req_fgroup_r    <= 16'd0;
       req_c_r         <= 16'd0;
@@ -431,10 +421,6 @@ module weight_read_ctrl_mode1 #(
       cmd_addr_q      <= s4_phys_addr_q[WB_ADDR_W-1:0];
       cmd_base_lane_q <= s4_base_lane_q[BASE_W-1:0];
       cmd_buf_sel_q   <= s4_buf_sel_q;
-      cmd_fgroup_q    <= s4_fgroup_q;
-      cmd_c_q         <= s4_c_q;
-      cmd_ky_q        <= s4_ky_q;
-      cmd_kx_q        <= s4_kx_q;
 
       // Mark request in-flight when the command is launched from stage 4 into
       // the registered output. The weight buffer captures cmd_valid_q one cycle
