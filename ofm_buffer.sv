@@ -251,52 +251,19 @@ module ofm_buffer #(
     // ============================================================
     // Physical storage
     // ============================================================
-    // Split the OFM storage into small 1D bank chunks. This keeps each
-    // declared variable small enough for Vivado while preserving the
-    // original logical bank+addr contract used by Mode1, Mode2, DMA,
-    // and OFM->IFM streaming. The helper functions/tasks below are the
-    // only access layer; they map logical {bank,addr} to {group,local_addr}.
-    localparam int OFM_BANKS_PER_GROUP = 4;
-    localparam int OFM_NUM_GROUPS      = (C_MAX + OFM_BANKS_PER_GROUP - 1) / OFM_BANKS_PER_GROUP;
-    localparam int OFM_NUM_GROUPS_IMPL = 16; // supports C_MAX <= 64 with 4 banks/group
-    localparam int OFM_GROUP_DEPTH     = OFM_BANKS_PER_GROUP * DEPTH;
+    // Data storage is split per logical bank.  Metadata follows the same
+    // logical banking: meta bank == OFM data bank, meta addr == OFM data addr.
+    // This replaces the previous 16 grouped mem_fill_g*/mem_tag_g* arrays.
+    // The grouped arrays made Vivado build a very large case/mux network and,
+    // without an explicit RAM-style declaration, were often treated as register
+    // arrays.  A single compact {tag,fill} word per logical bank/addr is much
+    // friendlier for distributed RAM inference and removes the group-select
+    // write case from the clocked block.
+    localparam int DATA_BANKS_IMPL = 64;
+    localparam int DATA_BANK_W     = 6;
+    localparam int META_W          = TAG_W + PV_MAX;
 
-    // Data storage is split per logical bank instead of grouping 4 banks in
-    // one memory. This avoids multi-write-port usage on mem_data when one OFM
-    // beat touches several logical banks in the same clock. Fill/tag remain in
-    // compact grouped distributed arrays below because they are small metadata.
-    logic [PV_MAX-1:0] mem_fill_g0 [0:OFM_GROUP_DEPTH-1];
-    logic [PV_MAX-1:0] mem_fill_g1 [0:OFM_GROUP_DEPTH-1];
-    logic [PV_MAX-1:0] mem_fill_g2 [0:OFM_GROUP_DEPTH-1];
-    logic [PV_MAX-1:0] mem_fill_g3 [0:OFM_GROUP_DEPTH-1];
-    logic [PV_MAX-1:0] mem_fill_g4 [0:OFM_GROUP_DEPTH-1];
-    logic [PV_MAX-1:0] mem_fill_g5 [0:OFM_GROUP_DEPTH-1];
-    logic [PV_MAX-1:0] mem_fill_g6 [0:OFM_GROUP_DEPTH-1];
-    logic [PV_MAX-1:0] mem_fill_g7 [0:OFM_GROUP_DEPTH-1];
-    logic [PV_MAX-1:0] mem_fill_g8 [0:OFM_GROUP_DEPTH-1];
-    logic [PV_MAX-1:0] mem_fill_g9 [0:OFM_GROUP_DEPTH-1];
-    logic [PV_MAX-1:0] mem_fill_g10 [0:OFM_GROUP_DEPTH-1];
-    logic [PV_MAX-1:0] mem_fill_g11 [0:OFM_GROUP_DEPTH-1];
-    logic [PV_MAX-1:0] mem_fill_g12 [0:OFM_GROUP_DEPTH-1];
-    logic [PV_MAX-1:0] mem_fill_g13 [0:OFM_GROUP_DEPTH-1];
-    logic [PV_MAX-1:0] mem_fill_g14 [0:OFM_GROUP_DEPTH-1];
-    logic [PV_MAX-1:0] mem_fill_g15 [0:OFM_GROUP_DEPTH-1];
-    logic [TAG_W-1:0] mem_tag_g0 [0:OFM_GROUP_DEPTH-1];
-    logic [TAG_W-1:0] mem_tag_g1 [0:OFM_GROUP_DEPTH-1];
-    logic [TAG_W-1:0] mem_tag_g2 [0:OFM_GROUP_DEPTH-1];
-    logic [TAG_W-1:0] mem_tag_g3 [0:OFM_GROUP_DEPTH-1];
-    logic [TAG_W-1:0] mem_tag_g4 [0:OFM_GROUP_DEPTH-1];
-    logic [TAG_W-1:0] mem_tag_g5 [0:OFM_GROUP_DEPTH-1];
-    logic [TAG_W-1:0] mem_tag_g6 [0:OFM_GROUP_DEPTH-1];
-    logic [TAG_W-1:0] mem_tag_g7 [0:OFM_GROUP_DEPTH-1];
-    logic [TAG_W-1:0] mem_tag_g8 [0:OFM_GROUP_DEPTH-1];
-    logic [TAG_W-1:0] mem_tag_g9 [0:OFM_GROUP_DEPTH-1];
-    logic [TAG_W-1:0] mem_tag_g10 [0:OFM_GROUP_DEPTH-1];
-    logic [TAG_W-1:0] mem_tag_g11 [0:OFM_GROUP_DEPTH-1];
-    logic [TAG_W-1:0] mem_tag_g12 [0:OFM_GROUP_DEPTH-1];
-    logic [TAG_W-1:0] mem_tag_g13 [0:OFM_GROUP_DEPTH-1];
-    logic [TAG_W-1:0] mem_tag_g14 [0:OFM_GROUP_DEPTH-1];
-    logic [TAG_W-1:0] mem_tag_g15 [0:OFM_GROUP_DEPTH-1];
+    (* ram_style = "distributed" *) logic [META_W-1:0] mem_meta [0:DATA_BANKS_IMPL-1][0:DEPTH-1];
 
     // ============================================================
     // Synthesizable synchronous read ports for mem_data
@@ -306,8 +273,6 @@ module ofm_buffer #(
     // This bank-read fabric is the only synthesizable read path for mem_data:
     // one registered read port per logical bank.  Stream/DMA paths issue
     // requests into data_rd_* and consume data_bank_rdata_q one cycle later.
-    localparam int DATA_BANKS_IMPL = 64;
-    localparam int DATA_BANK_W     = 6;
 
     logic [DATA_BANKS_IMPL-1:0] data_rd_en_v;
     logic [DEPTH_W-1:0]         data_rd_addr_v [0:DATA_BANKS_IMPL-1];
@@ -343,78 +308,22 @@ module ofm_buffer #(
         end
     endgenerate
 
-    function automatic int ofm_mem_grp(input int bank);
-        begin
-            ofm_mem_grp = bank / OFM_BANKS_PER_GROUP;
-        end
-    endfunction
-
-    function automatic int ofm_mem_laddr(input int bank, input int addr);
-        int bank_l;
-        begin
-            bank_l = bank % OFM_BANKS_PER_GROUP;
-            ofm_mem_laddr = bank_l * DEPTH + addr;
-        end
-    endfunction
-
-
-
     function automatic logic [PV_MAX-1:0] ofm_mem_fill_read(input int bank, input int addr);
-        int la;
         begin
-            la = ofm_mem_laddr(bank, addr);
             ofm_mem_fill_read = '0;
-            if ((bank >= 0) && (bank < C_MAX) && (addr >= 0) && (addr < DEPTH) &&
-                (ofm_mem_grp(bank) < OFM_NUM_GROUPS_IMPL) && (la >= 0) && (la < OFM_GROUP_DEPTH)) begin
-                case (ofm_mem_grp(bank))
-                    0: ofm_mem_fill_read = mem_fill_g0[la];
-                    1: ofm_mem_fill_read = mem_fill_g1[la];
-                    2: ofm_mem_fill_read = mem_fill_g2[la];
-                    3: ofm_mem_fill_read = mem_fill_g3[la];
-                    4: ofm_mem_fill_read = mem_fill_g4[la];
-                    5: ofm_mem_fill_read = mem_fill_g5[la];
-                    6: ofm_mem_fill_read = mem_fill_g6[la];
-                    7: ofm_mem_fill_read = mem_fill_g7[la];
-                    8: ofm_mem_fill_read = mem_fill_g8[la];
-                    9: ofm_mem_fill_read = mem_fill_g9[la];
-                    10: ofm_mem_fill_read = mem_fill_g10[la];
-                    11: ofm_mem_fill_read = mem_fill_g11[la];
-                    12: ofm_mem_fill_read = mem_fill_g12[la];
-                    13: ofm_mem_fill_read = mem_fill_g13[la];
-                    14: ofm_mem_fill_read = mem_fill_g14[la];
-                    15: ofm_mem_fill_read = mem_fill_g15[la];
-                    default: ofm_mem_fill_read = '0;
-                endcase
+            if ((bank >= 0) && (bank < C_MAX) && (bank < DATA_BANKS_IMPL) &&
+                (addr >= 0) && (addr < DEPTH)) begin
+                ofm_mem_fill_read = mem_meta[bank][addr][PV_MAX-1:0];
             end
         end
     endfunction
 
     function automatic logic [TAG_W-1:0] ofm_mem_tag_read(input int bank, input int addr);
-        int la;
         begin
-            la = ofm_mem_laddr(bank, addr);
             ofm_mem_tag_read = '0;
-            if ((bank >= 0) && (bank < C_MAX) && (addr >= 0) && (addr < DEPTH) &&
-                (ofm_mem_grp(bank) < OFM_NUM_GROUPS_IMPL) && (la >= 0) && (la < OFM_GROUP_DEPTH)) begin
-                case (ofm_mem_grp(bank))
-                    0: ofm_mem_tag_read = mem_tag_g0[la];
-                    1: ofm_mem_tag_read = mem_tag_g1[la];
-                    2: ofm_mem_tag_read = mem_tag_g2[la];
-                    3: ofm_mem_tag_read = mem_tag_g3[la];
-                    4: ofm_mem_tag_read = mem_tag_g4[la];
-                    5: ofm_mem_tag_read = mem_tag_g5[la];
-                    6: ofm_mem_tag_read = mem_tag_g6[la];
-                    7: ofm_mem_tag_read = mem_tag_g7[la];
-                    8: ofm_mem_tag_read = mem_tag_g8[la];
-                    9: ofm_mem_tag_read = mem_tag_g9[la];
-                    10: ofm_mem_tag_read = mem_tag_g10[la];
-                    11: ofm_mem_tag_read = mem_tag_g11[la];
-                    12: ofm_mem_tag_read = mem_tag_g12[la];
-                    13: ofm_mem_tag_read = mem_tag_g13[la];
-                    14: ofm_mem_tag_read = mem_tag_g14[la];
-                    15: ofm_mem_tag_read = mem_tag_g15[la];
-                    default: ofm_mem_tag_read = '0;
-                endcase
+            if ((bank >= 0) && (bank < C_MAX) && (bank < DATA_BANKS_IMPL) &&
+                (addr >= 0) && (addr < DEPTH)) begin
+                ofm_mem_tag_read = mem_meta[bank][addr][PV_MAX +: TAG_W];
             end
         end
     endfunction
@@ -888,7 +797,6 @@ module ofm_buffer #(
         logic [DEPTH_W-1:0]         meta_clr_addr_l [0:DATA_BANKS_IMPL-1];
         logic [PV_MAX-1:0]          meta_clr_mask_l [0:DATA_BANKS_IMPL-1];
         integer                     meta_bank_i;
-        integer                     meta_la_i;
         logic [PV_MAX-1:0]          meta_clear_fill_next;
 
         if (!rst_n) begin
@@ -1583,55 +1491,25 @@ module ofm_buffer #(
                 for (meta_bank_i = 0; meta_bank_i < DATA_BANKS_IMPL; meta_bank_i++) begin
                     if ((meta_bank_i < C_MAX) && meta_set_en_l[meta_bank_i] &&
                         (meta_set_addr_l[meta_bank_i] < DEPTH)) begin
-                        meta_la_i = ofm_mem_laddr(meta_bank_i, meta_set_addr_l[meta_bank_i]);
-                        if ((ofm_mem_grp(meta_bank_i) < OFM_NUM_GROUPS_IMPL) &&
-                            (meta_la_i >= 0) && (meta_la_i < OFM_GROUP_DEPTH)) begin
-                            case (ofm_mem_grp(meta_bank_i))
-                                0:  begin mem_tag_g0 [meta_la_i] <= meta_set_tag_l [meta_bank_i]; mem_fill_g0 [meta_la_i] <= meta_set_fill_l[meta_bank_i]; end
-                                1:  begin mem_tag_g1 [meta_la_i] <= meta_set_tag_l [meta_bank_i]; mem_fill_g1 [meta_la_i] <= meta_set_fill_l[meta_bank_i]; end
-                                2:  begin mem_tag_g2 [meta_la_i] <= meta_set_tag_l [meta_bank_i]; mem_fill_g2 [meta_la_i] <= meta_set_fill_l[meta_bank_i]; end
-                                3:  begin mem_tag_g3 [meta_la_i] <= meta_set_tag_l [meta_bank_i]; mem_fill_g3 [meta_la_i] <= meta_set_fill_l[meta_bank_i]; end
-                                4:  begin mem_tag_g4 [meta_la_i] <= meta_set_tag_l [meta_bank_i]; mem_fill_g4 [meta_la_i] <= meta_set_fill_l[meta_bank_i]; end
-                                5:  begin mem_tag_g5 [meta_la_i] <= meta_set_tag_l [meta_bank_i]; mem_fill_g5 [meta_la_i] <= meta_set_fill_l[meta_bank_i]; end
-                                6:  begin mem_tag_g6 [meta_la_i] <= meta_set_tag_l [meta_bank_i]; mem_fill_g6 [meta_la_i] <= meta_set_fill_l[meta_bank_i]; end
-                                7:  begin mem_tag_g7 [meta_la_i] <= meta_set_tag_l [meta_bank_i]; mem_fill_g7 [meta_la_i] <= meta_set_fill_l[meta_bank_i]; end
-                                8:  begin mem_tag_g8 [meta_la_i] <= meta_set_tag_l [meta_bank_i]; mem_fill_g8 [meta_la_i] <= meta_set_fill_l[meta_bank_i]; end
-                                9:  begin mem_tag_g9 [meta_la_i] <= meta_set_tag_l [meta_bank_i]; mem_fill_g9 [meta_la_i] <= meta_set_fill_l[meta_bank_i]; end
-                                10: begin mem_tag_g10[meta_la_i] <= meta_set_tag_l [meta_bank_i]; mem_fill_g10[meta_la_i] <= meta_set_fill_l[meta_bank_i]; end
-                                11: begin mem_tag_g11[meta_la_i] <= meta_set_tag_l [meta_bank_i]; mem_fill_g11[meta_la_i] <= meta_set_fill_l[meta_bank_i]; end
-                                12: begin mem_tag_g12[meta_la_i] <= meta_set_tag_l [meta_bank_i]; mem_fill_g12[meta_la_i] <= meta_set_fill_l[meta_bank_i]; end
-                                13: begin mem_tag_g13[meta_la_i] <= meta_set_tag_l [meta_bank_i]; mem_fill_g13[meta_la_i] <= meta_set_fill_l[meta_bank_i]; end
-                                14: begin mem_tag_g14[meta_la_i] <= meta_set_tag_l [meta_bank_i]; mem_fill_g14[meta_la_i] <= meta_set_fill_l[meta_bank_i]; end
-                                15: begin mem_tag_g15[meta_la_i] <= meta_set_tag_l [meta_bank_i]; mem_fill_g15[meta_la_i] <= meta_set_fill_l[meta_bank_i]; end
-                                default: begin end
-                            endcase
-                        end
+                        // One compact per-bank metadata write.  Set wins over clear in the
+                        // same bank/cycle, matching the old centralized commit priority.
+                        mem_meta[meta_bank_i][meta_set_addr_l[meta_bank_i]] <= {
+                            meta_set_tag_l[meta_bank_i],
+                            meta_set_fill_l[meta_bank_i]
+                        };
                     end
                     else if ((meta_bank_i < C_MAX) && meta_clr_en_l[meta_bank_i] &&
                              (meta_clr_addr_l[meta_bank_i] < DEPTH)) begin
-                        meta_la_i = ofm_mem_laddr(meta_bank_i, meta_clr_addr_l[meta_bank_i]);
-                        if ((ofm_mem_grp(meta_bank_i) < OFM_NUM_GROUPS_IMPL) &&
-                            (meta_la_i >= 0) && (meta_la_i < OFM_GROUP_DEPTH)) begin
-                            case (ofm_mem_grp(meta_bank_i))
-                                0:  mem_fill_g0 [meta_la_i] <= mem_fill_g0 [meta_la_i] & ~meta_clr_mask_l[meta_bank_i];
-                                1:  mem_fill_g1 [meta_la_i] <= mem_fill_g1 [meta_la_i] & ~meta_clr_mask_l[meta_bank_i];
-                                2:  mem_fill_g2 [meta_la_i] <= mem_fill_g2 [meta_la_i] & ~meta_clr_mask_l[meta_bank_i];
-                                3:  mem_fill_g3 [meta_la_i] <= mem_fill_g3 [meta_la_i] & ~meta_clr_mask_l[meta_bank_i];
-                                4:  mem_fill_g4 [meta_la_i] <= mem_fill_g4 [meta_la_i] & ~meta_clr_mask_l[meta_bank_i];
-                                5:  mem_fill_g5 [meta_la_i] <= mem_fill_g5 [meta_la_i] & ~meta_clr_mask_l[meta_bank_i];
-                                6:  mem_fill_g6 [meta_la_i] <= mem_fill_g6 [meta_la_i] & ~meta_clr_mask_l[meta_bank_i];
-                                7:  mem_fill_g7 [meta_la_i] <= mem_fill_g7 [meta_la_i] & ~meta_clr_mask_l[meta_bank_i];
-                                8:  mem_fill_g8 [meta_la_i] <= mem_fill_g8 [meta_la_i] & ~meta_clr_mask_l[meta_bank_i];
-                                9:  mem_fill_g9 [meta_la_i] <= mem_fill_g9 [meta_la_i] & ~meta_clr_mask_l[meta_bank_i];
-                                10: mem_fill_g10[meta_la_i] <= mem_fill_g10[meta_la_i] & ~meta_clr_mask_l[meta_bank_i];
-                                11: mem_fill_g11[meta_la_i] <= mem_fill_g11[meta_la_i] & ~meta_clr_mask_l[meta_bank_i];
-                                12: mem_fill_g12[meta_la_i] <= mem_fill_g12[meta_la_i] & ~meta_clr_mask_l[meta_bank_i];
-                                13: mem_fill_g13[meta_la_i] <= mem_fill_g13[meta_la_i] & ~meta_clr_mask_l[meta_bank_i];
-                                14: mem_fill_g14[meta_la_i] <= mem_fill_g14[meta_la_i] & ~meta_clr_mask_l[meta_bank_i];
-                                15: mem_fill_g15[meta_la_i] <= mem_fill_g15[meta_la_i] & ~meta_clr_mask_l[meta_bank_i];
-                                default: begin end
-                            endcase
-                        end
+                        // Clear only fill bits; preserve the entry tag.  Validity remains
+                        // tag-based, so old layer entries naturally become stale without a
+                        // full metadata reset.
+                        meta_clear_fill_next =
+                            ofm_mem_fill_read(meta_bank_i, meta_clr_addr_l[meta_bank_i]) &
+                            ~meta_clr_mask_l[meta_bank_i];
+                        mem_meta[meta_bank_i][meta_clr_addr_l[meta_bank_i]] <= {
+                            ofm_mem_tag_read(meta_bank_i, meta_clr_addr_l[meta_bank_i]),
+                            meta_clear_fill_next
+                        };
                     end
                 end
 

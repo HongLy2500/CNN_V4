@@ -5,7 +5,11 @@ module weight_read_ctrl_mode1 #(
   // should be PTOTAL. One physical word in mode 1 packs Pv_cur logical bundles,
   // each logical bundle being Pf_cur weights wide.
   parameter int PTOTAL    = 256,
-  parameter int WB_ADDR_W = 12
+  parameter int WB_ADDR_W = 12,
+  // Number of prefetched Pf-bundles kept locally. This is intentionally small:
+  // it only needs to cover the address-pipeline + weight-buffer latency, not a
+  // whole layer. Keep it power-of-two for simple pointer wrap.
+  parameter int PREFETCH_DEPTH = 16
 )(
   input  logic clk,
   input  logic rst_n,
@@ -55,7 +59,12 @@ module weight_read_ctrl_mode1 #(
   output logic signed [DATA_W-1:0] weight_in_logic [0:PF_MAX-1]
 );
 
-  localparam int BASE_W = (PTOTAL > 1) ? $clog2(PTOTAL) : 1;
+  localparam int BASE_W       = (PTOTAL > 1) ? $clog2(PTOTAL) : 1;
+  localparam int FIFO_PTR_W   = (PREFETCH_DEPTH > 1) ? $clog2(PREFETCH_DEPTH) : 1;
+  localparam int FIFO_CNT_W   = (PREFETCH_DEPTH > 1) ? $clog2(PREFETCH_DEPTH + 1) : 1;
+  localparam int PREFETCH_MAX = (PREFETCH_DEPTH > 4) ? (PREFETCH_DEPTH - 2) : 1;
+  localparam int OCC_W        = FIFO_CNT_W + 4;
+  localparam logic [OCC_W-1:0] PREFETCH_MAX_C = PREFETCH_MAX;
 
   // --------------------------------------------------------------------------
   // Local registered config / derived config
@@ -94,76 +103,29 @@ module weight_read_ctrl_mode1 #(
   end
 
   // --------------------------------------------------------------------------
-  // Current / requested bundle bookkeeping
+  // Sweep / issue pointer
   // --------------------------------------------------------------------------
-  // Requested bundle currently assigned to the weight-buffer request in flight.
-  logic [15:0] req_fgroup_r, req_c_r;
-  logic [7:0]  req_ky_r, req_kx_r;
+  // The old implementation issued the next bundle only after the current bundle
+  // was consumed. That serialized this address pipeline into every MAC step.
+  // This revision keeps a separate issue pointer so the address pipeline can run
+  // ahead and fill a small Pf-bundle FIFO.
+  logic        sweep_active_q;
+  logic        issue_done_q;
+  logic [15:0] issue_fgroup_q;
+  logic [15:0] issue_c_q;
+  logic [7:0]  issue_ky_q;
+  logic [7:0]  issue_kx_q;
 
-  // Current bundle loaded in weight_register and waiting to be consumed.
-  logic [15:0] cur_fgroup_r, cur_c_r;
-  logic [7:0]  cur_ky_r, cur_kx_r;
-
-  logic        req_inflight_q;
-  logic        bundle_valid_q;
-
-  // --------------------------------------------------------------------------
-  // Issue decision logic
-  // --------------------------------------------------------------------------
-  logic        cur_last_issue;
-  logic [15:0] succ_fgroup, succ_c;
-  logic [7:0]  succ_ky, succ_kx;
-  logic [15:0] next_sweep_fgroup;
   logic        last_col;
   logic        last_fgroup;
-  logic        pipe_busy;
-  logic        issue_first;
-  logic        issue_succ;
+  logic [15:0] next_sweep_fgroup;
+  logic        issue_last_bundle;
   logic        issue_new;
-
-  // Selected logical bundle coordinate to push into the address pipeline.
-  logic [15:0] issue_fgroup;
-  logic [15:0] issue_c;
-  logic [7:0]  issue_ky;
-  logic [7:0]  issue_kx;
-
-  // Address-generation pipeline valid bits.
-  logic s0_valid_q;
-  logic s1_valid_q;
-  logic s2_valid_q;
-  logic s3_valid_q;
-  logic s4_valid_q;
-  logic cmd_valid_q;
-
-  assign pipe_busy = s0_valid_q | s1_valid_q | s2_valid_q |
-                     s3_valid_q | s4_valid_q | cmd_valid_q;
+  logic        cfg_nonzero;
 
   always_comb begin
-    cur_last_issue = (cur_c_r  == (C_q - 1'b1)) &&
-                     (cur_ky_r == (K_q - 1'b1)) &&
-                     (cur_kx_r == (K_q - 1'b1));
-
     last_col    = (Wout_q == 0) ? 1'b1 : ((out_col + Pv_q) >= Wout_q);
     last_fgroup = (num_fgroup_q == 0) ? 1'b1 : (f_group == (num_fgroup_q - 1'b1));
-
-    succ_fgroup = cur_fgroup_r;
-    succ_c      = cur_c_r;
-    succ_ky     = cur_ky_r;
-    succ_kx     = cur_kx_r;
-
-    if (cur_kx_r != (K_q - 1'b1)) begin
-      succ_kx = cur_kx_r + 1'b1;
-    end
-    else begin
-      succ_kx = '0;
-      if (cur_ky_r != (K_q - 1'b1)) begin
-        succ_ky = cur_ky_r + 1'b1;
-      end
-      else begin
-        succ_ky = '0;
-        succ_c  = cur_c_r + 1'b1;
-      end
-    end
 
     if (!last_col) begin
       next_sweep_fgroup = f_group;
@@ -175,40 +137,11 @@ module weight_read_ctrl_mode1 #(
       next_sweep_fgroup = 16'd0;
     end
 
-    // Only one request may be in the local address pipeline or in flight to the
-    // weight buffer. This keeps the original request/consume ordering but moves
-    // the expensive address calculation away from the weight_buffer input path.
-    //
-    // `start` is a new layer/sweep boundary. It must be able to issue the first
-    // request even if bundle_valid_q or the local address pipeline is still high
-    // from the previous layer before the sequential start-flush takes effect.
-    // For out_valid-driven sweeps, keep the original idle-pipeline/no-bundle
-    // requirements.
-    issue_first = wb_bank_ready && !req_inflight_q &&
-                  (start || (!pipe_busy && !bundle_valid_q && out_valid));
+    cfg_nonzero = (K_q != 0) && (C_q != 0) && (Pv_q != 0) && (Pf_q != 0);
 
-    issue_succ  = wb_bank_ready && !pipe_busy && !req_inflight_q && bundle_valid_q &&
-                  consume_en && !cur_last_issue;
-
-    issue_new = issue_first || issue_succ;
-
-    issue_fgroup = 16'd0;
-    issue_c      = 16'd0;
-    issue_ky     = '0;
-    issue_kx     = '0;
-
-    if (issue_first) begin
-      issue_fgroup = start ? 16'd0 : next_sweep_fgroup;
-      issue_c      = 16'd0;
-      issue_ky     = '0;
-      issue_kx     = '0;
-    end
-    else if (issue_succ) begin
-      issue_fgroup = succ_fgroup;
-      issue_c      = succ_c;
-      issue_ky     = succ_ky;
-      issue_kx     = succ_kx;
-    end
+    issue_last_bundle = (issue_c_q  == (C_q - 1'b1)) &&
+                        (issue_ky_q == (K_q - 1'b1)) &&
+                        (issue_kx_q == (K_q - 1'b1));
   end
 
   // --------------------------------------------------------------------------
@@ -225,7 +158,8 @@ module weight_read_ctrl_mode1 #(
   // Stage 0: selected coordinates and config snapshot
   logic [15:0] s0_fgroup_q, s0_c_q;
   logic [7:0]  s0_ky_q, s0_kx_q;
-  logic [7:0]  s0_K_q, s0_C_q, s0_Pv_q, s0_Pf_q;
+  logic [7:0]  s0_K_q, s0_Pv_q, s0_Pf_q;
+  logic [9:0]  s0_C_q;
   logic        s0_buf_sel_q;
 
   // Stage 1: f_group*C + c
@@ -262,107 +196,180 @@ module weight_read_ctrl_mode1 #(
   logic [BASE_W-1:0]    cmd_base_lane_q;
   logic                 cmd_buf_sel_q;
 
+  // Address-generation pipeline valid bits.
+  logic s0_valid_q;
+  logic s1_valid_q;
+  logic s2_valid_q;
+  logic s3_valid_q;
+  logic s4_valid_q;
+  logic cmd_valid_q;
 
+  logic [OCC_W-1:0]      pipe_count;
+  logic [FIFO_CNT_W-1:0] outstanding_count_q;
+  logic [FIFO_CNT_W-1:0] data_count_q;
+  logic [OCC_W-1:0]      prefetch_occupancy;
+  logic                  prefetch_room;
+
+  always_comb begin
+    pipe_count = '0;
+    pipe_count = pipe_count + s0_valid_q;
+    pipe_count = pipe_count + s1_valid_q;
+    pipe_count = pipe_count + s2_valid_q;
+    pipe_count = pipe_count + s3_valid_q;
+    pipe_count = pipe_count + s4_valid_q;
+    pipe_count = pipe_count + cmd_valid_q;
+
+    prefetch_occupancy = data_count_q + outstanding_count_q + pipe_count;
+    prefetch_room      = (prefetch_occupancy < PREFETCH_MAX_C);
+
+    issue_new = sweep_active_q && !issue_done_q && cfg_nonzero &&
+                wb_bank_ready && prefetch_room && !start && !out_valid;
+  end
+
+  // --------------------------------------------------------------------------
+  // Prefetch FIFO for returned Pf-bundles
+  // --------------------------------------------------------------------------
+  logic [PF_MAX*DATA_W-1:0] data_fifo_q [0:PREFETCH_DEPTH-1];
+  logic [FIFO_PTR_W-1:0]    data_wr_ptr_q;
+  logic [FIFO_PTR_W-1:0]    data_rd_ptr_q;
+  logic [PF_MAX*DATA_W-1:0] fifo_head_data;
+  logic [PF_MAX*DATA_W-1:0] load_data_mux;
+  logic                     fifo_has_data;
+  logic                     slot_can_load;
+  logic                     load_from_fifo;
+  logic                     load_bypass;
+  logic                     push_to_fifo;
+  logic                     pop_from_fifo;
+  logic                     cmd_fire;
+
+  assign fifo_head_data = data_fifo_q[data_rd_ptr_q];
+  assign fifo_has_data  = (data_count_q != '0);
+
+  // Internal mirror of the active bundle in weight_register_mode1.  It is not a
+  // second source of truth for CE execution; it only tells this prefetch block
+  // whether the CE-side weight slot can accept a new bundle.
+  logic bundle_valid_q;
+
+  assign slot_can_load  = (!bundle_valid_q) || consume_en;
+  assign load_from_fifo = slot_can_load && fifo_has_data;
+  assign load_bypass    = slot_can_load && !fifo_has_data && wb_rd_valid && !start;
+  assign push_to_fifo   = wb_rd_valid && !start && !load_bypass;
+  assign pop_from_fifo  = load_from_fifo;
+  assign load_data_mux  = load_from_fifo ? fifo_head_data : wb_rd_data;
+
+  assign weight_load_en = load_from_fifo || load_bypass;
+  assign weight_clear   = start;
+
+  // Suppress any command on the same cycle a new layer starts.  The sequential
+  // logic also flushes the local pipeline on start.
+  assign cmd_fire        = cmd_valid_q && !start;
+  assign wb_rd_en        = cmd_fire;
+  assign wb_rd_buf_sel   = cmd_buf_sel_q;
+  assign wb_rd_addr      = cmd_addr_q;
+  assign wb_rd_base_lane = cmd_base_lane_q;
+
+  integer i;
+  always_comb begin
+    for (i = 0; i < PF_MAX; i++) begin
+      if (i < Pf_q)
+        weight_in_logic[i] = load_data_mux[i*DATA_W +: DATA_W];
+      else
+        weight_in_logic[i] = '0;
+    end
+  end
+
+  // --------------------------------------------------------------------------
+  // Sequential control
+  // --------------------------------------------------------------------------
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-      s0_valid_q      <= 1'b0;
-      s1_valid_q      <= 1'b0;
-      s2_valid_q      <= 1'b0;
-      s3_valid_q      <= 1'b0;
-      s4_valid_q      <= 1'b0;
-      cmd_valid_q     <= 1'b0;
+      sweep_active_q     <= 1'b0;
+      issue_done_q       <= 1'b0;
+      issue_fgroup_q     <= 16'd0;
+      issue_c_q          <= 16'd0;
+      issue_ky_q         <= '0;
+      issue_kx_q         <= '0;
 
-      s0_fgroup_q     <= '0;
-      s0_c_q          <= '0;
-      s0_ky_q         <= '0;
-      s0_kx_q         <= '0;
-      s0_K_q          <= '0;
-      s0_C_q          <= '0;
-      s0_Pv_q         <= '0;
-      s0_Pf_q         <= '0;
-      s0_buf_sel_q    <= 1'b0;
+      s0_valid_q         <= 1'b0;
+      s1_valid_q         <= 1'b0;
+      s2_valid_q         <= 1'b0;
+      s3_valid_q         <= 1'b0;
+      s4_valid_q         <= 1'b0;
+      cmd_valid_q        <= 1'b0;
 
-      s1_fc_q         <= '0;
-      s1_ky_q         <= '0;
-      s1_kx_q         <= '0;
-      s1_K_q          <= '0;
-      s1_Pv_q         <= '0;
-      s1_Pf_q         <= '0;
-      s1_fgroup_q     <= '0;
-      s1_c_q          <= '0;
-      s1_buf_sel_q    <= 1'b0;
+      s0_fgroup_q        <= '0;
+      s0_c_q             <= '0;
+      s0_ky_q            <= '0;
+      s0_kx_q            <= '0;
+      s0_K_q             <= '0;
+      s0_C_q             <= '0;
+      s0_Pv_q            <= '0;
+      s0_Pf_q            <= '0;
+      s0_buf_sel_q       <= 1'b0;
 
-      s2_fck_q        <= '0;
-      s2_kx_q         <= '0;
-      s2_K_q          <= '0;
-      s2_Pv_q         <= '0;
-      s2_Pf_q         <= '0;
-      s2_fgroup_q     <= '0;
-      s2_c_q          <= '0;
-      s2_ky_q         <= '0;
-      s2_buf_sel_q    <= 1'b0;
+      s1_fc_q            <= '0;
+      s1_ky_q            <= '0;
+      s1_kx_q            <= '0;
+      s1_K_q             <= '0;
+      s1_Pv_q            <= '0;
+      s1_Pf_q            <= '0;
+      s1_fgroup_q        <= '0;
+      s1_c_q             <= '0;
+      s1_buf_sel_q       <= 1'b0;
 
-      s3_logical_idx_q <= '0;
-      s3_Pv_q          <= '0;
-      s3_Pf_q          <= '0;
-      s3_fgroup_q      <= '0;
-      s3_c_q           <= '0;
-      s3_ky_q          <= '0;
-      s3_kx_q          <= '0;
-      s3_buf_sel_q     <= 1'b0;
+      s2_fck_q           <= '0;
+      s2_kx_q            <= '0;
+      s2_K_q             <= '0;
+      s2_Pv_q            <= '0;
+      s2_Pf_q            <= '0;
+      s2_fgroup_q        <= '0;
+      s2_c_q             <= '0;
+      s2_ky_q            <= '0;
+      s2_buf_sel_q       <= 1'b0;
 
-      s4_phys_addr_q  <= '0;
-      s4_base_lane_q  <= '0;
-      s4_fgroup_q     <= '0;
-      s4_c_q          <= '0;
-      s4_ky_q         <= '0;
-      s4_kx_q         <= '0;
-      s4_buf_sel_q    <= 1'b0;
+      s3_logical_idx_q   <= '0;
+      s3_Pv_q            <= '0;
+      s3_Pf_q            <= '0;
+      s3_fgroup_q        <= '0;
+      s3_c_q             <= '0;
+      s3_ky_q            <= '0;
+      s3_kx_q            <= '0;
+      s3_buf_sel_q       <= 1'b0;
 
-      cmd_addr_q      <= '0;
-      cmd_base_lane_q <= '0;
-      cmd_buf_sel_q   <= 1'b0;
+      s4_phys_addr_q     <= '0;
+      s4_base_lane_q     <= '0;
+      s4_fgroup_q        <= '0;
+      s4_c_q             <= '0;
+      s4_ky_q            <= '0;
+      s4_kx_q            <= '0;
+      s4_buf_sel_q       <= 1'b0;
 
-      req_fgroup_r    <= 16'd0;
-      req_c_r         <= 16'd0;
-      req_ky_r        <= '0;
-      req_kx_r        <= '0;
-      cur_fgroup_r    <= 16'd0;
-      cur_c_r         <= 16'd0;
-      cur_ky_r        <= '0;
-      cur_kx_r        <= '0;
-      req_inflight_q  <= 1'b0;
-      bundle_valid_q  <= 1'b0;
+      cmd_addr_q         <= '0;
+      cmd_base_lane_q    <= '0;
+      cmd_buf_sel_q      <= 1'b0;
+
+      data_wr_ptr_q      <= '0;
+      data_rd_ptr_q      <= '0;
+      data_count_q       <= '0;
+      outstanding_count_q <= '0;
+      bundle_valid_q     <= 1'b0;
     end
     else begin
-      // Default pipeline advance.
+      // Default pipeline advance.  Unlike the old design, stage 0 can accept a
+      // new request every cycle while the prefetch FIFO has space.
       s1_valid_q  <= s0_valid_q;
       s2_valid_q  <= s1_valid_q;
       s3_valid_q  <= s2_valid_q;
       s4_valid_q  <= s3_valid_q;
       cmd_valid_q <= s4_valid_q;
-      s0_valid_q  <= 1'b0;
-
-      // Flush active-bundle state and outstanding bookkeeping on layer start.
-      // A new first request may still be loaded into stage 0 below.
-      if (start) begin
-        req_inflight_q <= 1'b0;
-        bundle_valid_q <= 1'b0;
-
-        s1_valid_q     <= 1'b0;
-        s2_valid_q     <= 1'b0;
-        s3_valid_q     <= 1'b0;
-        s4_valid_q     <= 1'b0;
-        cmd_valid_q    <= 1'b0;
-      end
+      s0_valid_q  <= issue_new;
 
       // Stage 0 load.
       if (issue_new) begin
-        s0_valid_q   <= 1'b1;
-        s0_fgroup_q  <= issue_fgroup;
-        s0_c_q       <= issue_c;
-        s0_ky_q      <= issue_ky;
-        s0_kx_q      <= issue_kx;
+        s0_fgroup_q  <= issue_fgroup_q;
+        s0_c_q       <= issue_c_q;
+        s0_ky_q      <= issue_ky_q;
+        s0_kx_q      <= issue_kx_q;
         s0_K_q       <= {4'd0, K_q};
         s0_C_q       <= C_q;
         s0_Pv_q      <= Pv_q;
@@ -422,46 +429,87 @@ module weight_read_ctrl_mode1 #(
       cmd_base_lane_q <= s4_base_lane_q[BASE_W-1:0];
       cmd_buf_sel_q   <= s4_buf_sel_q;
 
-      // Mark request in-flight when the command is launched from stage 4 into
-      // the registered output. The weight buffer captures cmd_valid_q one cycle
-      // later, and wb_rd_valid eventually returns for the same metadata.
-      if (s4_valid_q) begin
-        req_inflight_q <= 1'b1;
-        req_fgroup_r   <= s4_fgroup_q;
-        req_c_r        <= s4_c_q;
-        req_ky_r       <= s4_ky_q;
-        req_kx_r       <= s4_kx_q;
+      // Command/read outstanding counter.  This is used only for back-pressure
+      // into the prefetch pipeline, so in-order metadata is not required.
+      if (cmd_fire && !wb_rd_valid)
+        outstanding_count_q <= outstanding_count_q + 1'b1;
+      else if (!cmd_fire && wb_rd_valid && (outstanding_count_q != '0))
+        outstanding_count_q <= outstanding_count_q - 1'b1;
+
+      // Returned-data FIFO update.  The bypass path lets a returning bundle load
+      // the CE weight slot directly when the FIFO is empty.
+      if (push_to_fifo) begin
+        data_fifo_q[data_wr_ptr_q] <= wb_rd_data;
+        data_wr_ptr_q              <= data_wr_ptr_q + 1'b1;
+      end
+      if (pop_from_fifo) begin
+        data_rd_ptr_q <= data_rd_ptr_q + 1'b1;
       end
 
-      if (wb_rd_valid) begin
-        req_inflight_q <= 1'b0;
+      if (push_to_fifo && !pop_from_fifo)
+        data_count_q <= data_count_q + 1'b1;
+      else if (!push_to_fifo && pop_from_fifo && (data_count_q != '0))
+        data_count_q <= data_count_q - 1'b1;
+
+      // Mirror CE-side active weight validity.
+      if (weight_load_en)
         bundle_valid_q <= 1'b1;
-        cur_fgroup_r   <= req_fgroup_r;
-        cur_c_r        <= req_c_r;
-        cur_ky_r       <= req_ky_r;
-        cur_kx_r       <= req_kx_r;
-      end
-      else if (consume_en && bundle_valid_q) begin
+      else if (consume_en && bundle_valid_q)
         bundle_valid_q <= 1'b0;
+
+      // Advance issue coordinate after launching a request into stage 0.
+      if (issue_new) begin
+        if (issue_last_bundle) begin
+          issue_done_q   <= 1'b1;
+          sweep_active_q <= 1'b0;
+        end
+        else if (issue_kx_q != (K_q - 1'b1)) begin
+          issue_kx_q <= issue_kx_q + 1'b1;
+        end
+        else begin
+          issue_kx_q <= '0;
+          if (issue_ky_q != (K_q - 1'b1)) begin
+            issue_ky_q <= issue_ky_q + 1'b1;
+          end
+          else begin
+            issue_ky_q <= '0;
+            issue_c_q  <= issue_c_q + 1'b1;
+          end
+        end
       end
-    end
-  end
 
-  assign wb_rd_en        = cmd_valid_q;
-  assign wb_rd_buf_sel   = cmd_buf_sel_q;
-  assign wb_rd_addr      = cmd_addr_q;
-  assign wb_rd_base_lane = cmd_base_lane_q;
+      // New layer or new output-block sweep.  A new sweep starts issuing from
+      // the next clock; this avoids mixing a flush and a new request in the same
+      // pipeline cycle.
+      if (start) begin
+        sweep_active_q      <= 1'b1;
+        issue_done_q        <= 1'b0;
+        issue_fgroup_q      <= 16'd0;
+        issue_c_q           <= 16'd0;
+        issue_ky_q          <= '0;
+        issue_kx_q          <= '0;
 
-  assign weight_load_en = wb_rd_valid;
-  assign weight_clear   = start;
+        s0_valid_q          <= 1'b0;
+        s1_valid_q          <= 1'b0;
+        s2_valid_q          <= 1'b0;
+        s3_valid_q          <= 1'b0;
+        s4_valid_q          <= 1'b0;
+        cmd_valid_q         <= 1'b0;
 
-  integer i;
-  always_comb begin
-    for (i = 0; i < PF_MAX; i++) begin
-      if (i < Pf_q)
-        weight_in_logic[i] = wb_rd_data[i*DATA_W +: DATA_W];
-      else
-        weight_in_logic[i] = '0;
+        data_wr_ptr_q       <= '0;
+        data_rd_ptr_q       <= '0;
+        data_count_q        <= '0;
+        outstanding_count_q <= '0;
+        bundle_valid_q      <= 1'b0;
+      end
+      else if (out_valid) begin
+        sweep_active_q <= 1'b1;
+        issue_done_q   <= 1'b0;
+        issue_fgroup_q <= next_sweep_fgroup;
+        issue_c_q      <= 16'd0;
+        issue_ky_q     <= '0;
+        issue_kx_q     <= '0;
+      end
     end
   end
 

@@ -1627,4 +1627,85 @@ module control_unit_top
   );
 
 
+`ifndef SYNTHESIS
+longint unsigned perf_layer_cycle;
+longint unsigned perf_m1_step;
+longint unsigned perf_m1_mac;
+longint unsigned perf_hold_sched;
+longint unsigned perf_hold_local;
+longint unsigned perf_hold_init_ifm;
+longint unsigned perf_hold_ofm2ifm;
+longint unsigned perf_ifm_rd_en;
+longint unsigned perf_ifm_rd_valid;
+
+logic [$clog2(CFG_DEPTH)-1:0] perf_layer_q;
+
+always_ff @(posedge clk or negedge rst_n) begin
+  if (!rst_n) begin
+    perf_layer_q <= '0;
+    perf_layer_cycle <= 0;
+    perf_m1_step <= 0;
+    perf_m1_mac <= 0;
+    perf_hold_sched <= 0;
+    perf_hold_local <= 0;
+    perf_hold_init_ifm <= 0;
+    perf_hold_ofm2ifm <= 0;
+    perf_ifm_rd_en <= 0;
+    perf_ifm_rd_valid <= 0;
+  end else begin
+    if (cur_layer_idx_s != perf_layer_q) begin
+      $display("PERF_LAYER_SUM layer=%0d cycles=%0d m1_step=%0d m1_mac=%0d hold_sched=%0d hold_local=%0d hold_init_ifm=%0d hold_ofm2ifm=%0d ifm_rd_en=%0d ifm_rd_valid=%0d",
+        perf_layer_q,
+        perf_layer_cycle,
+        perf_m1_step,
+        perf_m1_mac,
+        perf_hold_sched,
+        perf_hold_local,
+        perf_hold_init_ifm,
+        perf_hold_ofm2ifm,
+        perf_ifm_rd_en,
+        perf_ifm_rd_valid
+      );
+
+      perf_layer_q <= cur_layer_idx_s;
+      perf_layer_cycle <= 0;
+      perf_m1_step <= 0;
+      perf_m1_mac <= 0;
+      perf_hold_sched <= 0;
+      perf_hold_local <= 0;
+      perf_hold_init_ifm <= 0;
+      perf_hold_ofm2ifm <= 0;
+      perf_ifm_rd_en <= 0;
+      perf_ifm_rd_valid <= 0;
+    end else if (busy) begin
+      perf_layer_cycle <= perf_layer_cycle + 1;
+
+      if (m1_step_en)
+        perf_m1_step <= perf_m1_step + 1;
+
+      if (m1_mac_en)
+        perf_m1_mac <= perf_m1_mac + 1;
+
+      if (sched_hold_compute_s)
+        perf_hold_sched <= perf_hold_sched + 1;
+
+      if (local_hold_compute_s)
+        perf_hold_local <= perf_hold_local + 1;
+
+      if (init_ifm_refill_hold_s)
+        perf_hold_init_ifm <= perf_hold_init_ifm + 1;
+
+      if (ofm2ifm_runtime_hold_s)
+        perf_hold_ofm2ifm <= perf_hold_ofm2ifm + 1;
+
+      if (ifm_rd_en)
+        perf_ifm_rd_en <= perf_ifm_rd_en + 1;
+
+      if (ifm_rd_valid)
+        perf_ifm_rd_valid <= perf_ifm_rd_valid + 1;
+    end
+  end
+end
+`endif
+
 endmodule
