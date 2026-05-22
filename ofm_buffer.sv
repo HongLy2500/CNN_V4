@@ -251,19 +251,82 @@ module ofm_buffer #(
     // ============================================================
     // Physical storage
     // ============================================================
-    // Data storage is split per logical bank.  Metadata follows the same
-    // logical banking: meta bank == OFM data bank, meta addr == OFM data addr.
-    // This replaces the previous 16 grouped mem_fill_g*/mem_tag_g* arrays.
-    // The grouped arrays made Vivado build a very large case/mux network and,
-    // without an explicit RAM-style declaration, were often treated as register
-    // arrays.  A single compact {tag,fill} word per logical bank/addr is much
-    // friendlier for distributed RAM inference and removes the group-select
-    // write case from the clocked block.
-    localparam int DATA_BANKS_IMPL = 64;
-    localparam int DATA_BANK_W     = 6;
+    // Metadata storage mirrors OFM data banking: one metadata RAM per
+    // logical OFM bank.  This replaces the previous grouped
+    // mem_fill_g*/mem_tag_g* arrays.  The grouped organization packed
+    // four logical banks into one memory, so a single OFM beat could
+    // create multiple writes into the same metadata array after Vivado
+    // unrolled the commit loop.  Per-bank metadata gives each array at
+    // most one write command per clock, matching the way mem_data is
+    // banked and making distributed-RAM inference much more reliable.
+    //
+    // Metadata word format: {tag[TAG_W-1:0], fill[PV_MAX-1:0]}.
     localparam int META_W          = TAG_W + PV_MAX;
-
-    (* ram_style = "distributed" *) logic [META_W-1:0] mem_meta [0:DATA_BANKS_IMPL-1][0:DEPTH-1];
+    localparam int META_BANKS_IMPL = 64;
+    (* ram_style = "distributed" *) logic [META_W-1:0] mem_meta_b0  [0:DEPTH-1];
+    (* ram_style = "distributed" *) logic [META_W-1:0] mem_meta_b1  [0:DEPTH-1];
+    (* ram_style = "distributed" *) logic [META_W-1:0] mem_meta_b2  [0:DEPTH-1];
+    (* ram_style = "distributed" *) logic [META_W-1:0] mem_meta_b3  [0:DEPTH-1];
+    (* ram_style = "distributed" *) logic [META_W-1:0] mem_meta_b4  [0:DEPTH-1];
+    (* ram_style = "distributed" *) logic [META_W-1:0] mem_meta_b5  [0:DEPTH-1];
+    (* ram_style = "distributed" *) logic [META_W-1:0] mem_meta_b6  [0:DEPTH-1];
+    (* ram_style = "distributed" *) logic [META_W-1:0] mem_meta_b7  [0:DEPTH-1];
+    (* ram_style = "distributed" *) logic [META_W-1:0] mem_meta_b8  [0:DEPTH-1];
+    (* ram_style = "distributed" *) logic [META_W-1:0] mem_meta_b9  [0:DEPTH-1];
+    (* ram_style = "distributed" *) logic [META_W-1:0] mem_meta_b10 [0:DEPTH-1];
+    (* ram_style = "distributed" *) logic [META_W-1:0] mem_meta_b11 [0:DEPTH-1];
+    (* ram_style = "distributed" *) logic [META_W-1:0] mem_meta_b12 [0:DEPTH-1];
+    (* ram_style = "distributed" *) logic [META_W-1:0] mem_meta_b13 [0:DEPTH-1];
+    (* ram_style = "distributed" *) logic [META_W-1:0] mem_meta_b14 [0:DEPTH-1];
+    (* ram_style = "distributed" *) logic [META_W-1:0] mem_meta_b15 [0:DEPTH-1];
+    (* ram_style = "distributed" *) logic [META_W-1:0] mem_meta_b16 [0:DEPTH-1];
+    (* ram_style = "distributed" *) logic [META_W-1:0] mem_meta_b17 [0:DEPTH-1];
+    (* ram_style = "distributed" *) logic [META_W-1:0] mem_meta_b18 [0:DEPTH-1];
+    (* ram_style = "distributed" *) logic [META_W-1:0] mem_meta_b19 [0:DEPTH-1];
+    (* ram_style = "distributed" *) logic [META_W-1:0] mem_meta_b20 [0:DEPTH-1];
+    (* ram_style = "distributed" *) logic [META_W-1:0] mem_meta_b21 [0:DEPTH-1];
+    (* ram_style = "distributed" *) logic [META_W-1:0] mem_meta_b22 [0:DEPTH-1];
+    (* ram_style = "distributed" *) logic [META_W-1:0] mem_meta_b23 [0:DEPTH-1];
+    (* ram_style = "distributed" *) logic [META_W-1:0] mem_meta_b24 [0:DEPTH-1];
+    (* ram_style = "distributed" *) logic [META_W-1:0] mem_meta_b25 [0:DEPTH-1];
+    (* ram_style = "distributed" *) logic [META_W-1:0] mem_meta_b26 [0:DEPTH-1];
+    (* ram_style = "distributed" *) logic [META_W-1:0] mem_meta_b27 [0:DEPTH-1];
+    (* ram_style = "distributed" *) logic [META_W-1:0] mem_meta_b28 [0:DEPTH-1];
+    (* ram_style = "distributed" *) logic [META_W-1:0] mem_meta_b29 [0:DEPTH-1];
+    (* ram_style = "distributed" *) logic [META_W-1:0] mem_meta_b30 [0:DEPTH-1];
+    (* ram_style = "distributed" *) logic [META_W-1:0] mem_meta_b31 [0:DEPTH-1];
+    (* ram_style = "distributed" *) logic [META_W-1:0] mem_meta_b32 [0:DEPTH-1];
+    (* ram_style = "distributed" *) logic [META_W-1:0] mem_meta_b33 [0:DEPTH-1];
+    (* ram_style = "distributed" *) logic [META_W-1:0] mem_meta_b34 [0:DEPTH-1];
+    (* ram_style = "distributed" *) logic [META_W-1:0] mem_meta_b35 [0:DEPTH-1];
+    (* ram_style = "distributed" *) logic [META_W-1:0] mem_meta_b36 [0:DEPTH-1];
+    (* ram_style = "distributed" *) logic [META_W-1:0] mem_meta_b37 [0:DEPTH-1];
+    (* ram_style = "distributed" *) logic [META_W-1:0] mem_meta_b38 [0:DEPTH-1];
+    (* ram_style = "distributed" *) logic [META_W-1:0] mem_meta_b39 [0:DEPTH-1];
+    (* ram_style = "distributed" *) logic [META_W-1:0] mem_meta_b40 [0:DEPTH-1];
+    (* ram_style = "distributed" *) logic [META_W-1:0] mem_meta_b41 [0:DEPTH-1];
+    (* ram_style = "distributed" *) logic [META_W-1:0] mem_meta_b42 [0:DEPTH-1];
+    (* ram_style = "distributed" *) logic [META_W-1:0] mem_meta_b43 [0:DEPTH-1];
+    (* ram_style = "distributed" *) logic [META_W-1:0] mem_meta_b44 [0:DEPTH-1];
+    (* ram_style = "distributed" *) logic [META_W-1:0] mem_meta_b45 [0:DEPTH-1];
+    (* ram_style = "distributed" *) logic [META_W-1:0] mem_meta_b46 [0:DEPTH-1];
+    (* ram_style = "distributed" *) logic [META_W-1:0] mem_meta_b47 [0:DEPTH-1];
+    (* ram_style = "distributed" *) logic [META_W-1:0] mem_meta_b48 [0:DEPTH-1];
+    (* ram_style = "distributed" *) logic [META_W-1:0] mem_meta_b49 [0:DEPTH-1];
+    (* ram_style = "distributed" *) logic [META_W-1:0] mem_meta_b50 [0:DEPTH-1];
+    (* ram_style = "distributed" *) logic [META_W-1:0] mem_meta_b51 [0:DEPTH-1];
+    (* ram_style = "distributed" *) logic [META_W-1:0] mem_meta_b52 [0:DEPTH-1];
+    (* ram_style = "distributed" *) logic [META_W-1:0] mem_meta_b53 [0:DEPTH-1];
+    (* ram_style = "distributed" *) logic [META_W-1:0] mem_meta_b54 [0:DEPTH-1];
+    (* ram_style = "distributed" *) logic [META_W-1:0] mem_meta_b55 [0:DEPTH-1];
+    (* ram_style = "distributed" *) logic [META_W-1:0] mem_meta_b56 [0:DEPTH-1];
+    (* ram_style = "distributed" *) logic [META_W-1:0] mem_meta_b57 [0:DEPTH-1];
+    (* ram_style = "distributed" *) logic [META_W-1:0] mem_meta_b58 [0:DEPTH-1];
+    (* ram_style = "distributed" *) logic [META_W-1:0] mem_meta_b59 [0:DEPTH-1];
+    (* ram_style = "distributed" *) logic [META_W-1:0] mem_meta_b60 [0:DEPTH-1];
+    (* ram_style = "distributed" *) logic [META_W-1:0] mem_meta_b61 [0:DEPTH-1];
+    (* ram_style = "distributed" *) logic [META_W-1:0] mem_meta_b62 [0:DEPTH-1];
+    (* ram_style = "distributed" *) logic [META_W-1:0] mem_meta_b63 [0:DEPTH-1];
 
     // ============================================================
     // Synthesizable synchronous read ports for mem_data
@@ -273,6 +336,8 @@ module ofm_buffer #(
     // This bank-read fabric is the only synthesizable read path for mem_data:
     // one registered read port per logical bank.  Stream/DMA paths issue
     // requests into data_rd_* and consume data_bank_rdata_q one cycle later.
+    localparam int DATA_BANKS_IMPL = 64;
+    localparam int DATA_BANK_W     = 6;
 
     logic [DATA_BANKS_IMPL-1:0] data_rd_en_v;
     logic [DEPTH_W-1:0]         data_rd_addr_v [0:DATA_BANKS_IMPL-1];
@@ -308,23 +373,99 @@ module ofm_buffer #(
         end
     endgenerate
 
-    function automatic logic [PV_MAX-1:0] ofm_mem_fill_read(input int bank, input int addr);
+    // Read one compact metadata word from a logical OFM bank.
+    // Keep this as an async metadata read to preserve the simulation
+    // timing of the functional baseline; only the storage organization
+    // has changed from grouped arrays to per-bank arrays.
+    function automatic logic [META_W-1:0] ofm_mem_meta_read(input int bank, input int addr);
         begin
-            ofm_mem_fill_read = '0;
-            if ((bank >= 0) && (bank < C_MAX) && (bank < DATA_BANKS_IMPL) &&
+            ofm_mem_meta_read = '0;
+            if ((bank >= 0) && (bank < C_MAX) && (bank < META_BANKS_IMPL) &&
                 (addr >= 0) && (addr < DEPTH)) begin
-                ofm_mem_fill_read = mem_meta[bank][addr][PV_MAX-1:0];
+                case (bank)
+                    0:  ofm_mem_meta_read = mem_meta_b0 [addr];
+                    1:  ofm_mem_meta_read = mem_meta_b1 [addr];
+                    2:  ofm_mem_meta_read = mem_meta_b2 [addr];
+                    3:  ofm_mem_meta_read = mem_meta_b3 [addr];
+                    4:  ofm_mem_meta_read = mem_meta_b4 [addr];
+                    5:  ofm_mem_meta_read = mem_meta_b5 [addr];
+                    6:  ofm_mem_meta_read = mem_meta_b6 [addr];
+                    7:  ofm_mem_meta_read = mem_meta_b7 [addr];
+                    8:  ofm_mem_meta_read = mem_meta_b8 [addr];
+                    9:  ofm_mem_meta_read = mem_meta_b9 [addr];
+                    10:  ofm_mem_meta_read = mem_meta_b10[addr];
+                    11:  ofm_mem_meta_read = mem_meta_b11[addr];
+                    12:  ofm_mem_meta_read = mem_meta_b12[addr];
+                    13:  ofm_mem_meta_read = mem_meta_b13[addr];
+                    14:  ofm_mem_meta_read = mem_meta_b14[addr];
+                    15:  ofm_mem_meta_read = mem_meta_b15[addr];
+                    16:  ofm_mem_meta_read = mem_meta_b16[addr];
+                    17:  ofm_mem_meta_read = mem_meta_b17[addr];
+                    18:  ofm_mem_meta_read = mem_meta_b18[addr];
+                    19:  ofm_mem_meta_read = mem_meta_b19[addr];
+                    20:  ofm_mem_meta_read = mem_meta_b20[addr];
+                    21:  ofm_mem_meta_read = mem_meta_b21[addr];
+                    22:  ofm_mem_meta_read = mem_meta_b22[addr];
+                    23:  ofm_mem_meta_read = mem_meta_b23[addr];
+                    24:  ofm_mem_meta_read = mem_meta_b24[addr];
+                    25:  ofm_mem_meta_read = mem_meta_b25[addr];
+                    26:  ofm_mem_meta_read = mem_meta_b26[addr];
+                    27:  ofm_mem_meta_read = mem_meta_b27[addr];
+                    28:  ofm_mem_meta_read = mem_meta_b28[addr];
+                    29:  ofm_mem_meta_read = mem_meta_b29[addr];
+                    30:  ofm_mem_meta_read = mem_meta_b30[addr];
+                    31:  ofm_mem_meta_read = mem_meta_b31[addr];
+                    32:  ofm_mem_meta_read = mem_meta_b32[addr];
+                    33:  ofm_mem_meta_read = mem_meta_b33[addr];
+                    34:  ofm_mem_meta_read = mem_meta_b34[addr];
+                    35:  ofm_mem_meta_read = mem_meta_b35[addr];
+                    36:  ofm_mem_meta_read = mem_meta_b36[addr];
+                    37:  ofm_mem_meta_read = mem_meta_b37[addr];
+                    38:  ofm_mem_meta_read = mem_meta_b38[addr];
+                    39:  ofm_mem_meta_read = mem_meta_b39[addr];
+                    40:  ofm_mem_meta_read = mem_meta_b40[addr];
+                    41:  ofm_mem_meta_read = mem_meta_b41[addr];
+                    42:  ofm_mem_meta_read = mem_meta_b42[addr];
+                    43:  ofm_mem_meta_read = mem_meta_b43[addr];
+                    44:  ofm_mem_meta_read = mem_meta_b44[addr];
+                    45:  ofm_mem_meta_read = mem_meta_b45[addr];
+                    46:  ofm_mem_meta_read = mem_meta_b46[addr];
+                    47:  ofm_mem_meta_read = mem_meta_b47[addr];
+                    48:  ofm_mem_meta_read = mem_meta_b48[addr];
+                    49:  ofm_mem_meta_read = mem_meta_b49[addr];
+                    50:  ofm_mem_meta_read = mem_meta_b50[addr];
+                    51:  ofm_mem_meta_read = mem_meta_b51[addr];
+                    52:  ofm_mem_meta_read = mem_meta_b52[addr];
+                    53:  ofm_mem_meta_read = mem_meta_b53[addr];
+                    54:  ofm_mem_meta_read = mem_meta_b54[addr];
+                    55:  ofm_mem_meta_read = mem_meta_b55[addr];
+                    56:  ofm_mem_meta_read = mem_meta_b56[addr];
+                    57:  ofm_mem_meta_read = mem_meta_b57[addr];
+                    58:  ofm_mem_meta_read = mem_meta_b58[addr];
+                    59:  ofm_mem_meta_read = mem_meta_b59[addr];
+                    60:  ofm_mem_meta_read = mem_meta_b60[addr];
+                    61:  ofm_mem_meta_read = mem_meta_b61[addr];
+                    62:  ofm_mem_meta_read = mem_meta_b62[addr];
+                    63:  ofm_mem_meta_read = mem_meta_b63[addr];
+                    default: ofm_mem_meta_read = '0;
+                endcase
             end
         end
     endfunction
 
-    function automatic logic [TAG_W-1:0] ofm_mem_tag_read(input int bank, input int addr);
+    function automatic logic [PV_MAX-1:0] ofm_mem_fill_read(input int bank, input int addr);
+        logic [META_W-1:0] meta_word;
         begin
-            ofm_mem_tag_read = '0;
-            if ((bank >= 0) && (bank < C_MAX) && (bank < DATA_BANKS_IMPL) &&
-                (addr >= 0) && (addr < DEPTH)) begin
-                ofm_mem_tag_read = mem_meta[bank][addr][PV_MAX +: TAG_W];
-            end
+            meta_word = ofm_mem_meta_read(bank, addr);
+            ofm_mem_fill_read = meta_word[PV_MAX-1:0];
+        end
+    endfunction
+
+    function automatic logic [TAG_W-1:0] ofm_mem_tag_read(input int bank, input int addr);
+        logic [META_W-1:0] meta_word;
+        begin
+            meta_word = ofm_mem_meta_read(bank, addr);
+            ofm_mem_tag_read = meta_word[PV_MAX +: TAG_W];
         end
     endfunction
 
@@ -535,6 +676,78 @@ module ofm_buffer #(
         end
     endfunction
 
+
+    // Small-pack helpers for synthesis-friendly Mode1 OFM write decode.
+    // store_pack_q/src_pack_q are expected to be small powers of two in the
+    // supported schedules. Defaults intentionally avoid generic div/mod hardware.
+    function automatic integer pack_div_int(
+        input integer val,
+        input integer pack
+    );
+        begin
+            case (pack)
+                0:  pack_div_int = 0;
+                1:  pack_div_int = val;
+                2:  pack_div_int = val >> 1;
+                4:  pack_div_int = val >> 2;
+                8:  pack_div_int = val >> 3;
+                16: pack_div_int = val >> 4;
+                32: pack_div_int = val >> 5;
+                64: pack_div_int = val >> 6;
+                128: pack_div_int = val >> 7;
+                default: pack_div_int = 0;
+            endcase
+        end
+    endfunction
+
+    function automatic integer pack_mod_int(
+        input integer val,
+        input integer pack
+    );
+        begin
+            case (pack)
+                0:  pack_mod_int = 0;
+                1:  pack_mod_int = 0;
+                2:  pack_mod_int = val & 1;
+                4:  pack_mod_int = val & 3;
+                8:  pack_mod_int = val & 7;
+                16: pack_mod_int = val & 15;
+                32: pack_mod_int = val & 31;
+                64: pack_mod_int = val & 63;
+                128: pack_mod_int = val & 127;
+                default: pack_mod_int = 0;
+            endcase
+        end
+    endfunction
+
+    function automatic integer ceil_div_by_active_pf(
+        input integer numer,
+        input integer denom
+    );
+        begin
+            case (denom)
+                0:  ceil_div_by_active_pf = 0;
+                1:  ceil_div_by_active_pf = numer;
+                2:  ceil_div_by_active_pf = (numer + 1) >> 1;
+                3:  ceil_div_by_active_pf = (numer + 2) / 3;
+                4:  ceil_div_by_active_pf = (numer + 3) >> 2;
+                5:  ceil_div_by_active_pf = (numer + 4) / 5;
+                6:  ceil_div_by_active_pf = (numer + 5) / 6;
+                7:  ceil_div_by_active_pf = (numer + 6) / 7;
+                8:  ceil_div_by_active_pf = (numer + 7) >> 3;
+                9:  ceil_div_by_active_pf = (numer + 8) / 9;
+                10: ceil_div_by_active_pf = (numer + 9) / 10;
+                11: ceil_div_by_active_pf = (numer + 10) / 11;
+                12: ceil_div_by_active_pf = (numer + 11) / 12;
+                13: ceil_div_by_active_pf = (numer + 12) / 13;
+                14: ceil_div_by_active_pf = (numer + 13) / 14;
+                15: ceil_div_by_active_pf = (numer + 14) / 15;
+                16: ceil_div_by_active_pf = (numer + 15) >> 4;
+                default: ceil_div_by_active_pf = 0;
+            endcase
+        end
+    endfunction
+
     function automatic logic signed [DATA_W-1:0] sat_m1(input logic signed [M1_IN_W-1:0] din);
         longint signed max_v, min_v, x;
         begin
@@ -604,6 +817,7 @@ module ofm_buffer #(
         integer row;
         integer col;
         integer grp;
+        integer col_offset;
         integer lane;
         integer addr;
         integer valid_pf_m1;
@@ -620,6 +834,7 @@ module ofm_buffer #(
         integer col_l_id;
         integer col_g_id;
         integer bank_id;
+        integer bank_col_l;
         logic word_has_write;
         logic [PV_MAX-1:0] word_write_keep;
         logic [WORD_W-1:0] word_data_next;
@@ -642,66 +857,60 @@ module ofm_buffer #(
                     valid_pf_m1 = valid_pf_m1 + 1;
             end
 
+            // These fields are common to all PF lanes in a Mode1 write beat.
+            // Compute them once, using case/shift helpers instead of runtime / and %.
+            valid_x_m1 = ceil_div_by_active_pf(m1_wr_count, valid_pf_m1);
+            if (m1_wr_col_base >= w_out_q)
+                max_x_m1 = 0;
+            else begin
+                max_x_m1 = w_out_q - m1_wr_col_base;
+                if (max_x_m1 > src_pack_q)
+                    max_x_m1 = src_pack_q;
+            end
+            if (valid_x_m1 > max_x_m1)
+                valid_x_m1 = max_x_m1;
+
+            grp        = pack_div_int(m1_wr_col_base, store_pack_q);
+            col_offset = pack_mod_int(m1_wr_col_base, store_pack_q);
+            row        = m1_wr_row;
+            addr       = ofm_phys_addr(row, grp);
+
             for (pf_idx = 0; pf_idx < PF; pf_idx++) begin
                 ch  = m1_wr_filter_base + pf_idx;
-                row = m1_wr_row;
 
-                if (pf_cur_active_q[pf_idx] && (ch < f_out_q) && (row < h_out_q)) begin
-                    if (valid_pf_m1 > 0)
-                        valid_x_m1 = (m1_wr_count + valid_pf_m1 - 1) / valid_pf_m1;
-                    else
-                        valid_x_m1 = 0;
+                if (pf_cur_active_q[pf_idx] && (ch < f_out_q) && (row < h_out_q) &&
+                    (grp < stored_groups_q) && (addr < DEPTH)) begin
+                    // Synthesis-friendly Mode1 data write path.
+                    // The OFM data RAM has only one write port per bank, so a single
+                    // Mode1 beat must target one compact spatial word per filter bank.
+                    // Shared beat geometry above avoids replicating divider/modulo
+                    // cones for every PF lane.
+                    word_has_write  = 1'b0;
+                    word_write_keep = '0;
+                    word_data_next  = '0;
 
-                    if (m1_wr_col_base >= w_out_q)
-                        max_x_m1 = 0;
-                    else begin
-                        max_x_m1 = w_out_q - m1_wr_col_base;
-                        if (max_x_m1 > src_pack_q)
-                            max_x_m1 = src_pack_q;
-                    end
-                    if (valid_x_m1 > max_x_m1)
-                        valid_x_m1 = max_x_m1;
-
-                    first_grp = m1_wr_col_base / store_pack_q;
-                    if (valid_x_m1 <= 0)
-                        last_grp = first_grp;
-                    else
-                        last_grp = (m1_wr_col_base + valid_x_m1 - 1) / store_pack_q;
-
-                    for (grp_rel = 0; grp_rel < PV_MAX; grp_rel++) begin
-                        grp  = first_grp + grp_rel;
-                        addr = ofm_phys_addr(row, grp);
-
-                        if ((grp <= last_grp) && (addr < DEPTH)) begin
-                            word_has_write  = 1'b0;
-                            word_write_keep = '0;
-                            word_data_next  = '0;
-
-                            for (x = 0; x < PV_MAX; x++) begin
-                                src_lane_idx     = (pf_idx * src_pack_q) + x;
-                                compact_lane_idx = (pf_idx * valid_x_m1) + x;
-                                if ((pf_idx < valid_pf_m1) &&
-                                    (x < valid_x_m1) &&
-                                    (compact_lane_idx < m1_wr_count) &&
-                                    (src_lane_idx < PTOTAL)) begin
-                                    col  = m1_wr_col_base + x;
-                                    lane = col % store_pack_q;
-
-                                    if ((col < w_out_q) &&
-                                        ((col / store_pack_q) == grp) &&
-                                        (lane < PV_MAX)) begin
-                                        px1 = sat_m1(m1_wr_data[src_lane_idx]);
-                                        word_data_next[lane*DATA_W +: DATA_W] = px1;
-                                        word_write_keep[lane] = 1'b1;
-                                        word_has_write = 1'b1;
-                                    end
-                                end
-                            end
-
-                            if (word_has_write) begin
-                                `OFM_DATA_WR_ACCUM(ch, addr, word_data_next, word_write_keep)
+                    for (x = 0; x < PV_MAX; x++) begin
+                        src_lane_idx     = (pf_idx * src_pack_q) + x;
+                        compact_lane_idx = (pf_idx * valid_x_m1) + x;
+                        lane             = col_offset + x;
+                        if ((pf_idx < valid_pf_m1) &&
+                            (x < valid_x_m1) &&
+                            (compact_lane_idx < m1_wr_count) &&
+                            (src_lane_idx < PTOTAL) &&
+                            (lane < store_pack_q) &&
+                            (lane < PV_MAX)) begin
+                            col = m1_wr_col_base + x;
+                            if (col < w_out_q) begin
+                                px1 = sat_m1(m1_wr_data[src_lane_idx]);
+                                word_data_next[lane*DATA_W +: DATA_W] = px1;
+                                word_write_keep[lane] = 1'b1;
+                                word_has_write = 1'b1;
                             end
                         end
+                    end
+
+                    if (word_has_write) begin
+                        `OFM_DATA_WR_ACCUM(ch, addr, word_data_next, word_write_keep)
                     end
                 end
             end
@@ -712,25 +921,47 @@ module ofm_buffer #(
             if (valid_pf < 0)
                 valid_pf = 0;
 
-            for (pf_idx = 0; pf_idx < PF; pf_idx++) begin
-                ch        = m2_wr_f_base + pf_idx;
-                row       = m2_wr_row;
-                col       = m2_wr_col;
-                fgrp_id   = (PC == 0) ? 0 : (ch / PC);
-                flane_id  = (PC == 0) ? 0 : (ch % PC);
-                col_l_id  = (PC == 0) ? 0 : (col % PC);
-                col_g_id  = (PC == 0) ? 0 : (col / PC);
-                bank_id   = (fgrp_id * PC) + col_l_id;
-                addr      = ofm_phys_addr(row, col_g_id);
+            row      = m2_wr_row;
+            col      = m2_wr_col;
+            col_l_id = (PC == 0) ? 0 : (col % PC);
+            col_g_id = (PC == 0) ? 0 : (col / PC);
+            addr     = ofm_phys_addr(row, col_g_id);
 
-                if ((pf_idx < valid_pf) && (row < h_out_q) && (col < w_out_q) &&
-                    (bank_id < C_MAX) && (addr < DEPTH) && (flane_id < PV_MAX)) begin
-                    word_data_next  = '0;
-                    word_write_keep = '0;
-                    px2 = sat_m2(m2_wr_data[pf_idx*M2_IN_W +: M2_IN_W]);
-                    word_data_next[flane_id*DATA_W +: DATA_W] = px2;
-                    word_write_keep[flane_id] = 1'b1;
-                    `OFM_DATA_WR_ACCUM(bank_id, addr, word_data_next, word_write_keep)
+            // Synthesis-friendly Mode2 data write path.
+            // Old code scattered each PF scalar into data_wr_* through a dynamic
+            // bank index.  That creates large 64-bank muxes during cross-boundary
+            // optimization.  Here the loop is bank-oriented: each unrolled bank
+            // receives at most one packed word write for the current Mode2 beat.
+            if ((row < h_out_q) && (col < w_out_q) && (addr < DEPTH) && (PC > 0)) begin
+                for (bank_i = 0; bank_i < DATA_BANKS_IMPL; bank_i++) begin
+                    fgrp_id    = bank_i / PC;
+                    bank_col_l = bank_i % PC;
+
+                    if ((bank_i < C_MAX) && (bank_col_l == col_l_id) && ((fgrp_id * PC) < f_out_q)) begin
+                        word_has_write  = 1'b0;
+                        word_write_keep = '0;
+                        word_data_next  = '0;
+
+                        for (x = 0; x < PF; x++) begin
+                            ch       = m2_wr_f_base + x;
+                            flane_id = (PC == 0) ? 0 : (ch % PC);
+
+                            if ((x < valid_pf) && (ch < f_out_q) &&
+                                ((ch / PC) == fgrp_id) && (flane_id < PV_MAX)) begin
+                                px2 = sat_m2(m2_wr_data[x*M2_IN_W +: M2_IN_W]);
+                                word_data_next[flane_id*DATA_W +: DATA_W] = px2;
+                                word_write_keep[flane_id] = 1'b1;
+                                word_has_write = 1'b1;
+                            end
+                        end
+
+                        if (word_has_write) begin
+                            data_wr_en_c[bank_i]   = 1'b1;
+                            data_wr_addr_c[bank_i] = addr;
+                            data_wr_data_c[bank_i] = word_data_next;
+                            data_wr_keep_c[bank_i] = word_write_keep;
+                        end
+                    end
                 end
             end
         end
@@ -739,7 +970,7 @@ module ofm_buffer #(
     // ============================================================
     // Latch layer configuration / stream state / write path
     // ============================================================
-    always_ff @(posedge clk or negedge rst_n) begin
+    always_ff @(posedge clk) begin
         integer i_tok;
         integer pf_idx;
         integer x;
@@ -747,6 +978,7 @@ module ofm_buffer #(
         integer row;
         integer col;
         integer grp;
+        integer col_offset;
         integer lane;
         integer addr;
         integer valid_pf;
@@ -797,7 +1029,10 @@ module ofm_buffer #(
         logic [DEPTH_W-1:0]         meta_clr_addr_l [0:DATA_BANKS_IMPL-1];
         logic [PV_MAX-1:0]          meta_clr_mask_l [0:DATA_BANKS_IMPL-1];
         integer                     meta_bank_i;
-        logic [PV_MAX-1:0]          meta_clear_fill_next;
+        logic                       meta_wr_do_v;
+        logic [DEPTH_W-1:0]         meta_wr_addr_v;
+        logic [META_W-1:0]          meta_old_word_v;
+        logic [META_W-1:0]          meta_wr_word_v;
 
         if (!rst_n) begin
             src_mode_q         <= 1'b0;
@@ -1156,315 +1391,158 @@ module ofm_buffer #(
                 end
 
                 // ------------------------------
-                // Source mode 1 write decode
+                // Source mode write auxiliary update
                 //
-                // IMPORTANT FIX:
-                // A single m1_wr_en can write several lanes into the same
-                // physical OFM word, e.g. L0 row0/col0 with src_pack=4 and
-                // store_pack=8 writes lanes 0..3 of the same {ch,row,grp}
-                // word in one clock. The old implementation cleared
-                // mem_data/mem_fill every time it saw an old tag; because
-                // mem_tag is updated with a nonblocking assignment, all lanes
-                // in that same clock still saw the old tag and repeatedly
-                // cleared the word. The result was only the last lane of the
-                // first write surviving, e.g. fill=11111000 instead of
-                // fill=11111111 after the next col_base=4 write.
+                // Synthesis cleanup:
+                // The BRAM write-port generator above already decoded the current
+                // OFM write beat into one command per logical bank:
+                //   data_wr_en_c[bank], data_wr_addr_c[bank],
+                //   data_wr_keep_c[bank], data_wr_data_c[bank].
                 //
-                // Build one next image per target word and assign
-                // mem_data/mem_fill/mem_tag exactly once per word. This keeps
-                // the existing interface and token logic unchanged while
-                // avoiding overlapping nonblocking clears/sets.
+                // Do not re-decode the Mode1/Mode2 input stream here.  Repeating the
+                // PF/PV or PF/PC scatter logic in the clocked metadata/token path was
+                // the dominant synthesis cone in the OFM buffer.  Instead, reuse the
+                // bank-level write commands to update {tag,fill} metadata and emit
+                // same-mode ready tokens.
                 // ------------------------------
+
                 if (!error_q && !src_mode_q && m1_wr_en) begin
-                    // Timing fix: compute the number of active filter lanes from
-                    // the registered active mask instead of driving the whole
-                    // write datapath directly from pf_cur_q. This preserves the
-                    // original min(f_out_q-m1_wr_filter_base, pf_cur_q) behavior
-                    // for the supported PTOTAL-bounded mode-1 write group.
-                    valid_pf_m1 = 0;
-                    for (slot = 0; slot < PF; slot++) begin
-                        if (pf_cur_active_q[slot] && ((m1_wr_filter_base + slot) < f_out_q))
-                            valid_pf_m1 = valid_pf_m1 + 1;
-                    end
+                    for (bank_i = 0; bank_i < DATA_BANKS_IMPL; bank_i++) begin
+                        if (data_wr_en_c[bank_i] &&
+                            (bank_i < C_MAX) &&
+                            (data_wr_addr_c[bank_i] < DEPTH)) begin
+                            ch   = bank_i;
+                            addr = data_wr_addr_c[bank_i];
+                            row  = pack_div_int(addr, OFM_ROW_STRIDE);
+                            grp  = pack_mod_int(addr, OFM_ROW_STRIDE);
 
-                    for (pf_idx = 0; pf_idx < PF; pf_idx++) begin
-                        ch  = m1_wr_filter_base + pf_idx;
-                        row = m1_wr_row;
-
-                        if (pf_cur_active_q[pf_idx] && (ch < f_out_q) && (row < h_out_q)) begin
-                            // Decode m1_wr_count as a rectangular valid region:
-                            // valid filters x valid spatial lanes. At the right
-                            // edge, pooling still maps lanes with the fixed
-                            // source stride src_pack_q, e.g. pf3 uses lanes
-                            // 12..14 when src_pack_q=4 and valid_x_m1=3.
-                            // Therefore m1_wr_count must NOT be interpreted as
-                            // the first N contiguous source lanes.
-
-                            if (valid_pf_m1 > 0)
-                                valid_x_m1 = (m1_wr_count + valid_pf_m1 - 1) / valid_pf_m1;
+                            wr_meta_tag  = ofm_mem_tag_read(bank_i, addr);
+                            wr_meta_fill = ofm_mem_fill_read(bank_i, addr);
+                            if (wr_meta_tag == layer_tag_q)
+                                word_fill_next = wr_meta_fill | data_wr_keep_c[bank_i];
                             else
-                                valid_x_m1 = 0;
+                                word_fill_next = data_wr_keep_c[bank_i];
 
-                            if (m1_wr_col_base >= w_out_q)
-                                max_x_m1 = 0;
-                            else begin
-                                max_x_m1 = w_out_q - m1_wr_col_base;
-                                if (max_x_m1 > src_pack_q)
-                                    max_x_m1 = src_pack_q;
-                            end
-                            if (valid_x_m1 > max_x_m1)
-                                valid_x_m1 = max_x_m1;
+                            `OFM_MEM_WRITE_LANES_ACCUM(bank_i, addr, layer_tag_q, '0, word_fill_next, data_wr_keep_c[bank_i])
 
-                            first_grp = m1_wr_col_base / store_pack_q;
-                            if (valid_x_m1 <= 0) begin
-                                last_grp = first_grp;
-                            end
-                            else begin
-                                last_grp  = (m1_wr_col_base + valid_x_m1 - 1) / store_pack_q;
-                            end
+                            if (!next_mode_q) begin
+                                integer ch_blk_id;
+                                logic [PV_MAX-1:0] ready_keep_v;
 
-                            // A mode-1 write can touch at most PV_MAX compact spatial groups;
-                            // using PTOTAL here creates a very large unrolled cone in Vivado.
-                            for (grp_rel = 0; grp_rel < PV_MAX; grp_rel++) begin
-                                grp  = first_grp + grp_rel;
-                                addr = ofm_phys_addr(row, grp);
+                                ready_keep_v = calc_keep_mask(pv_next_q, grp * pv_next_q, w_out_q);
+                                if (pf_next_q == 0)
+                                    ch_blk_id = 0;
+                                else
+                                    ch_blk_id = ch / pf_next_q;
 
-                                if ((grp <= last_grp) && (addr < DEPTH)) begin
-                                    wr_meta_tag  = ofm_mem_tag_read(ch, addr);
-                                    wr_meta_fill = ofm_mem_fill_read(ch, addr);
-                                    if (wr_meta_tag == layer_tag_q) begin
-                                        // Data lanes are preserved by BRAM lane write-enable;
-                                        // only fill metadata needs read-modify-write.
-                                        word_data_next = '0;
-                                        word_fill_next = wr_meta_fill;
-                                    end
-                                    else begin
-                                        word_data_next = '0;
-                                        word_fill_next = '0;
-                                    end
-
-                                    word_has_write  = 1'b0;
-                                    word_write_keep = '0;
-
-                                    for (x = 0; x < PV_MAX; x++) begin
-                                        src_lane_idx     = (pf_idx * src_pack_q) + x;
-                                        compact_lane_idx = (pf_idx * valid_x_m1) + x;
-                                        if ((pf_idx < valid_pf_m1) &&
-                                            (x < valid_x_m1) &&
-                                            (compact_lane_idx < m1_wr_count) &&
-                                            (src_lane_idx < PTOTAL)) begin
-                                            col  = m1_wr_col_base + x;
-                                            lane = col % store_pack_q;
-
-                                            if ((col < w_out_q) &&
-                                                ((col / store_pack_q) == grp) &&
-                                                (lane < PV_MAX)) begin
-                                                px1 = sat_m1(m1_wr_data[src_lane_idx]);
-                                                word_data_next[lane*DATA_W +: DATA_W] = px1;
-                                                word_fill_next[lane] = 1'b1;
-                                                word_write_keep[lane] = 1'b1;
-                                                word_has_write = 1'b1;
-                                            end
+                                if (((word_fill_next & ready_keep_v) == ready_keep_v) &&
+                                    (ready_keep_v != '0)) begin
+                                    found_dup = 1'b0;
+                                    free_slot = -1;
+                                    for (slot = 0; slot < M1_TOUCH_SLOTS; slot++) begin
+                                        if (nxt_m1_touch_v[slot] &&
+                                            (nxt_m1_touch_bank[slot] == ch_blk_id[15:0]) &&
+                                            (nxt_m1_touch_row[slot] == row[15:0]) &&
+                                            (nxt_m1_touch_colgrp[slot] == grp[15:0])) begin
+                                            found_dup = 1'b1;
+                                        end
+                                        if (!nxt_m1_touch_v[slot] && (free_slot < 0)) begin
+                                            free_slot = slot;
                                         end
                                     end
-
-                                    if (word_has_write) begin
-                                        `OFM_MEM_WRITE_LANES_ACCUM(ch, addr, layer_tag_q, word_data_next, word_fill_next, word_write_keep)
-
-                                        if (!next_mode_q) begin
-                                            integer ch_blk_id;
-                                            logic [PV_MAX-1:0] ready_keep_v;
-                                            ready_keep_v = calc_keep_mask(pv_next_q, grp * pv_next_q, w_out_q);
-                                            if (pf_next_q == 0)
-                                                ch_blk_id = 0;
-                                            else
-                                                ch_blk_id = ch / pf_next_q;
-
-                                            // Event-ready criterion: this write makes the compact spatial
-                                            // word complete. The current M1 write beat carries the active PF
-                                            // filter group, so emitting one block token here avoids a later
-                                            // scan across all channels in that PF block.
-                                            if (((word_fill_next & ready_keep_v) == ready_keep_v) &&
-                                                (ready_keep_v != '0)) begin
-                                                found_dup = 1'b0;
-                                                free_slot = -1;
-                                                for (slot = 0; slot < M1_TOUCH_SLOTS; slot++) begin
-                                                    if (nxt_m1_touch_v[slot] &&
-                                                        (nxt_m1_touch_bank[slot] == ch_blk_id[15:0]) &&
-                                                        (nxt_m1_touch_row[slot] == row[15:0]) &&
-                                                        (nxt_m1_touch_colgrp[slot] == grp[15:0]))
-                                                        found_dup = 1'b1;
-                                                    if (!nxt_m1_touch_v[slot] && (free_slot < 0))
-                                                        free_slot = slot;
-                                                end
-                                                if (!found_dup && (free_slot >= 0)) begin
-                                                    nxt_m1_touch_v[free_slot]      = 1'b1;
-                                                    nxt_m1_touch_bank[free_slot]   = ch_blk_id[15:0];
-                                                    nxt_m1_touch_row[free_slot]    = row[15:0];
-                                                    nxt_m1_touch_colgrp[free_slot] = grp[15:0];
-                                                end
-                                            end
-                                        end
+                                    if (!found_dup && (free_slot >= 0)) begin
+                                        nxt_m1_touch_v[free_slot]      = 1'b1;
+                                        nxt_m1_touch_bank[free_slot]   = ch_blk_id[15:0];
+                                        nxt_m1_touch_row[free_slot]    = row[15:0];
+                                        nxt_m1_touch_colgrp[free_slot] = grp[15:0];
                                     end
                                 end
                             end
                         end
                     end
+
                     pixels_written_q <= (pixels_written_q + m1_wr_count >= total_pixels_q) ? total_pixels_q : (pixels_written_q + m1_wr_count);
                     if ((pixels_written_q + m1_wr_count) >= total_pixels_q)
                         layer_write_done_q <= 1'b1;
                 end
 
-                // ------------------------------
-                // Source mode 2 write decode
-                //
-                // Mode2 OFM layout:
-                //   bank = fgrp*PC + col_l, where fgrp=floor(filter/PC)
-                //   addr = row*OFM_ROW_STRIDE + col_group
-                //   lane = filter lane within the PC-channel word
-                // This matches the Mode2 IFM logical word shape: one word holds
-                // PC channel/filter lanes at one {row, global_col, cgrp/fgrp}.
-                // ------------------------------
                 if (!error_q && src_mode_q && m2_wr_en) begin
                     valid_pf = (m2_wr_f_base + PF <= f_out_q) ? PF : (f_out_q - m2_wr_f_base);
                     if (valid_pf < 0)
                         valid_pf = 0;
 
-                    for (pf_idx = 0; pf_idx < PF; pf_idx++) begin
-                        integer fgrp_id;
-                        integer flane_id;
-                        integer col_l_id;
-                        integer col_g_id;
-                        integer bank_id;
-                        integer slot_ch;
-                        integer slot_fgrp;
-                        integer slot_flane;
-                        integer slot_bank;
-                        integer slot_col_l;
-                        integer slot_col_g;
-                        integer slot_addr;
+                    for (bank_i = 0; bank_i < DATA_BANKS_IMPL; bank_i++) begin
+                        if (data_wr_en_c[bank_i] &&
+                            (bank_i < C_MAX) &&
+                            (data_wr_addr_c[bank_i] < DEPTH)) begin
+                            integer fgrp_id;
+                            integer col_l_id;
+                            integer col_g_id;
 
-                        ch        = m2_wr_f_base + pf_idx;
-                        row       = m2_wr_row;
-                        col       = m2_wr_col;
-                        fgrp_id   = (PC == 0) ? 0 : (ch / PC);
-                        flane_id  = (PC == 0) ? 0 : (ch % PC);
-                        col_l_id  = (PC == 0) ? 0 : (col % PC);
-                        col_g_id  = (PC == 0) ? 0 : (col / PC);
-                        bank_id   = (fgrp_id * PC) + col_l_id;
-                        addr      = ofm_phys_addr(row, col_g_id);
-
-                        if ((pf_idx < valid_pf) && (row < h_out_q) && (col < w_out_q) &&
-                            (bank_id < C_MAX) && (addr < DEPTH) && (flane_id < PV_MAX)) begin
-                            // Process each touched {bank,addr} once to avoid overlapping
-                            // nonblocking clears when multiple PF lanes update the same word.
-                            found_dup = 1'b0;
-                            for (slot = 0; slot < PF; slot++) begin
-                                if (slot < pf_idx) begin
-                                    slot_ch    = m2_wr_f_base + slot;
-                                    slot_fgrp  = (PC == 0) ? 0 : (slot_ch / PC);
-                                    slot_flane = (PC == 0) ? 0 : (slot_ch % PC);
-                                    slot_col_l = (PC == 0) ? 0 : (m2_wr_col % PC);
-                                    slot_col_g = (PC == 0) ? 0 : (m2_wr_col / PC);
-                                    slot_bank  = (slot_fgrp * PC) + slot_col_l;
-                                    slot_addr  = ofm_phys_addr(m2_wr_row, slot_col_g);
-                                    if ((slot < valid_pf) && (slot_ch < f_out_q) &&
-                                        (slot_bank == bank_id) && (slot_addr == addr) &&
-                                        (slot_flane < PV_MAX)) begin
-                                        found_dup = 1'b1;
-                                    end
-                                end
+                            addr     = data_wr_addr_c[bank_i];
+                            row      = pack_div_int(addr, OFM_ROW_STRIDE);
+                            col_g_id = pack_mod_int(addr, OFM_ROW_STRIDE);
+                            if (PC == 0) begin
+                                fgrp_id  = 0;
+                                col_l_id = 0;
+                                col      = 0;
+                            end
+                            else begin
+                                fgrp_id  = bank_i / PC;
+                                col_l_id = bank_i % PC;
+                                col      = (col_g_id * PC) + col_l_id;
                             end
 
-                            if (!found_dup) begin
-                                wr_meta_tag  = ofm_mem_tag_read(bank_id, addr);
-                                wr_meta_fill = ofm_mem_fill_read(bank_id, addr);
-                                if (wr_meta_tag == layer_tag_q) begin
-                                    // Data lanes are preserved by BRAM lane write-enable;
-                                    // only fill metadata needs read-modify-write.
-                                    word_data_next = '0;
-                                    word_fill_next = wr_meta_fill;
+                            wr_meta_tag  = ofm_mem_tag_read(bank_i, addr);
+                            wr_meta_fill = ofm_mem_fill_read(bank_i, addr);
+                            if (wr_meta_tag == layer_tag_q)
+                                word_fill_next = wr_meta_fill | data_wr_keep_c[bank_i];
+                            else
+                                word_fill_next = data_wr_keep_c[bank_i];
+
+                            `OFM_MEM_WRITE_LANES_ACCUM(bank_i, addr, layer_tag_q, '0, word_fill_next, data_wr_keep_c[bank_i])
+
+                            if (next_mode_q) begin
+                                integer c_base_ev;
+                                integer c_rel_ev;
+                                integer ch_ev;
+                                logic m2_word_ready_ev;
+
+                                c_base_ev = fgrp_id * PC;
+                                m2_word_ready_ev = 1'b1;
+                                if ((PC == 0) || (c_base_ev >= f_out_q)) begin
+                                    m2_word_ready_ev = 1'b0;
                                 end
                                 else begin
-                                    word_data_next = '0;
-                                    word_fill_next = '0;
-                                end
-
-                                word_has_write  = 1'b0;
-                                word_write_keep = '0;
-                                for (x = 0; x < PF; x++) begin
-                                    integer x_ch;
-                                    integer x_fgrp;
-                                    integer x_flane;
-                                    integer x_col_l;
-                                    integer x_col_g;
-                                    integer x_bank;
-                                    integer x_addr;
-                                    x_ch    = m2_wr_f_base + x;
-                                    x_fgrp  = (PC == 0) ? 0 : (x_ch / PC);
-                                    x_flane = (PC == 0) ? 0 : (x_ch % PC);
-                                    x_col_l = (PC == 0) ? 0 : (m2_wr_col % PC);
-                                    x_col_g = (PC == 0) ? 0 : (m2_wr_col / PC);
-                                    x_bank  = (x_fgrp * PC) + x_col_l;
-                                    x_addr  = ofm_phys_addr(m2_wr_row, x_col_g);
-
-                                    if ((x < valid_pf) && (x_ch < f_out_q) &&
-                                        (x_bank == bank_id) && (x_addr == addr) &&
-                                        (x_flane < PV_MAX)) begin
-                                        px2 = sat_m2(m2_wr_data[x*M2_IN_W +: M2_IN_W]);
-                                        word_data_next[x_flane*DATA_W +: DATA_W] = px2;
-                                        word_fill_next[x_flane] = 1'b1;
-                                        word_write_keep[x_flane] = 1'b1;
-                                        word_has_write = 1'b1;
+                                    for (c_rel_ev = 0; c_rel_ev < PC; c_rel_ev++) begin
+                                        ch_ev = c_base_ev + c_rel_ev;
+                                        if (ch_ev < f_out_q) begin
+                                            if (!word_fill_next[c_rel_ev]) begin
+                                                m2_word_ready_ev = 1'b0;
+                                            end
+                                        end
                                     end
                                 end
 
-                                if (word_has_write) begin
-                                    `OFM_MEM_WRITE_LANES_ACCUM(bank_id, addr, layer_tag_q, word_data_next, word_fill_next, word_write_keep)
-
-                                    if (next_mode_q) begin
-                                        integer c_base_ev;
-                                        integer c_rel_ev;
-                                        integer ch_ev;
-                                        logic m2_word_ready_ev;
-
-                                        c_base_ev = fgrp_id * PC;
-                                        m2_word_ready_ev = 1'b1;
-                                        if ((PC == 0) || (c_base_ev >= f_out_q)) begin
-                                            m2_word_ready_ev = 1'b0;
+                                if (m2_word_ready_ev) begin
+                                    found_dup = 1'b0;
+                                    free_slot = -1;
+                                    for (slot = 0; slot < PF; slot++) begin
+                                        if (nxt_m2_touch_v[slot] &&
+                                            (nxt_m2_touch_bank[slot] == fgrp_id[15:0]) &&
+                                            (nxt_m2_touch_row[slot] == row[15:0]) &&
+                                            (nxt_m2_touch_colgrp[slot] == col[15:0])) begin
+                                            found_dup = 1'b1;
                                         end
-                                        else begin
-                                            for (c_rel_ev = 0; c_rel_ev < PC; c_rel_ev++) begin
-                                                ch_ev = c_base_ev + c_rel_ev;
-                                                if (ch_ev < f_out_q) begin
-                                                    if (!word_fill_next[c_rel_ev]) begin
-                                                        m2_word_ready_ev = 1'b0;
-                                                    end
-                                                end
-                                            end
+                                        if (!nxt_m2_touch_v[slot] && (free_slot < 0)) begin
+                                            free_slot = slot;
                                         end
-
-                                        if (m2_word_ready_ev) begin
-                                            found_dup = 1'b0;
-                                            free_slot = -1;
-                                            for (slot = 0; slot < PF; slot++) begin
-                                                if (nxt_m2_touch_v[slot] &&
-                                                    (nxt_m2_touch_bank[slot] == fgrp_id[15:0]) &&
-                                                    (nxt_m2_touch_row[slot] == row[15:0]) &&
-                                                    (nxt_m2_touch_colgrp[slot] == col[15:0])) begin
-                                                    found_dup = 1'b1;
-                                                end
-                                                if (!nxt_m2_touch_v[slot] && (free_slot < 0)) begin
-                                                    free_slot = slot;
-                                                end
-                                            end
-                                            if (!found_dup && (free_slot >= 0)) begin
-                                                nxt_m2_touch_v[free_slot]      = 1'b1;
-                                                nxt_m2_touch_bank[free_slot]   = fgrp_id[15:0];
-                                                nxt_m2_touch_row[free_slot]    = row[15:0];
-                                                nxt_m2_touch_colgrp[free_slot] = col[15:0];
-                                            end
-                                        end
+                                    end
+                                    if (!found_dup && (free_slot >= 0)) begin
+                                        nxt_m2_touch_v[free_slot]      = 1'b1;
+                                        nxt_m2_touch_bank[free_slot]   = fgrp_id[15:0];
+                                        nxt_m2_touch_row[free_slot]    = row[15:0];
+                                        nxt_m2_touch_colgrp[free_slot] = col[15:0];
                                     end
                                 end
                             end
@@ -1479,40 +1557,106 @@ module ofm_buffer #(
                 // ----------------------------------------------------
                 // Centralized metadata commit
                 // ----------------------------------------------------
-                // All mem_fill/mem_tag writes are committed from this single
-                // section.  This avoids expanding a group-select write case in
-                // every inner M1/M2 write loop and is the main synthesis cleanup
-                // for the meta-write bottleneck.  If a set and clear target the
-                // same bank in one cycle, set has priority, matching the legacy
-                // source order where stream-consume clear occurred before OFM
-                // write.  A clear to a different address in the same bank is
-                // skipped in that rare collision rather than creating a second
-                // metadata write port.
+                // Preserve the functional-baseline priority: set/write wins
+                // over clear when both target the same bank in one clock.
+                // Unlike the grouped version, each mem_meta_b* array is one
+                // logical bank and receives at most one assignment from this
+                // single write command.  This avoids the mem_*_reg
+                // set/reset-priority pattern that Vivado reported for the
+                // grouped mem_fill/mem_tag and grouped mem_meta versions.
                 for (meta_bank_i = 0; meta_bank_i < DATA_BANKS_IMPL; meta_bank_i++) begin
-                    if ((meta_bank_i < C_MAX) && meta_set_en_l[meta_bank_i] &&
+                    meta_wr_do_v   = 1'b0;
+                    meta_wr_addr_v = '0;
+                    meta_old_word_v = '0;
+                    meta_wr_word_v = '0;
+
+                    if ((meta_bank_i < C_MAX) && (meta_bank_i < META_BANKS_IMPL) &&
+                        meta_set_en_l[meta_bank_i] &&
                         (meta_set_addr_l[meta_bank_i] < DEPTH)) begin
-                        // One compact per-bank metadata write.  Set wins over clear in the
-                        // same bank/cycle, matching the old centralized commit priority.
-                        mem_meta[meta_bank_i][meta_set_addr_l[meta_bank_i]] <= {
-                            meta_set_tag_l[meta_bank_i],
-                            meta_set_fill_l[meta_bank_i]
-                        };
+                        meta_wr_do_v   = 1'b1;
+                        meta_wr_addr_v = meta_set_addr_l[meta_bank_i];
+                        meta_wr_word_v = {meta_set_tag_l[meta_bank_i], meta_set_fill_l[meta_bank_i]};
                     end
-                    else if ((meta_bank_i < C_MAX) && meta_clr_en_l[meta_bank_i] &&
+                    else if ((meta_bank_i < C_MAX) && (meta_bank_i < META_BANKS_IMPL) &&
+                             meta_clr_en_l[meta_bank_i] &&
                              (meta_clr_addr_l[meta_bank_i] < DEPTH)) begin
-                        // Clear only fill bits; preserve the entry tag.  Validity remains
-                        // tag-based, so old layer entries naturally become stale without a
-                        // full metadata reset.
-                        meta_clear_fill_next =
-                            ofm_mem_fill_read(meta_bank_i, meta_clr_addr_l[meta_bank_i]) &
-                            ~meta_clr_mask_l[meta_bank_i];
-                        mem_meta[meta_bank_i][meta_clr_addr_l[meta_bank_i]] <= {
-                            ofm_mem_tag_read(meta_bank_i, meta_clr_addr_l[meta_bank_i]),
-                            meta_clear_fill_next
-                        };
+                        meta_old_word_v = ofm_mem_meta_read(meta_bank_i, meta_clr_addr_l[meta_bank_i]);
+                        meta_wr_do_v    = 1'b1;
+                        meta_wr_addr_v  = meta_clr_addr_l[meta_bank_i];
+                        meta_wr_word_v  = {meta_old_word_v[PV_MAX +: TAG_W],
+                                           (meta_old_word_v[PV_MAX-1:0] & ~meta_clr_mask_l[meta_bank_i])};
+                    end
+
+                    if (meta_wr_do_v) begin
+                        case (meta_bank_i)
+                            0:  mem_meta_b0 [meta_wr_addr_v] <= meta_wr_word_v;
+                            1:  mem_meta_b1 [meta_wr_addr_v] <= meta_wr_word_v;
+                            2:  mem_meta_b2 [meta_wr_addr_v] <= meta_wr_word_v;
+                            3:  mem_meta_b3 [meta_wr_addr_v] <= meta_wr_word_v;
+                            4:  mem_meta_b4 [meta_wr_addr_v] <= meta_wr_word_v;
+                            5:  mem_meta_b5 [meta_wr_addr_v] <= meta_wr_word_v;
+                            6:  mem_meta_b6 [meta_wr_addr_v] <= meta_wr_word_v;
+                            7:  mem_meta_b7 [meta_wr_addr_v] <= meta_wr_word_v;
+                            8:  mem_meta_b8 [meta_wr_addr_v] <= meta_wr_word_v;
+                            9:  mem_meta_b9 [meta_wr_addr_v] <= meta_wr_word_v;
+                            10:  mem_meta_b10[meta_wr_addr_v] <= meta_wr_word_v;
+                            11:  mem_meta_b11[meta_wr_addr_v] <= meta_wr_word_v;
+                            12:  mem_meta_b12[meta_wr_addr_v] <= meta_wr_word_v;
+                            13:  mem_meta_b13[meta_wr_addr_v] <= meta_wr_word_v;
+                            14:  mem_meta_b14[meta_wr_addr_v] <= meta_wr_word_v;
+                            15:  mem_meta_b15[meta_wr_addr_v] <= meta_wr_word_v;
+                            16:  mem_meta_b16[meta_wr_addr_v] <= meta_wr_word_v;
+                            17:  mem_meta_b17[meta_wr_addr_v] <= meta_wr_word_v;
+                            18:  mem_meta_b18[meta_wr_addr_v] <= meta_wr_word_v;
+                            19:  mem_meta_b19[meta_wr_addr_v] <= meta_wr_word_v;
+                            20:  mem_meta_b20[meta_wr_addr_v] <= meta_wr_word_v;
+                            21:  mem_meta_b21[meta_wr_addr_v] <= meta_wr_word_v;
+                            22:  mem_meta_b22[meta_wr_addr_v] <= meta_wr_word_v;
+                            23:  mem_meta_b23[meta_wr_addr_v] <= meta_wr_word_v;
+                            24:  mem_meta_b24[meta_wr_addr_v] <= meta_wr_word_v;
+                            25:  mem_meta_b25[meta_wr_addr_v] <= meta_wr_word_v;
+                            26:  mem_meta_b26[meta_wr_addr_v] <= meta_wr_word_v;
+                            27:  mem_meta_b27[meta_wr_addr_v] <= meta_wr_word_v;
+                            28:  mem_meta_b28[meta_wr_addr_v] <= meta_wr_word_v;
+                            29:  mem_meta_b29[meta_wr_addr_v] <= meta_wr_word_v;
+                            30:  mem_meta_b30[meta_wr_addr_v] <= meta_wr_word_v;
+                            31:  mem_meta_b31[meta_wr_addr_v] <= meta_wr_word_v;
+                            32:  mem_meta_b32[meta_wr_addr_v] <= meta_wr_word_v;
+                            33:  mem_meta_b33[meta_wr_addr_v] <= meta_wr_word_v;
+                            34:  mem_meta_b34[meta_wr_addr_v] <= meta_wr_word_v;
+                            35:  mem_meta_b35[meta_wr_addr_v] <= meta_wr_word_v;
+                            36:  mem_meta_b36[meta_wr_addr_v] <= meta_wr_word_v;
+                            37:  mem_meta_b37[meta_wr_addr_v] <= meta_wr_word_v;
+                            38:  mem_meta_b38[meta_wr_addr_v] <= meta_wr_word_v;
+                            39:  mem_meta_b39[meta_wr_addr_v] <= meta_wr_word_v;
+                            40:  mem_meta_b40[meta_wr_addr_v] <= meta_wr_word_v;
+                            41:  mem_meta_b41[meta_wr_addr_v] <= meta_wr_word_v;
+                            42:  mem_meta_b42[meta_wr_addr_v] <= meta_wr_word_v;
+                            43:  mem_meta_b43[meta_wr_addr_v] <= meta_wr_word_v;
+                            44:  mem_meta_b44[meta_wr_addr_v] <= meta_wr_word_v;
+                            45:  mem_meta_b45[meta_wr_addr_v] <= meta_wr_word_v;
+                            46:  mem_meta_b46[meta_wr_addr_v] <= meta_wr_word_v;
+                            47:  mem_meta_b47[meta_wr_addr_v] <= meta_wr_word_v;
+                            48:  mem_meta_b48[meta_wr_addr_v] <= meta_wr_word_v;
+                            49:  mem_meta_b49[meta_wr_addr_v] <= meta_wr_word_v;
+                            50:  mem_meta_b50[meta_wr_addr_v] <= meta_wr_word_v;
+                            51:  mem_meta_b51[meta_wr_addr_v] <= meta_wr_word_v;
+                            52:  mem_meta_b52[meta_wr_addr_v] <= meta_wr_word_v;
+                            53:  mem_meta_b53[meta_wr_addr_v] <= meta_wr_word_v;
+                            54:  mem_meta_b54[meta_wr_addr_v] <= meta_wr_word_v;
+                            55:  mem_meta_b55[meta_wr_addr_v] <= meta_wr_word_v;
+                            56:  mem_meta_b56[meta_wr_addr_v] <= meta_wr_word_v;
+                            57:  mem_meta_b57[meta_wr_addr_v] <= meta_wr_word_v;
+                            58:  mem_meta_b58[meta_wr_addr_v] <= meta_wr_word_v;
+                            59:  mem_meta_b59[meta_wr_addr_v] <= meta_wr_word_v;
+                            60:  mem_meta_b60[meta_wr_addr_v] <= meta_wr_word_v;
+                            61:  mem_meta_b61[meta_wr_addr_v] <= meta_wr_word_v;
+                            62:  mem_meta_b62[meta_wr_addr_v] <= meta_wr_word_v;
+                            63:  mem_meta_b63[meta_wr_addr_v] <= meta_wr_word_v;
+                            default: begin end
+                        endcase
                     end
                 end
-
                 // Event-driven ready-token generation.  The old implementation
                 // registered touched words here and scanned mem_fill/mem_tag in the
                 // next cycle.  That scan was the dominant synthesis/elaboration cone.
