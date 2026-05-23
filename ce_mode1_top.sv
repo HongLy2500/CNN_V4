@@ -289,4 +289,200 @@ module ce_mode1_top #(
   assign done                = ctrl_done;
   assign busy                = ctrl_busy;
 
+
+`ifndef SYNTHESIS
+  // ------------------------------------------------------------
+  // PERF_M1_CE_DEEP
+  //
+  // Purpose:
+  //   Per-Mode1-layer CE breakdown.
+  //
+  // Key interpretation:
+  //   ctrl_step = real MAC consume cycles, should match ideal.
+  //   stall_ext_hold = step_en low while controller wants MAC.
+  //                    Usually local_dataflow/IFM refill hold.
+  //   stall_data = step_en high but data_ready_q low.
+  //   stall_weight = step_en high, data ready, but weight invalid.
+  // ------------------------------------------------------------
+
+  longint unsigned perf_m1_cycle_cnt;
+  longint unsigned perf_m1_busy_cnt;
+
+  longint unsigned perf_m1_ext_step_cnt;
+  longint unsigned perf_m1_ctrl_step_cnt;
+  longint unsigned perf_m1_mac_req_cnt;
+
+  longint unsigned perf_m1_stall_ext_hold_cnt;
+  longint unsigned perf_m1_stall_data_cnt;
+  longint unsigned perf_m1_stall_weight_cnt;
+
+  longint unsigned perf_m1_w_req_cnt;
+  longint unsigned perf_m1_w_ret_cnt;
+  longint unsigned perf_m1_w_load_cnt;
+
+  longint unsigned perf_m1_pass_start_cnt;
+  longint unsigned perf_m1_chan_done_cnt;
+  longint unsigned perf_m1_row_done_cnt;
+  longint unsigned perf_m1_fgrp_done_cnt;
+  longint unsigned perf_m1_out_valid_cnt;
+  longint unsigned perf_m1_clear_psum_cnt;
+
+  logic [15:0] perf_m1_Hout_q;
+  logic [15:0] perf_m1_Wout_q;
+  logic [15:0] perf_m1_W_q;
+  logic [9:0]  perf_m1_C_q;
+  logic [9:0]  perf_m1_F_q;
+  logic [3:0]  perf_m1_K_q;
+  logic [7:0]  perf_m1_Pv_q;
+  logic [7:0]  perf_m1_Pf_q;
+
+  always_ff @(posedge clk or negedge rst_n) begin : PERF_M1_CE_DEEP_MON
+    if (!rst_n) begin
+      perf_m1_cycle_cnt           <= 0;
+      perf_m1_busy_cnt            <= 0;
+      perf_m1_ext_step_cnt        <= 0;
+      perf_m1_ctrl_step_cnt       <= 0;
+      perf_m1_mac_req_cnt         <= 0;
+
+      perf_m1_stall_ext_hold_cnt  <= 0;
+      perf_m1_stall_data_cnt      <= 0;
+      perf_m1_stall_weight_cnt    <= 0;
+
+      perf_m1_w_req_cnt           <= 0;
+      perf_m1_w_ret_cnt           <= 0;
+      perf_m1_w_load_cnt          <= 0;
+
+      perf_m1_pass_start_cnt      <= 0;
+      perf_m1_chan_done_cnt       <= 0;
+      perf_m1_row_done_cnt        <= 0;
+      perf_m1_fgrp_done_cnt       <= 0;
+      perf_m1_out_valid_cnt       <= 0;
+      perf_m1_clear_psum_cnt      <= 0;
+
+      perf_m1_Hout_q              <= '0;
+      perf_m1_Wout_q              <= '0;
+      perf_m1_W_q                 <= '0;
+      perf_m1_C_q                 <= '0;
+      perf_m1_F_q                 <= '0;
+      perf_m1_K_q                 <= '0;
+      perf_m1_Pv_q                <= '0;
+      perf_m1_Pf_q                <= '0;
+    end
+    else begin
+      if (start) begin
+        perf_m1_cycle_cnt           <= 0;
+        perf_m1_busy_cnt            <= 0;
+        perf_m1_ext_step_cnt        <= 0;
+        perf_m1_ctrl_step_cnt       <= 0;
+        perf_m1_mac_req_cnt         <= 0;
+
+        perf_m1_stall_ext_hold_cnt  <= 0;
+        perf_m1_stall_data_cnt      <= 0;
+        perf_m1_stall_weight_cnt    <= 0;
+
+        perf_m1_w_req_cnt           <= 0;
+        perf_m1_w_ret_cnt           <= 0;
+        perf_m1_w_load_cnt          <= 0;
+
+        perf_m1_pass_start_cnt      <= 0;
+        perf_m1_chan_done_cnt       <= 0;
+        perf_m1_row_done_cnt        <= 0;
+        perf_m1_fgrp_done_cnt       <= 0;
+        perf_m1_out_valid_cnt       <= 0;
+        perf_m1_clear_psum_cnt      <= 0;
+
+        perf_m1_Hout_q              <= Hout_cur;
+        perf_m1_Wout_q              <= Wout_cur;
+        perf_m1_W_q                 <= W_cur;
+        perf_m1_C_q                 <= C_cur;
+        perf_m1_F_q                 <= F_cur;
+        perf_m1_K_q                 <= K_cur;
+        perf_m1_Pv_q                <= Pv_cur;
+        perf_m1_Pf_q                <= Pf_cur;
+      end
+      else begin
+        if (ctrl_busy) begin
+          perf_m1_cycle_cnt <= perf_m1_cycle_cnt + 1;
+          perf_m1_busy_cnt  <= perf_m1_busy_cnt + 1;
+
+          if (step_en)
+            perf_m1_ext_step_cnt <= perf_m1_ext_step_cnt + 1;
+
+          if (ctrl_step_en)
+            perf_m1_ctrl_step_cnt <= perf_m1_ctrl_step_cnt + 1;
+
+          if (ctrl_mac_en) begin
+            perf_m1_mac_req_cnt <= perf_m1_mac_req_cnt + 1;
+
+            if (!step_en)
+              perf_m1_stall_ext_hold_cnt <= perf_m1_stall_ext_hold_cnt + 1;
+            else if (!data_ready_q)
+              perf_m1_stall_data_cnt <= perf_m1_stall_data_cnt + 1;
+            else if (!weight_valid_q)
+              perf_m1_stall_weight_cnt <= perf_m1_stall_weight_cnt + 1;
+          end
+
+          if (wb_rd_en_i)
+            perf_m1_w_req_cnt <= perf_m1_w_req_cnt + 1;
+
+          if (wb_rd_valid)
+            perf_m1_w_ret_cnt <= perf_m1_w_ret_cnt + 1;
+
+          if (weight_load_en)
+            perf_m1_w_load_cnt <= perf_m1_w_load_cnt + 1;
+
+          if (ctrl_pass_start_pulse)
+            perf_m1_pass_start_cnt <= perf_m1_pass_start_cnt + 1;
+
+          if (ctrl_chan_done_pulse)
+            perf_m1_chan_done_cnt <= perf_m1_chan_done_cnt + 1;
+
+          if (ctrl_row_done_pulse)
+            perf_m1_row_done_cnt <= perf_m1_row_done_cnt + 1;
+
+          if (ctrl_f_group_done_pulse)
+            perf_m1_fgrp_done_cnt <= perf_m1_fgrp_done_cnt + 1;
+
+          if (ctrl_out_valid)
+            perf_m1_out_valid_cnt <= perf_m1_out_valid_cnt + 1;
+
+          if (ctrl_clear_psum)
+            perf_m1_clear_psum_cnt <= perf_m1_clear_psum_cnt + 1;
+        end
+
+        if (ctrl_done) begin
+          $display("PERF_M1_CE_DEEP t=%0t H=%0d Wout=%0d Win=%0d C=%0d F=%0d K=%0d Pv=%0d Pf=%0d cycles=%0d busy=%0d ext_step=%0d ctrl_step=%0d mac_req=%0d stall_ext_hold=%0d stall_data=%0d stall_weight=%0d w_req=%0d w_ret=%0d w_load=%0d pass_start=%0d chan_done=%0d row_done=%0d fgrp_done=%0d out_valid=%0d clear_psum=%0d",
+            $time,
+            perf_m1_Hout_q,
+            perf_m1_Wout_q,
+            perf_m1_W_q,
+            perf_m1_C_q,
+            perf_m1_F_q,
+            perf_m1_K_q,
+            perf_m1_Pv_q,
+            perf_m1_Pf_q,
+            perf_m1_cycle_cnt,
+            perf_m1_busy_cnt,
+            perf_m1_ext_step_cnt,
+            perf_m1_ctrl_step_cnt,
+            perf_m1_mac_req_cnt,
+            perf_m1_stall_ext_hold_cnt,
+            perf_m1_stall_data_cnt,
+            perf_m1_stall_weight_cnt,
+            perf_m1_w_req_cnt,
+            perf_m1_w_ret_cnt,
+            perf_m1_w_load_cnt,
+            perf_m1_pass_start_cnt,
+            perf_m1_chan_done_cnt,
+            perf_m1_row_done_cnt,
+            perf_m1_fgrp_done_cnt,
+            perf_m1_out_valid_cnt,
+            perf_m1_clear_psum_cnt
+          );
+        end
+      end
+    end
+  end
+`endif
+
 endmodule

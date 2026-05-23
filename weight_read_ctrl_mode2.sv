@@ -66,6 +66,7 @@ module weight_read_ctrl_mode2 #(
 
   logic issue_first;
   logic issue_succ;
+  logic can_issue_s;
   logic req_inflight_q;
   logic [31:0] flat_addr32;
 
@@ -145,14 +146,20 @@ module weight_read_ctrl_mode2 #(
     // Do not prefetch past the final output block of the layer.
     have_next_block = !(last_col && last_row && last_fgroup);
 
-    // Issue policy after the fix:
+    // Issue policy after the bypass timing fix:
     //   - issue_first requests the first weight tuple of a layer/new output block;
     //   - on out_valid, the next block follows the same f_group-first order as
     //     ce_controller_mode2 and addr_gen_ifm_m2;
-    //   - issue_succ requests the next tuple only after a real MAC consume.
-    // No request is issued while a request is already in flight.
-    issue_first = wb_bank_ready && !req_inflight_q && (start || (out_valid && have_next_block));
-    issue_succ  = wb_bank_ready && !req_inflight_q && mac_en && !last_issue;
+    //   - issue_succ requests the next tuple after a real MAC consume.
+    //
+    // A new request is allowed in the same cycle a previous request returns
+    // (wb_rd_valid=1).  This is essential for full-rate Mode2 operation:
+    //   return current weight + consume current tuple + issue next weight.
+    // ce_mode2_top still prevents prefetch over an unconsumed weight tuple by
+    // gating wb_bank_ready before it reaches this controller.
+    can_issue_s = wb_bank_ready && (!req_inflight_q || wb_rd_valid);
+    issue_first = can_issue_s && (start || (out_valid && have_next_block));
+    issue_succ  = can_issue_s && mac_en && !last_issue;
 
     wb_rd_en      = 1'b0;
     wb_rd_buf_sel = wb_bank_sel;
