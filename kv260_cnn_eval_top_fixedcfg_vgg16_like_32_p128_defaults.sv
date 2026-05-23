@@ -326,10 +326,35 @@ module kv260_cnn_eval_top_fixedcfg_vgg16_like_32_p128_defaults
     end
   end
 
+
+logic core_done_seen_q;
+logic done_q;
+
+always_ff @(posedge clk or negedge rst_core_n) begin
+  if (!rst_core_n) begin
+    core_done_seen_q <= 1'b0;
+    done_q           <= 1'b0;
+  end else begin
+    if (start_s) begin
+      core_done_seen_q <= 1'b0;
+      done_q           <= 1'b0;
+    end else begin
+      if (core_done) begin
+        core_done_seen_q <= 1'b1;
+      end
+
+      if ((core_done_seen_q) && !bridge_busy) begin
+        done_q <= 1'b1;
+      end
+    end
+  end
+end
+
+
   assign cfg_done    = cfg_done_q;
   assign start_pulse = start_s;
-  assign busy        = core_busy | bridge_busy;
-  assign done        = core_done;
+  assign busy        = (core_busy || bridge_busy || core_done_seen_q) && !done_q;
+  assign done        = done_q;
   assign error       = core_error | bridge_error | wr_fifo_overflow;
 
   assign dbg_ddr_rd_req   = ddr_rd_req_s;
