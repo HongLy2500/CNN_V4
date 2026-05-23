@@ -37,6 +37,10 @@ module local_dataflow_manager
   input  logic        m1_chan_done_pulse,
   input  logic [15:0] m1_c_iter,
   input  logic [15:0] m1_out_row,
+  // Kept for compatibility with control_unit_top and the previous
+  // windowed Mode1 dataflow variant. The current ping-pong prefetch
+  // implementation does not consume this signal because the uploaded
+  // addr_gen_ifm_m1 interface does not take out_col.
   input  logic [15:0] m1_out_col,
 
   output logic                     m1_dr_write_en,
@@ -116,6 +120,28 @@ module local_dataflow_manager
   logic                     m1_busy_s;
   logic                     m1_done_s;
   logic                     m1_error_s;
+
+  // Mode1 nonblocking next-channel prefetch control.
+  // This keeps the existing addr_gen_ifm_m1 interface but drives it with
+  // synthetic load pulses so channel c+1 can be loaded while CE consumes c.
+  logic        m1_ag_pass_start_s;
+  logic        m1_ag_chan_done_s;
+  logic [15:0] m1_ag_c_iter_s;
+
+  logic        m1_req_pending_q;
+  logic [15:0] m1_req_channel_q;
+  logic        m1_req_is_prefetch_q;
+  logic        m1_load_is_prefetch_q;
+  logic [15:0] m1_load_channel_q;
+  logic        m1_start_req_s;
+
+  logic        m1_blocking_hold_q;
+  logic        m1_waiting_next_q;
+  logic [15:0] m1_wait_channel_q;
+  logic        m1_prefetch_valid_q;
+  logic [15:0] m1_prefetch_channel_q;
+  logic        m1_next_channel_exists_s;
+  logic [15:0] m1_next_channel_s;
 
   // --------------------------------------------------------------------------
   // addr_gen_ifm_m2 wires
@@ -287,6 +313,152 @@ module local_dataflow_manager
     m2_out_valid_to_addrgen_s  = m2_ce_out_valid;
   end
 
+
+  // --------------------------------------------------------------------------
+  // Mode-1 request scheduler
+  // --------------------------------------------------------------------------
+  assign m1_next_channel_s = m1_c_iter + 16'd1;
+  assign m1_next_channel_exists_s = (m1_next_channel_s < cur_cfg.c_in);
+
+  assign m1_start_req_s = (cur_mode == MODE1) &&
+                          m1_req_pending_q &&
+                          !m1_busy_s &&
+                          !m1_done_s;
+
+  assign m1_ag_pass_start_s = m1_start_req_s && (m1_req_channel_q == 16'd0);
+  assign m1_ag_chan_done_s  = m1_start_req_s && (m1_req_channel_q != 16'd0);
+  assign m1_ag_c_iter_s     = (m1_req_channel_q == 16'd0) ? 16'd0 : (m1_req_channel_q - 16'd1);
+
+  always_ff @(posedge clk or negedge rst_n) begin : PROC_M1_PREFETCH_SCHED
+    if (!rst_n) begin
+      m1_req_pending_q       <= 1'b0;
+      m1_req_channel_q       <= 16'd0;
+      m1_req_is_prefetch_q   <= 1'b0;
+      m1_load_is_prefetch_q  <= 1'b0;
+      m1_load_channel_q      <= 16'd0;
+      m1_blocking_hold_q     <= 1'b0;
+      m1_waiting_next_q      <= 1'b0;
+      m1_wait_channel_q      <= 16'd0;
+      m1_prefetch_valid_q    <= 1'b0;
+      m1_prefetch_channel_q  <= 16'd0;
+    end
+    else begin
+      if (cur_mode != MODE1) begin
+        m1_req_pending_q       <= 1'b0;
+        m1_req_channel_q       <= 16'd0;
+        m1_req_is_prefetch_q   <= 1'b0;
+        m1_load_is_prefetch_q  <= 1'b0;
+        m1_load_channel_q      <= 16'd0;
+        m1_blocking_hold_q     <= 1'b0;
+        m1_waiting_next_q      <= 1'b0;
+        m1_wait_channel_q      <= 16'd0;
+        m1_prefetch_valid_q    <= 1'b0;
+        m1_prefetch_channel_q  <= 16'd0;
+      end
+      else begin
+        // A new output block always starts from channel 0 and invalidates any
+        // prefetched channel from the previous block.
+        if (m1_pass_start_pulse) begin
+          m1_req_pending_q       <= 1'b1;
+          m1_req_channel_q       <= 16'd0;
+          m1_req_is_prefetch_q   <= 1'b0;
+          m1_blocking_hold_q     <= 1'b1;
+          m1_waiting_next_q      <= 1'b0;
+          m1_wait_channel_q      <= 16'd0;
+          m1_prefetch_valid_q    <= 1'b0;
+          m1_prefetch_channel_q  <= 16'd0;
+        end
+        else begin
+          // Launch a pending request once addr_gen_ifm_m1 is idle.
+          if (m1_start_req_s) begin
+            m1_req_pending_q      <= 1'b0;
+            m1_load_is_prefetch_q <= m1_req_is_prefetch_q;
+            m1_load_channel_q     <= m1_req_channel_q;
+          end
+
+          // Load completion.  Blocking channel-0 load releases the block;
+          // prefetch completion either becomes available or immediately
+          // satisfies a channel wait caused by chan_done.
+          if (m1_done_s) begin
+            if (m1_load_is_prefetch_q) begin
+              if (m1_waiting_next_q && (m1_wait_channel_q == m1_load_channel_q)) begin
+                m1_blocking_hold_q  <= 1'b0;
+                m1_waiting_next_q   <= 1'b0;
+                m1_prefetch_valid_q <= 1'b0;
+
+                if ((m1_load_channel_q + 16'd1) < cur_cfg.c_in) begin
+                  m1_req_pending_q     <= 1'b1;
+                  m1_req_channel_q     <= m1_load_channel_q + 16'd1;
+                  m1_req_is_prefetch_q <= 1'b1;
+                end
+              end
+              else begin
+                m1_prefetch_valid_q   <= 1'b1;
+                m1_prefetch_channel_q <= m1_load_channel_q;
+              end
+            end
+            else begin
+              m1_blocking_hold_q <= 1'b0;
+              if (cur_cfg.c_in > 16'd1) begin
+                m1_req_pending_q     <= 1'b1;
+                m1_req_channel_q     <= 16'd1;
+                m1_req_is_prefetch_q <= 1'b1;
+              end
+            end
+          end
+
+          // If a prefetch completed in the same cycle as chan_done, the
+          // sequential tests above may have set both waiting_next and
+          // prefetch_valid.  Release the hold here on the following cycle.
+          if (m1_waiting_next_q &&
+              m1_prefetch_valid_q &&
+              (m1_prefetch_channel_q == m1_wait_channel_q)) begin
+            m1_blocking_hold_q  <= 1'b0;
+            m1_waiting_next_q   <= 1'b0;
+            m1_prefetch_valid_q <= 1'b0;
+
+            if ((m1_wait_channel_q + 16'd1) < cur_cfg.c_in) begin
+              m1_req_pending_q     <= 1'b1;
+              m1_req_channel_q     <= m1_wait_channel_q + 16'd1;
+              m1_req_is_prefetch_q <= 1'b1;
+            end
+          end
+
+          // Current channel was consumed by CE.  If the next channel is already
+          // prefetched, consume that prefetch without holding; otherwise hold
+          // compute until the prefetch/load finishes.
+          if (m1_chan_done_pulse && m1_next_channel_exists_s) begin
+            if (m1_prefetch_valid_q && (m1_prefetch_channel_q == m1_next_channel_s)) begin
+              m1_prefetch_valid_q <= 1'b0;
+              if ((m1_next_channel_s + 16'd1) < cur_cfg.c_in) begin
+                m1_req_pending_q     <= 1'b1;
+                m1_req_channel_q     <= m1_next_channel_s + 16'd1;
+                m1_req_is_prefetch_q <= 1'b1;
+              end
+            end
+            else begin
+              m1_blocking_hold_q <= 1'b1;
+              m1_waiting_next_q  <= 1'b1;
+              m1_wait_channel_q  <= m1_next_channel_s;
+
+              if (!m1_req_pending_q &&
+                  !(m1_busy_s && m1_load_is_prefetch_q && (m1_load_channel_q == m1_next_channel_s))) begin
+                m1_req_pending_q     <= 1'b1;
+                m1_req_channel_q     <= m1_next_channel_s;
+                m1_req_is_prefetch_q <= 1'b1;
+              end
+            end
+          end
+          else if (m1_chan_done_pulse && !m1_next_channel_exists_s) begin
+            m1_waiting_next_q   <= 1'b0;
+            m1_blocking_hold_q  <= 1'b0;
+            m1_prefetch_valid_q <= 1'b0;
+          end
+        end
+      end
+    end
+  end
+
   // --------------------------------------------------------------------------
   // Mode-1 local IFM feeder
   // --------------------------------------------------------------------------
@@ -307,11 +479,10 @@ module local_dataflow_manager
     .W_cur             (cur_cfg.w_in),
     .Pv_cur            (cur_cfg.pv_m1),
 
-    .pass_start_pulse  (m1_pass_start_pulse),
-    .chan_done_pulse   (m1_chan_done_pulse),
-    .c_iter            (m1_c_iter),
+    .pass_start_pulse  (m1_ag_pass_start_s),
+    .chan_done_pulse   (m1_ag_chan_done_s),
+    .c_iter            (m1_ag_c_iter_s),
     .out_row           (m1_out_row),
-    .out_col           (m1_out_col),
 
     .ifm_rd_en         (m1_ifm_rd_en_s),
     .ifm_rd_bank_base  (m1_ifm_rd_bank_base_s),
@@ -568,7 +739,7 @@ module local_dataflow_manager
   // serializing cgrp free events so no compute-consumed slot is dropped.
   assign m2_free_emit_hold_s = m2_free_emit_active_q || m2_free_refill_needed_s || m2_miss_pending_q || m2_miss_refill_valid_s;
 
-  assign hold_compute = (cur_mode == MODE1) ? m1_busy_s :
+  assign hold_compute = (cur_mode == MODE1) ? m1_blocking_hold_q :
                         (cur_mode == MODE2) ? m2_free_emit_hold_s : 1'b0;
 
   assign local_busy  = (cur_mode == MODE1) ? m1_busy_s  :

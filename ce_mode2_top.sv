@@ -107,26 +107,58 @@ module ce_mode2_top #(
   logic weight_req_inflight_q;
   logic weight_bank_ready_m2_s;
 
+  // Bypass/availability signals for one-cycle consume-on-return.
+  //
+  // Existing Mode2 path held exactly one IFM tuple and one weight tuple.
+  // That was functionally safe, but produced a strict load/consume alternation:
+  //   return data+weight -> next cycle consume -> next cycle return ...
+  // These signals let the controller consume a tuple in the same cycle it
+  // arrives when the active slot is empty, while still retaining the old
+  // Mode1-like one-current-tuple contract when an active tuple is already held.
+  logic data_available_s;
+  logic wgt_available_s;
+  logic [PF*PC*DATA_W-1:0] weight_tuple_raw;
+  logic weight_req_slot_free_s;
+  logic weight_tuple_slot_free_s;
+
   always_comb begin
     f_base_cur = f_group * PF;
     c_base_cur = c_group * PC;
   end
 
-  assign data_tuple_raw     = data_tuple_q;
   assign data_tuple_valid_q = data_valid_q;
-  assign data_accept_s      = dr_write_en && (!data_valid_q || mac_en || start);
-  assign data_overflow_s    = dr_write_en && data_valid_q && !mac_en && !start;
 
-  assign tuple_ready_s = data_tuple_valid_q && wgt_tuple_ready_q;
+  // Data/weight availability includes a registered active tuple OR a tuple
+  // arriving in the current cycle.  This removes the previous half-rate
+  // behavior where Mode2 had to wait one extra cycle after every load.
+  assign data_available_s = data_valid_q || dr_write_en;
+  assign wgt_available_s  = wgt_tuple_ready_q || weight_write_en;
+
+  // Use the registered tuple when one is already active.  Otherwise, if a new
+  // tuple arrives in this cycle and the controller fires, the MAC sees the
+  // incoming tuple directly through this bypass path.
+  assign data_tuple_raw   = data_valid_q ? data_tuple_q : dr_write_data;
+  assign weight_tuple_raw = wgt_tuple_ready_q ? weight_out_raw : weight_write_data;
+
+  // A write is accepted if the active data slot is empty, or if the active
+  // tuple is consumed in the same cycle.  If the slot is full and there is no
+  // consume, the write is flagged as overflow and ignored by the valid tracker.
+  assign data_accept_s   = dr_write_en && (!data_valid_q || mac_en || start);
+  assign data_overflow_s = dr_write_en && data_valid_q && !mac_en && !start;
+
+  assign tuple_ready_s = data_available_s && wgt_available_s;
   assign ctrl_step_en  = step_en && tuple_ready_s;
 
-  // Present the weight buffer as ready only when Mode 2 is allowed to
-  // issue a request for the current/next consumed tuple.  In particular,
-  // do not let pass_start_pulse prefetch over a still-unconsumed current
-  // weight bundle.
+  // Allow a new weight read in the same cycle a previous read returns, but
+  // only when the weight tuple slot is/will be free.  This prevents prefetching
+  // over an unconsumed weight tuple, while enabling the desired sequence:
+  //   return current tuple + consume current tuple + issue next tuple.
+  assign weight_req_slot_free_s   = !weight_req_inflight_q || weight_write_en;
+  assign weight_tuple_slot_free_s = start || mac_en || (!wgt_tuple_ready_q && !weight_write_en);
+
   assign weight_bank_ready_m2_s = weight_bank_ready &&
-                                  !weight_req_inflight_q &&
-                                  (!wgt_tuple_ready_q || mac_en || start);
+                                  weight_req_slot_free_s &&
+                                  weight_tuple_slot_free_s;
 
   ce_controller_mode2 #(
     .K_MAX    (K_MAX),
@@ -257,26 +289,51 @@ module ce_mode2_top #(
         weight_req_inflight_q <= wb_rd_en;
       end
       else begin
-        // Current IFM tuple validity, Mode1-style.
-        // A tuple is held stable until mac_en consumes it.  A same-cycle
-        // mac_en + dr_write_en consumes the old tuple and latches the next
-        // tuple for the following consume.
-        if (mac_en && !dr_write_en) begin
-          data_valid_q <= 1'b0;
+        // ----------------------------------------------------------
+        // Current IFM tuple validity.
+        //
+        // Cases:
+        //   data_valid=1, mac=1, dr_write=1:
+        //     consume old registered tuple and queue arriving tuple.
+        //   data_valid=0, mac=1, dr_write=1:
+        //     consume arriving tuple through bypass; do NOT mark it valid
+        //     for the next cycle, otherwise it would be reused.
+        //   data_valid=0, mac=0, dr_write=1:
+        //     queue arriving tuple for a later consume.
+        //   data_valid=1, mac=0, dr_write=1:
+        //     overflow/ignored; active tuple must not be overwritten.
+        // ----------------------------------------------------------
+        if (dr_write_en && data_valid_q && !mac_en) begin
+          data_valid_q <= data_valid_q;
         end
-        if (data_accept_s) begin
+        else if (mac_en && dr_write_en) begin
+          data_tuple_q <= dr_write_data;
+          data_valid_q <= data_valid_q;  // old valid -> refill, bypass -> consumed
+        end
+        else if (dr_write_en) begin
           data_tuple_q <= dr_write_data;
           data_valid_q <= 1'b1;
         end
-
-        // Current weight bundle validity.  A real MAC consume invalidates
-        // the current registered weight.  A same-cycle return/write has
-        // priority and becomes consumable on the next cycle.
-        if (mac_en) begin
-          wgt_tuple_ready_q <= 1'b0;
+        else if (mac_en) begin
+          data_valid_q <= 1'b0;
         end
-        if (weight_write_en) begin
+
+        // ----------------------------------------------------------
+        // Current weight tuple validity.
+        //
+        // weight_write_en loads weight_register_mode2.  If there was no
+        // previously valid weight and mac_en fires in the same cycle, the
+        // MAC consumed the arriving weight through bypass, so the registered
+        // copy must NOT be considered valid on the next cycle.
+        // ----------------------------------------------------------
+        if (mac_en && weight_write_en) begin
+          wgt_tuple_ready_q <= wgt_tuple_ready_q; // refill old-valid, consume bypass if old invalid
+        end
+        else if (weight_write_en) begin
           wgt_tuple_ready_q <= 1'b1;
+        end
+        else if (mac_en) begin
+          wgt_tuple_ready_q <= 1'b0;
         end
 
         // Track one outstanding weight request.  If a return and a new
@@ -316,7 +373,7 @@ module ce_mode2_top #(
         if (((c_base_cur + pc_i) < C_cur) &&
             ((f_base_cur + pf_i) < F_cur)) begin
           weight_out[(pf_i*PC + pc_i)*DATA_W +: DATA_W]
-            = weight_out_raw[(pf_i*PC + pc_i)*DATA_W +: DATA_W];
+            = weight_tuple_raw[(pf_i*PC + pc_i)*DATA_W +: DATA_W];
         end
       end
     end
@@ -350,5 +407,285 @@ module ce_mode2_top #(
     end
   end
   
+  
+`ifndef SYNTHESIS
+  // ------------------------------------------------------------
+  // PERF_M2_CE
+  //
+  // Purpose:
+  //   Measure why Mode2 CE does not reach ideal ctrl_step/mac cycles.
+  //
+  // Important signals:
+  //   step_en        : external permission from dispatcher
+  //   ctrl_step_en   : consume-qualified step = step_en && tuple_ready
+  //   mac_en         : real MAC consume in S_RUN
+  //   tuple_ready_s  : data tuple and weight tuple both ready
+  //
+  // Interpretation:
+  //   ext_step_high but ctrl_step low  => operand tuple stall
+  //   stall_data_* large              => IFM/data tuple bottleneck
+  //   stall_wgt_* large               => weight tuple/read bottleneck
+  // ------------------------------------------------------------
+
+  longint unsigned perf_m2_cycle_cnt;
+  longint unsigned perf_m2_busy_cnt;
+
+  longint unsigned perf_m2_ext_step_cnt;
+  longint unsigned perf_m2_ctrl_step_cnt;
+  longint unsigned perf_m2_mac_cnt;
+  longint unsigned perf_m2_ctrl_no_mac_cnt;
+
+  longint unsigned perf_m2_stall_ext_hold_cnt;
+  longint unsigned perf_m2_stall_tuple_cnt;
+  longint unsigned perf_m2_stall_data_only_cnt;
+  longint unsigned perf_m2_stall_wgt_only_cnt;
+  longint unsigned perf_m2_stall_both_cnt;
+
+  longint unsigned perf_m2_dr_write_cnt;
+  longint unsigned perf_m2_data_accept_cnt;
+  longint unsigned perf_m2_data_overflow_cnt;
+  longint unsigned perf_m2_data_consume_no_refill_cnt;
+  longint unsigned perf_m2_data_consume_with_refill_cnt;
+
+  longint unsigned perf_m2_wb_req_cnt;
+  longint unsigned perf_m2_wb_ret_cnt;
+  longint unsigned perf_m2_wgt_load_cnt;
+  longint unsigned perf_m2_wgt_consume_no_refill_cnt;
+  longint unsigned perf_m2_wgt_consume_with_refill_cnt;
+
+  longint unsigned perf_m2_wgt_missing_inflight_cnt;
+  longint unsigned perf_m2_wgt_missing_bank_not_ready_cnt;
+  longint unsigned perf_m2_wgt_missing_no_req_cnt;
+
+  longint unsigned perf_m2_pass_start_cnt;
+  longint unsigned perf_m2_group_start_cnt;
+  longint unsigned perf_m2_out_valid_cnt;
+  longint unsigned perf_m2_clear_psum_cnt;
+
+  logic [15:0] perf_m2_Hout_q;
+  logic [15:0] perf_m2_Wout_q;
+  logic [9:0]  perf_m2_C_q;
+  logic [9:0]  perf_m2_F_q;
+  logic [3:0]  perf_m2_K_q;
+  logic [15:0] perf_m2_tile_base_q;
+  logic [15:0] perf_m2_tile_count_q;
+
+  always_ff @(posedge clk or negedge rst_n) begin : PERF_M2_CE_MON
+    if (!rst_n) begin
+      perf_m2_cycle_cnt                    <= 0;
+      perf_m2_busy_cnt                     <= 0;
+
+      perf_m2_ext_step_cnt                 <= 0;
+      perf_m2_ctrl_step_cnt                <= 0;
+      perf_m2_mac_cnt                      <= 0;
+      perf_m2_ctrl_no_mac_cnt              <= 0;
+
+      perf_m2_stall_ext_hold_cnt           <= 0;
+      perf_m2_stall_tuple_cnt              <= 0;
+      perf_m2_stall_data_only_cnt          <= 0;
+      perf_m2_stall_wgt_only_cnt           <= 0;
+      perf_m2_stall_both_cnt               <= 0;
+
+      perf_m2_dr_write_cnt                 <= 0;
+      perf_m2_data_accept_cnt              <= 0;
+      perf_m2_data_overflow_cnt            <= 0;
+      perf_m2_data_consume_no_refill_cnt   <= 0;
+      perf_m2_data_consume_with_refill_cnt <= 0;
+
+      perf_m2_wb_req_cnt                   <= 0;
+      perf_m2_wb_ret_cnt                   <= 0;
+      perf_m2_wgt_load_cnt                 <= 0;
+      perf_m2_wgt_consume_no_refill_cnt    <= 0;
+      perf_m2_wgt_consume_with_refill_cnt  <= 0;
+
+      perf_m2_wgt_missing_inflight_cnt     <= 0;
+      perf_m2_wgt_missing_bank_not_ready_cnt <= 0;
+      perf_m2_wgt_missing_no_req_cnt       <= 0;
+
+      perf_m2_pass_start_cnt               <= 0;
+      perf_m2_group_start_cnt              <= 0;
+      perf_m2_out_valid_cnt                <= 0;
+      perf_m2_clear_psum_cnt               <= 0;
+
+      perf_m2_Hout_q                       <= '0;
+      perf_m2_Wout_q                       <= '0;
+      perf_m2_C_q                          <= '0;
+      perf_m2_F_q                          <= '0;
+      perf_m2_K_q                          <= '0;
+      perf_m2_tile_base_q                  <= '0;
+      perf_m2_tile_count_q                 <= '0;
+    end
+    else begin
+      if (start) begin
+        perf_m2_cycle_cnt                    <= 0;
+        perf_m2_busy_cnt                     <= 0;
+
+        perf_m2_ext_step_cnt                 <= 0;
+        perf_m2_ctrl_step_cnt                <= 0;
+        perf_m2_mac_cnt                      <= 0;
+        perf_m2_ctrl_no_mac_cnt              <= 0;
+
+        perf_m2_stall_ext_hold_cnt           <= 0;
+        perf_m2_stall_tuple_cnt              <= 0;
+        perf_m2_stall_data_only_cnt          <= 0;
+        perf_m2_stall_wgt_only_cnt           <= 0;
+        perf_m2_stall_both_cnt               <= 0;
+
+        perf_m2_dr_write_cnt                 <= 0;
+        perf_m2_data_accept_cnt              <= 0;
+        perf_m2_data_overflow_cnt            <= 0;
+        perf_m2_data_consume_no_refill_cnt   <= 0;
+        perf_m2_data_consume_with_refill_cnt <= 0;
+
+        perf_m2_wb_req_cnt                   <= 0;
+        perf_m2_wb_ret_cnt                   <= 0;
+        perf_m2_wgt_load_cnt                 <= 0;
+        perf_m2_wgt_consume_no_refill_cnt    <= 0;
+        perf_m2_wgt_consume_with_refill_cnt  <= 0;
+
+        perf_m2_wgt_missing_inflight_cnt     <= 0;
+        perf_m2_wgt_missing_bank_not_ready_cnt <= 0;
+        perf_m2_wgt_missing_no_req_cnt       <= 0;
+
+        perf_m2_pass_start_cnt               <= 0;
+        perf_m2_group_start_cnt              <= 0;
+        perf_m2_out_valid_cnt                <= 0;
+        perf_m2_clear_psum_cnt               <= 0;
+
+        perf_m2_Hout_q                       <= Hout_cur;
+        perf_m2_Wout_q                       <= Wout_cur;
+        perf_m2_C_q                          <= C_cur;
+        perf_m2_F_q                          <= F_cur;
+        perf_m2_K_q                          <= K_cur;
+        perf_m2_tile_base_q                  <= tile_col_base_g;
+        perf_m2_tile_count_q                 <= tile_col_count;
+      end
+      else begin
+        if (busy) begin
+          perf_m2_cycle_cnt <= perf_m2_cycle_cnt + 1;
+          perf_m2_busy_cnt  <= perf_m2_busy_cnt + 1;
+
+          if (step_en)
+            perf_m2_ext_step_cnt <= perf_m2_ext_step_cnt + 1;
+          else
+            perf_m2_stall_ext_hold_cnt <= perf_m2_stall_ext_hold_cnt + 1;
+
+          if (ctrl_step_en)
+            perf_m2_ctrl_step_cnt <= perf_m2_ctrl_step_cnt + 1;
+
+          if (mac_en)
+            perf_m2_mac_cnt <= perf_m2_mac_cnt + 1;
+
+          if (ctrl_step_en && !mac_en)
+            perf_m2_ctrl_no_mac_cnt <= perf_m2_ctrl_no_mac_cnt + 1;
+
+          // External step is allowed, but Mode2 cannot consume because
+          // one or both operand tuples are missing.
+          if (step_en && !tuple_ready_s) begin
+            perf_m2_stall_tuple_cnt <= perf_m2_stall_tuple_cnt + 1;
+
+            if (!data_tuple_valid_q && !wgt_tuple_ready_q)
+              perf_m2_stall_both_cnt <= perf_m2_stall_both_cnt + 1;
+            else if (!data_tuple_valid_q)
+              perf_m2_stall_data_only_cnt <= perf_m2_stall_data_only_cnt + 1;
+            else if (!wgt_tuple_ready_q)
+              perf_m2_stall_wgt_only_cnt <= perf_m2_stall_wgt_only_cnt + 1;
+          end
+
+          // Diagnose missing weight cause.
+          if (step_en && data_tuple_valid_q && !wgt_tuple_ready_q) begin
+            if (weight_req_inflight_q)
+              perf_m2_wgt_missing_inflight_cnt <= perf_m2_wgt_missing_inflight_cnt + 1;
+            else if (!weight_bank_ready)
+              perf_m2_wgt_missing_bank_not_ready_cnt <= perf_m2_wgt_missing_bank_not_ready_cnt + 1;
+            else
+              perf_m2_wgt_missing_no_req_cnt <= perf_m2_wgt_missing_no_req_cnt + 1;
+          end
+
+          if (dr_write_en)
+            perf_m2_dr_write_cnt <= perf_m2_dr_write_cnt + 1;
+
+          if (data_accept_s)
+            perf_m2_data_accept_cnt <= perf_m2_data_accept_cnt + 1;
+
+          if (data_overflow_s)
+            perf_m2_data_overflow_cnt <= perf_m2_data_overflow_cnt + 1;
+
+          if (mac_en && dr_write_en)
+            perf_m2_data_consume_with_refill_cnt <= perf_m2_data_consume_with_refill_cnt + 1;
+          else if (mac_en && !dr_write_en)
+            perf_m2_data_consume_no_refill_cnt <= perf_m2_data_consume_no_refill_cnt + 1;
+
+          if (wb_rd_en)
+            perf_m2_wb_req_cnt <= perf_m2_wb_req_cnt + 1;
+
+          if (wb_rd_valid)
+            perf_m2_wb_ret_cnt <= perf_m2_wb_ret_cnt + 1;
+
+          if (weight_write_en)
+            perf_m2_wgt_load_cnt <= perf_m2_wgt_load_cnt + 1;
+
+          if (mac_en && weight_write_en)
+            perf_m2_wgt_consume_with_refill_cnt <= perf_m2_wgt_consume_with_refill_cnt + 1;
+          else if (mac_en && !weight_write_en)
+            perf_m2_wgt_consume_no_refill_cnt <= perf_m2_wgt_consume_no_refill_cnt + 1;
+
+          if (pass_start_pulse)
+            perf_m2_pass_start_cnt <= perf_m2_pass_start_cnt + 1;
+
+          if (group_start_pulse)
+            perf_m2_group_start_cnt <= perf_m2_group_start_cnt + 1;
+
+          if (out_valid)
+            perf_m2_out_valid_cnt <= perf_m2_out_valid_cnt + 1;
+
+          if (clear_psum)
+            perf_m2_clear_psum_cnt <= perf_m2_clear_psum_cnt + 1;
+        end
+
+        if (done) begin
+          $display("PERF_M2_CE t=%0t H=%0d W=%0d C=%0d F=%0d K=%0d tile_base=%0d tile_count=%0d cycles=%0d busy=%0d ext_step=%0d ctrl_step=%0d mac=%0d ctrl_no_mac=%0d stall_ext_hold=%0d stall_tuple=%0d stall_data_only=%0d stall_wgt_only=%0d stall_both=%0d dr_wr=%0d data_accept=%0d data_overflow=%0d data_consume_refill=%0d data_consume_no_refill=%0d wb_req=%0d wb_ret=%0d wgt_load=%0d wgt_consume_refill=%0d wgt_consume_no_refill=%0d wgt_miss_inflight=%0d wgt_miss_bank_not_ready=%0d wgt_miss_no_req=%0d pass_start=%0d group_start=%0d out_valid=%0d clear_psum=%0d",
+            $time,
+            perf_m2_Hout_q,
+            perf_m2_Wout_q,
+            perf_m2_C_q,
+            perf_m2_F_q,
+            perf_m2_K_q,
+            perf_m2_tile_base_q,
+            perf_m2_tile_count_q,
+            perf_m2_cycle_cnt,
+            perf_m2_busy_cnt,
+            perf_m2_ext_step_cnt,
+            perf_m2_ctrl_step_cnt,
+            perf_m2_mac_cnt,
+            perf_m2_ctrl_no_mac_cnt,
+            perf_m2_stall_ext_hold_cnt,
+            perf_m2_stall_tuple_cnt,
+            perf_m2_stall_data_only_cnt,
+            perf_m2_stall_wgt_only_cnt,
+            perf_m2_stall_both_cnt,
+            perf_m2_dr_write_cnt,
+            perf_m2_data_accept_cnt,
+            perf_m2_data_overflow_cnt,
+            perf_m2_data_consume_with_refill_cnt,
+            perf_m2_data_consume_no_refill_cnt,
+            perf_m2_wb_req_cnt,
+            perf_m2_wb_ret_cnt,
+            perf_m2_wgt_load_cnt,
+            perf_m2_wgt_consume_with_refill_cnt,
+            perf_m2_wgt_consume_no_refill_cnt,
+            perf_m2_wgt_missing_inflight_cnt,
+            perf_m2_wgt_missing_bank_not_ready_cnt,
+            perf_m2_wgt_missing_no_req_cnt,
+            perf_m2_pass_start_cnt,
+            perf_m2_group_start_cnt,
+            perf_m2_out_valid_cnt,
+            perf_m2_clear_psum_cnt
+          );
+        end
+      end
+    end
+  end
+`endif  
   
 endmodule
