@@ -1445,37 +1445,58 @@ module ofm_buffer #(
 
                             `OFM_MEM_WRITE_LANES_ACCUM(bank_i, addr, layer_tag_q, '0, word_fill_next, data_wr_keep_c[bank_i])
 
-                            if (!next_mode_q) begin
-                                integer ch_blk_id;
-                                logic [PV_MAX-1:0] ready_keep_v;
+                        end
+                    end
 
-                                ready_keep_v = calc_keep_mask(pv_next_q, grp * pv_next_q, w_out_q);
-                                if (pf_next_q == 0)
-                                    ch_blk_id = 0;
+                    // Synthesis cleanup: emit one M1 same-mode ready token per
+                    // Mode1 write beat, after the metadata writes have been
+                    // accumulated.  This avoids generating token payloads inside the
+                    // 64-bank loop and avoids dynamic slot assignment per bank.
+                    if (!next_mode_q) begin
+                        integer rep_bank;
+                        integer token_bank_id;
+                        integer token_row;
+                        integer token_grp;
+                        logic [DEPTH_W-1:0] token_addr;
+                        logic [TAG_W-1:0] token_meta_tag;
+                        logic [PV_MAX-1:0] token_meta_fill;
+                        logic [PV_MAX-1:0] token_fill_next;
+                        logic [PV_MAX-1:0] token_ready_keep;
+
+                        rep_bank = m1_wr_filter_base;
+                        if ((rep_bank >= 0) && (rep_bank < DATA_BANKS_IMPL) && (rep_bank < C_MAX)) begin
+                            if (data_wr_en_c[rep_bank] && (data_wr_addr_c[rep_bank] < DEPTH)) begin
+                                token_addr = data_wr_addr_c[rep_bank];
+                                token_row  = pack_div_int(token_addr, OFM_ROW_STRIDE);
+                                token_grp  = pack_mod_int(token_addr, OFM_ROW_STRIDE);
+
+                                token_meta_tag  = ofm_mem_tag_read(rep_bank, token_addr);
+                                token_meta_fill = ofm_mem_fill_read(rep_bank, token_addr);
+                                if (token_meta_tag == layer_tag_q)
+                                    token_fill_next = token_meta_fill | data_wr_keep_c[rep_bank];
                                 else
-                                    ch_blk_id = ch / pf_next_q;
+                                    token_fill_next = data_wr_keep_c[rep_bank];
 
-                                if (((word_fill_next & ready_keep_v) == ready_keep_v) &&
-                                    (ready_keep_v != '0)) begin
-                                    found_dup = 1'b0;
-                                    free_slot = -1;
-                                    for (slot = 0; slot < M1_TOUCH_SLOTS; slot++) begin
-                                        if (nxt_m1_touch_v[slot] &&
-                                            (nxt_m1_touch_bank[slot] == ch_blk_id[15:0]) &&
-                                            (nxt_m1_touch_row[slot] == row[15:0]) &&
-                                            (nxt_m1_touch_colgrp[slot] == grp[15:0])) begin
-                                            found_dup = 1'b1;
-                                        end
-                                        if (!nxt_m1_touch_v[slot] && (free_slot < 0)) begin
-                                            free_slot = slot;
-                                        end
-                                    end
-                                    if (!found_dup && (free_slot >= 0)) begin
-                                        nxt_m1_touch_v[free_slot]      = 1'b1;
-                                        nxt_m1_touch_bank[free_slot]   = ch_blk_id[15:0];
-                                        nxt_m1_touch_row[free_slot]    = row[15:0];
-                                        nxt_m1_touch_colgrp[free_slot] = grp[15:0];
-                                    end
+                                token_ready_keep = calc_keep_mask(pv_next_q, token_grp * pv_next_q, w_out_q);
+                                case (pf_next_q)
+                                    0:  token_bank_id = 0;
+                                    1:  token_bank_id = rep_bank;
+                                    2:  token_bank_id = rep_bank >> 1;
+                                    4:  token_bank_id = rep_bank >> 2;
+                                    8:  token_bank_id = rep_bank >> 3;
+                                    16: token_bank_id = rep_bank >> 4;
+                                    32: token_bank_id = rep_bank >> 5;
+                                    64: token_bank_id = rep_bank >> 6;
+                                    default: token_bank_id = (pf_next_q == 0) ? 0 : (rep_bank / pf_next_q);
+                                endcase
+
+                                if (((token_fill_next & token_ready_keep) == token_ready_keep) &&
+                                    (token_ready_keep != '0) &&
+                                    (token_bank_id >= 0) && (token_bank_id < M1_TOUCH_SLOTS)) begin
+                                    nxt_m1_touch_v[token_bank_id]          = 1'b1;
+                                    nxt_m1_touch_bank[token_bank_id]       = token_bank_id[15:0];
+                                    nxt_m1_touch_row[token_bank_id]        = token_row[15:0];
+                                    nxt_m1_touch_colgrp[token_bank_id]     = token_grp[15:0];
                                 end
                             end
                         end
@@ -1545,24 +1566,16 @@ module ofm_buffer #(
                                 end
 
                                 if (m2_word_ready_ev) begin
-                                    found_dup = 1'b0;
-                                    free_slot = -1;
-                                    for (slot = 0; slot < PF; slot++) begin
-                                        if (nxt_m2_touch_v[slot] &&
-                                            (nxt_m2_touch_bank[slot] == fgrp_id[15:0]) &&
-                                            (nxt_m2_touch_row[slot] == row[15:0]) &&
-                                            (nxt_m2_touch_colgrp[slot] == col[15:0])) begin
-                                            found_dup = 1'b1;
-                                        end
-                                        if (!nxt_m2_touch_v[slot] && (free_slot < 0)) begin
-                                            free_slot = slot;
-                                        end
-                                    end
-                                    if (!found_dup && (free_slot >= 0)) begin
-                                        nxt_m2_touch_v[free_slot]      = 1'b1;
-                                        nxt_m2_touch_bank[free_slot]   = fgrp_id[15:0];
-                                        nxt_m2_touch_row[free_slot]    = row[15:0];
-                                        nxt_m2_touch_colgrp[free_slot] = col[15:0];
+                                    // Synthesis cleanup: deterministic token slot.
+                                    // One Mode2 write beat can complete at most one word per
+                                    // output-channel group.  Use the f-group id as the token
+                                    // slot instead of scanning PF slots for duplicate/free-slot
+                                    // management.
+                                    if ((fgrp_id >= 0) && (fgrp_id < PF)) begin
+                                        nxt_m2_touch_v[fgrp_id]      = 1'b1;
+                                        nxt_m2_touch_bank[fgrp_id]   = fgrp_id[15:0];
+                                        nxt_m2_touch_row[fgrp_id]    = row[15:0];
+                                        nxt_m2_touch_colgrp[fgrp_id] = col[15:0];
                                     end
                                 end
                             end

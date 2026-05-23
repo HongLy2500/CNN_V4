@@ -443,6 +443,16 @@ module ifm_buffer #(
                     m1_row_base_g_q <= '0;
                 end
             end
+
+            // Mode2 metadata must be driven by the same sequential process that
+            // initializes it.  Driving m2_slot_* from a second always_ff creates
+            // multi-driven registers in Vivado.
+            if (wr_en_sel && wr_addr_valid) begin
+                if (wr_src_is_ofm && ofm_wr_mode2 && (wr_bank_phys_sel < C_MAX)) begin
+                    m2_slot_valid_flat[m2_wr_slot_idx]   <= 1'b1;
+                    m2_slot_col_tag_flat[m2_wr_slot_idx] <= ofm_wr_col_g[COL_W-1:0];
+                end
+            end
         end
     end
 
@@ -622,15 +632,6 @@ module ifm_buffer #(
             data_wr_addr[wr_bank_phys_sel] = wr_addr;
             data_wr_keep[wr_bank_phys_sel] = wr_keep_sel;
             data_wr_data[wr_bank_phys_sel] = wr_data_sel;
-        end
-    end
-
-    always_ff @(posedge clk) begin
-        if (wr_en_sel && wr_addr_valid) begin
-            if (wr_src_is_ofm && ofm_wr_mode2 && (wr_bank_phys_sel < C_MAX)) begin
-                m2_slot_valid_flat[m2_wr_slot_idx]   <= 1'b1;
-                m2_slot_col_tag_flat[m2_wr_slot_idx] <= ofm_wr_col_g[COL_W-1:0];
-            end
         end
     end
 

@@ -206,8 +206,7 @@ module local_dataflow_manager
   logic [15:0] m2_miss_col_l_q;
   logic [15:0] m2_miss_cgrp_g_q;
 
-  logic [15:0] m2_num_cgrp_s;
-  logic        m2_pixel_consumed_last_fgroup_s;
+
   logic        m2_free_refill_needed_s;
   logic [15:0] m2_free_refill_col_g_s;
   logic [15:0] m2_free_consumed_col_l_s;
