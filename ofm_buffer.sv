@@ -830,6 +830,7 @@ module ofm_buffer #(
         integer last_grp;
         integer grp_rel;
         integer fgrp_id;
+        integer m1_fgrp_id;
         integer flane_id;
         integer col_l_id;
         integer col_g_id;
@@ -857,8 +858,9 @@ module ofm_buffer #(
                     valid_pf_m1 = valid_pf_m1 + 1;
             end
 
-            // These fields are common to all PF lanes in a Mode1 write beat.
-            // Compute them once, using case/shift helpers instead of runtime / and %.
+            // These fields are common to all Mode1 write banks in this beat.
+            // Keep them outside the bank loop so Vivado does not replicate the
+            // divider/modulo cone for every OFM bank.
             valid_x_m1 = ceil_div_by_active_pf(m1_wr_count, valid_pf_m1);
             if (m1_wr_col_base >= w_out_q)
                 max_x_m1 = 0;
@@ -875,42 +877,60 @@ module ofm_buffer #(
             row        = m1_wr_row;
             addr       = ofm_phys_addr(row, grp);
 
-            for (pf_idx = 0; pf_idx < PF; pf_idx++) begin
-                ch  = m1_wr_filter_base + pf_idx;
+            // Bank-oriented Mode1 data write.
+            // The previous packed version looped over PF and wrote data_wr_*[ch]
+            // through a dynamic bank index.  That made Vivado build a large
+            // PF-to-64-bank scatter mux.  Here each unrolled bank_i owns its
+            // data_wr_* assignment directly; pf_idx is only used as the source
+            // lane selector for that bank.
+            // Synthesis cleanup: decode the Mode1 filter group like Mode2
+            // decodes {fgrp, lane}.  The previous bank-oriented version used
+            //     pf_idx = bank_i - m1_wr_filter_base
+            // for every OFM bank; with integer temporaries Vivado expanded that
+            // into a large number of 32-bit subtract/compare adders.  In this
+            // P128 configuration PF is a power-of-two group size and
+            // m1_wr_filter_base is expected to be PF-aligned, so each bank can
+            // derive its local PF lane from bank_i % PF and compare group IDs.
+            m1_fgrp_id = (PF == 0) ? 0 : (m1_wr_filter_base / PF);
 
-                if (pf_cur_active_q[pf_idx] && (ch < f_out_q) && (row < h_out_q) &&
-                    (grp < stored_groups_q) && (addr < DEPTH)) begin
-                    // Synthesis-friendly Mode1 data write path.
-                    // The OFM data RAM has only one write port per bank, so a single
-                    // Mode1 beat must target one compact spatial word per filter bank.
-                    // Shared beat geometry above avoids replicating divider/modulo
-                    // cones for every PF lane.
-                    word_has_write  = 1'b0;
-                    word_write_keep = '0;
-                    word_data_next  = '0;
+            if ((row < h_out_q) && (grp < stored_groups_q) && (addr < DEPTH)) begin
+                for (bank_i = 0; bank_i < DATA_BANKS_IMPL; bank_i++) begin
+                    fgrp_id = (PF == 0) ? 0 : (bank_i / PF);
+                    pf_idx  = (PF == 0) ? 0 : (bank_i % PF);
+                    ch      = bank_i;
 
-                    for (x = 0; x < PV_MAX; x++) begin
-                        src_lane_idx     = (pf_idx * src_pack_q) + x;
-                        compact_lane_idx = (pf_idx * valid_x_m1) + x;
-                        lane             = col_offset + x;
-                        if ((pf_idx < valid_pf_m1) &&
-                            (x < valid_x_m1) &&
-                            (compact_lane_idx < m1_wr_count) &&
-                            (src_lane_idx < PTOTAL) &&
-                            (lane < store_pack_q) &&
-                            (lane < PV_MAX)) begin
-                            col = m1_wr_col_base + x;
-                            if (col < w_out_q) begin
-                                px1 = sat_m1(m1_wr_data[src_lane_idx]);
-                                word_data_next[lane*DATA_W +: DATA_W] = px1;
-                                word_write_keep[lane] = 1'b1;
-                                word_has_write = 1'b1;
+                    if ((bank_i < C_MAX) && (fgrp_id == m1_fgrp_id) &&
+                        (pf_idx < PF) && (pf_idx < valid_pf_m1) && pf_cur_active_q[pf_idx] &&
+                        (ch < f_out_q)) begin
+                        word_has_write  = 1'b0;
+                        word_write_keep = '0;
+                        word_data_next  = '0;
+
+                        for (x = 0; x < PV_MAX; x++) begin
+                            src_lane_idx     = (pf_idx * src_pack_q) + x;
+                            compact_lane_idx = (pf_idx * valid_x_m1) + x;
+                            lane             = col_offset + x;
+                            if ((x < valid_x_m1) &&
+                                (compact_lane_idx < m1_wr_count) &&
+                                (src_lane_idx < PTOTAL) &&
+                                (lane < store_pack_q) &&
+                                (lane < PV_MAX)) begin
+                                col = m1_wr_col_base + x;
+                                if (col < w_out_q) begin
+                                    px1 = sat_m1(m1_wr_data[src_lane_idx]);
+                                    word_data_next[lane*DATA_W +: DATA_W] = px1;
+                                    word_write_keep[lane] = 1'b1;
+                                    word_has_write = 1'b1;
+                                end
                             end
                         end
-                    end
 
-                    if (word_has_write) begin
-                        `OFM_DATA_WR_ACCUM(ch, addr, word_data_next, word_write_keep)
+                        if (word_has_write) begin
+                            data_wr_en_c[bank_i]   = 1'b1;
+                            data_wr_addr_c[bank_i] = addr;
+                            data_wr_data_c[bank_i] = word_data_next;
+                            data_wr_keep_c[bank_i] = word_write_keep;
+                        end
                     end
                 end
             end
