@@ -350,18 +350,5 @@ module ce_mode2_top #(
     end
   end
   
-  `ifndef SYNTHESIS
-  always_ff @(posedge clk) begin : DBG_M2_TUPLE_WEIGHT_FLOW
-    if (rst_n && busy && (out_row < 16'd2) && (out_col < 16'd4)) begin
-      if (data_overflow_s) begin
-        $display("DBG_M2_DATA_OVERFLOW t=%0t row=%0d col=%0d fgrp=%0d cgrp=%0d ky=%0d kx=%0d data_valid=%0d mac_en=%0d wgt_ready=%0d wgt_inflight=%0d", $time, out_row, out_col, f_group, c_group, ky, kx, data_valid_q, mac_en, wgt_tuple_ready_q, weight_req_inflight_q);
-      end
-
-      if (dr_write_en || weight_write_en || wb_rd_en || mac_en) begin
-        $display("DBG_M2_FLOW t=%0t row=%0d col=%0d fgrp=%0d cgrp=%0d ky=%0d kx=%0d dr_wr=%0d data_valid=%0d data_accept=%0d wb_req=%0d wb_ret=%0d wgt_ready=%0d mac_en=%0d tuple_ready=%0d ifm0=%0d w0=%0d mac0=%0d", $time, out_row, out_col, f_group, c_group, ky, kx, dr_write_en, data_valid_q, data_accept_s, wb_rd_en, weight_write_en, wgt_tuple_ready_q, mac_en, tuple_ready_s, $signed(data_out_logic[0*DATA_W +: DATA_W]), $signed(weight_out[0*DATA_W +: DATA_W]), $signed(mac_data_out[0*PSUM_W +: PSUM_W]));
-      end
-    end
-  end
-  `endif
   
 endmodule

@@ -383,6 +383,7 @@ module control_unit_top
   logic             m2_ofm2ifm_stream_busy_q;
   logic             m2_ofm2ifm_stream_start_s;
   logic             m2_ofm2ifm_runtime_q;
+  logic [ROW_W-1:0] m2_ofm2ifm_stream_num_rows_s;
   logic [ROW_W-1:0] m2_ofm2ifm_row_q;
   logic [15:0]      m2_ofm2ifm_col_blk_q;
   logic [15:0]      m2_ofm2ifm_cgrp_q;
@@ -1012,6 +1013,13 @@ module control_unit_top
                                        ? m2_ofm2ifm_runtime_src_mode2_q
                                        : m2_ofm2ifm_src_mode2_q;
 
+  // Initial M2->M2 handoff can transfer all destination rows for one
+  // {global_col, cgrp} in one OFM->IFM command. Runtime refill remains an
+  // exact one-entry transaction because the free token names one freed slot.
+  assign m2_ofm2ifm_stream_num_rows_s = m2_ofm2ifm_runtime_q
+                                      ? ROW_W'(1)
+                                      : ((m2_ofm2ifm_num_rows_q == '0) ? ROW_W'(1) : m2_ofm2ifm_num_rows_q);
+
   // Store Mode2 runtime free-token payload without reset.  Only the FIFO
   // pointers/count are reset; payload is meaningful only when count != 0.
   // Keeping payload out of an async-reset process avoids RAM/register-array
@@ -1217,6 +1225,10 @@ module control_unit_top
           m2_ofm2ifm_tx_runtime_q  <= 1'b0;
 
           if (!m2_ofm2ifm_tx_runtime_q) begin
+            // Row-burst initial M2->M2 handoff: one stream command now
+            // transfers all rows for the selected {global_col, cgrp}.
+            // Therefore the control cursor only walks cgrp and col here;
+            // strm_row_q is walked inside ofm_buffer.sv.
             if ((m2_ofm2ifm_cgrp_q + 16'd1) < m2_ofm2ifm_num_cgrps_q) begin
               m2_ofm2ifm_cgrp_q <= m2_ofm2ifm_cgrp_q + 16'd1;
             end
@@ -1226,16 +1238,10 @@ module control_unit_top
                 m2_ofm2ifm_col_blk_q <= m2_ofm2ifm_col_blk_q + 16'd1;
               end
               else begin
+                m2_ofm2ifm_ready_q   <= 1'b1;
+                m2_ofm2ifm_row_q     <= '0;
                 m2_ofm2ifm_col_blk_q <= '0;
-                if ((m2_ofm2ifm_row_q + ROW_W'(1)) < m2_ofm2ifm_num_rows_q) begin
-                  m2_ofm2ifm_row_q <= m2_ofm2ifm_row_q + ROW_W'(1);
-                end
-                else begin
-                  m2_ofm2ifm_ready_q   <= 1'b1;
-                  m2_ofm2ifm_row_q     <= '0;
-                  m2_ofm2ifm_col_blk_q <= '0;
-                  m2_ofm2ifm_cgrp_q    <= '0;
-                end
+                m2_ofm2ifm_cgrp_q    <= '0;
               end
             end
           end
@@ -1516,7 +1522,7 @@ module control_unit_top
     .ifm_rd_en(ifm_rd_en), .ifm_rd_bank_base(ifm_rd_bank_base), .ifm_rd_row_idx(ifm_rd_row_idx),
     .ifm_rd_col_idx(ifm_rd_col_idx), .ifm_rd_col_g(ifm_rd_col_g), .ifm_rd_valid(ifm_rd_valid), .ifm_rd_data(ifm_rd_data),
     .m1_pass_start_pulse(m1_pass_start_pulse), .m1_chan_done_pulse(m1_chan_done_pulse), .m1_c_iter(m1_c_iter),
-    .m1_out_row(m1_out_row),
+    .m1_out_row(m1_out_row), .m1_out_col(m1_out_col),
     .m1_dr_write_en(m1_dr_write_en), .m1_dr_write_row_idx(m1_dr_write_row_idx),
     .m1_dr_write_x_base(m1_dr_write_x_base), .m1_dr_write_data(m1_dr_write_data),
     .m2_start(m2_start), .m2_pass_start_pulse(m2_pass_start_pulse), .m2_mac_en(m2_mac_en),
@@ -1590,7 +1596,8 @@ module control_unit_top
                                    (ofm2ifm_stream_start_s ? ofm2ifm_row_q :
                                    (((cur_cfg_s.mode == MODE2) && m2_ofm2ifm_stream_start_s) ? m2_ofm2ifm_row_q : sm_stream_row_base_s));
   assign ofm_ifm_stream_num_rows = trans_ifm_stream_start_s ? trans_ifm_stream_num_rows_s :
-                                   ((ofm2ifm_stream_start_s || ((cur_cfg_s.mode == MODE2) && m2_ofm2ifm_stream_start_s)) ? ROW_W'(1) : sm_stream_num_rows_s);
+                                   (ofm2ifm_stream_start_s ? ROW_W'(1) :
+                                   (((cur_cfg_s.mode == MODE2) && m2_ofm2ifm_stream_start_s) ? m2_ofm2ifm_stream_num_rows_s : sm_stream_num_rows_s));
   assign ofm_ifm_stream_col_base = trans_ifm_stream_start_s ? trans_ifm_stream_col_base_s :
                                    (ofm2ifm_stream_start_s ?
                                     (ofm2ifm_col_blk_q[COL_W-1:0] * ofm2ifm_pv_q[COL_W-1:0]) :
@@ -1626,86 +1633,5 @@ module control_unit_top
     .dbg_weight_bank(dbg_weight_bank), .dbg_error_vec(dbg_error_vec)
   );
 
-
-`ifndef SYNTHESIS
-longint unsigned perf_layer_cycle;
-longint unsigned perf_m1_step;
-longint unsigned perf_m1_mac;
-longint unsigned perf_hold_sched;
-longint unsigned perf_hold_local;
-longint unsigned perf_hold_init_ifm;
-longint unsigned perf_hold_ofm2ifm;
-longint unsigned perf_ifm_rd_en;
-longint unsigned perf_ifm_rd_valid;
-
-logic [$clog2(CFG_DEPTH)-1:0] perf_layer_q;
-
-always_ff @(posedge clk or negedge rst_n) begin
-  if (!rst_n) begin
-    perf_layer_q <= '0;
-    perf_layer_cycle <= 0;
-    perf_m1_step <= 0;
-    perf_m1_mac <= 0;
-    perf_hold_sched <= 0;
-    perf_hold_local <= 0;
-    perf_hold_init_ifm <= 0;
-    perf_hold_ofm2ifm <= 0;
-    perf_ifm_rd_en <= 0;
-    perf_ifm_rd_valid <= 0;
-  end else begin
-    if (cur_layer_idx_s != perf_layer_q) begin
-      $display("PERF_LAYER_SUM layer=%0d cycles=%0d m1_step=%0d m1_mac=%0d hold_sched=%0d hold_local=%0d hold_init_ifm=%0d hold_ofm2ifm=%0d ifm_rd_en=%0d ifm_rd_valid=%0d",
-        perf_layer_q,
-        perf_layer_cycle,
-        perf_m1_step,
-        perf_m1_mac,
-        perf_hold_sched,
-        perf_hold_local,
-        perf_hold_init_ifm,
-        perf_hold_ofm2ifm,
-        perf_ifm_rd_en,
-        perf_ifm_rd_valid
-      );
-
-      perf_layer_q <= cur_layer_idx_s;
-      perf_layer_cycle <= 0;
-      perf_m1_step <= 0;
-      perf_m1_mac <= 0;
-      perf_hold_sched <= 0;
-      perf_hold_local <= 0;
-      perf_hold_init_ifm <= 0;
-      perf_hold_ofm2ifm <= 0;
-      perf_ifm_rd_en <= 0;
-      perf_ifm_rd_valid <= 0;
-    end else if (busy) begin
-      perf_layer_cycle <= perf_layer_cycle + 1;
-
-      if (m1_step_en)
-        perf_m1_step <= perf_m1_step + 1;
-
-      if (m1_mac_en)
-        perf_m1_mac <= perf_m1_mac + 1;
-
-      if (sched_hold_compute_s)
-        perf_hold_sched <= perf_hold_sched + 1;
-
-      if (local_hold_compute_s)
-        perf_hold_local <= perf_hold_local + 1;
-
-      if (init_ifm_refill_hold_s)
-        perf_hold_init_ifm <= perf_hold_init_ifm + 1;
-
-      if (ofm2ifm_runtime_hold_s)
-        perf_hold_ofm2ifm <= perf_hold_ofm2ifm + 1;
-
-      if (ifm_rd_en)
-        perf_ifm_rd_en <= perf_ifm_rd_en + 1;
-
-      if (ifm_rd_valid)
-        perf_ifm_rd_valid <= perf_ifm_rd_valid + 1;
-    end
-  end
-end
-`endif
 
 endmodule

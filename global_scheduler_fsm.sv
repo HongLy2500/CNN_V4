@@ -383,4 +383,65 @@ module global_scheduler_fsm (
     end
   end
 
+
+`ifndef SYNTHESIS
+  longint unsigned dbg_wait_next_cnt;
+  longint unsigned dbg_wait_next_wgt_cnt;
+  longint unsigned dbg_wait_next_stream_cnt;
+  longint unsigned dbg_wait_next_both_cnt;
+  longint unsigned dbg_wait_trans_ofm_cnt;
+  longint unsigned dbg_wait_store_cnt;
+
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      dbg_wait_next_cnt        <= 0;
+      dbg_wait_next_wgt_cnt    <= 0;
+      dbg_wait_next_stream_cnt <= 0;
+      dbg_wait_next_both_cnt   <= 0;
+      dbg_wait_trans_ofm_cnt   <= 0;
+      dbg_wait_store_cnt       <= 0;
+    end
+    else begin
+      if (kick_compute) begin
+        dbg_wait_next_cnt        <= 0;
+        dbg_wait_next_wgt_cnt    <= 0;
+        dbg_wait_next_stream_cnt <= 0;
+        dbg_wait_next_both_cnt   <= 0;
+        dbg_wait_trans_ofm_cnt   <= 0;
+        dbg_wait_store_cnt       <= 0;
+      end
+      else begin
+        if (state_q == S_WAIT_NEXT) begin
+          dbg_wait_next_cnt <= dbg_wait_next_cnt + 1;
+          if (!next_wgt_ready_q)
+            dbg_wait_next_wgt_cnt <= dbg_wait_next_wgt_cnt + 1;
+          if (!ofm_ifm_stream_done)
+            dbg_wait_next_stream_cnt <= dbg_wait_next_stream_cnt + 1;
+          if (!next_wgt_ready_q && !ofm_ifm_stream_done)
+            dbg_wait_next_both_cnt <= dbg_wait_next_both_cnt + 1;
+        end
+
+        if (state_q == S_WAIT_TRANS_OFM)
+          dbg_wait_trans_ofm_cnt <= dbg_wait_trans_ofm_cnt + 1;
+
+        if (state_q == S_WAIT_STORE)
+          dbg_wait_store_cnt <= dbg_wait_store_cnt + 1;
+      end
+
+      if (advance_layer) begin
+        $display("PERF_SCHED_WAIT_NEXT cur_mode=%0d next_mode=%0d wait_next=%0d wait_wgt=%0d wait_stream=%0d wait_both=%0d wait_trans_ofm=%0d wait_store=%0d",
+          cur_mode,
+          next_mode,
+          dbg_wait_next_cnt,
+          dbg_wait_next_wgt_cnt,
+          dbg_wait_next_stream_cnt,
+          dbg_wait_next_both_cnt,
+          dbg_wait_trans_ofm_cnt,
+          dbg_wait_store_cnt
+        );
+      end
+    end
+  end
+`endif
+
 endmodule

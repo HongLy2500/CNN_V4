@@ -213,22 +213,36 @@ module cnn_dma_to_axi_bridge_kv260 #(
     m_axi_arvalid = rd_cmd_active_q && !rd_wait_data_q;
     m_axi_rready  = rd_wait_data_q;
 
-    if (!rd_cmd_active_q && ddr_rd_req) begin
-      rd_addr_n       = word_to_byte_addr(ddr_rd_addr);
-      rd_cmd_active_n = 1'b1;
-      rd_wait_data_n  = 1'b0;
-    end
-
-    if (rd_cmd_active_q && !rd_wait_data_q && m_axi_arvalid && m_axi_arready) begin
-      rd_wait_data_n = 1'b1;
-    end
-
+    // The direct DMA read interface has no ready/accept signal. Therefore every
+    // one-cycle ddr_rd_req pulse must be captured by the bridge. The optimized
+    // WGT path in cnn_dma_direct may issue the next ddr_rd_req in the same cycle
+    // that the previous ddr_rd_valid is returned. The original bridge cleared the
+    // active read in that cycle and ignored the new pulse because rd_cmd_active_q
+    // was still 1. Handle the read-data-return case first and immediately latch
+    // the next direct-read command when ddr_rd_req is also asserted.
     if (rd_wait_data_q && m_axi_rvalid) begin
       ddr_rd_valid = 1'b1;
-      if (!m_axi_rlast)      error_n = 1'b1;
+      if (!m_axi_rlast)         error_n = 1'b1;
       if (m_axi_rresp != 2'b00) error_n = 1'b1;
-      rd_cmd_active_n = 1'b0;
-      rd_wait_data_n  = 1'b0;
+
+      if (ddr_rd_req) begin
+        rd_addr_n       = word_to_byte_addr(ddr_rd_addr);
+        rd_cmd_active_n = 1'b1;
+        rd_wait_data_n  = 1'b0;
+      end else begin
+        rd_cmd_active_n = 1'b0;
+        rd_wait_data_n  = 1'b0;
+      end
+    end else begin
+      if (!rd_cmd_active_q && ddr_rd_req) begin
+        rd_addr_n       = word_to_byte_addr(ddr_rd_addr);
+        rd_cmd_active_n = 1'b1;
+        rd_wait_data_n  = 1'b0;
+      end
+
+      if (rd_cmd_active_q && !rd_wait_data_q && m_axi_arvalid && m_axi_arready) begin
+        rd_wait_data_n = 1'b1;
+      end
     end
 
     // ---------------- Write queue ingest ----------------

@@ -37,6 +37,7 @@ module local_dataflow_manager
   input  logic        m1_chan_done_pulse,
   input  logic [15:0] m1_c_iter,
   input  logic [15:0] m1_out_row,
+  input  logic [15:0] m1_out_col,
 
   output logic                     m1_dr_write_en,
   output logic [$clog2(K_MAX)-1:0] m1_dr_write_row_idx,
@@ -310,6 +311,7 @@ module local_dataflow_manager
     .chan_done_pulse   (m1_chan_done_pulse),
     .c_iter            (m1_c_iter),
     .out_row           (m1_out_row),
+    .out_col           (m1_out_col),
 
     .ifm_rd_en         (m1_ifm_rd_en_s),
     .ifm_rd_bank_base  (m1_ifm_rd_bank_base_s),

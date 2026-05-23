@@ -629,6 +629,19 @@ module cnn_dma_direct #(
                 // Assemble one PTOTAL-lane physical weight word from one or more
                 // DDR reads. The bit/lane order is preserved exactly as streamed
                 // from DDR; mode-specific logical interpretation happens later.
+                //
+                // Performance fix for weight preload:
+                // The old WGT path inserted a bubble between every DDR subword:
+                //   ST_WGT_REQ -> ST_WGT_WAIT(valid) -> ST_WGT_REQ -> ...
+                // With WGT_WORD_W much wider than DDR_WORD_W, Mode-2 weight
+                // preload becomes dominated by this per-subword request bubble.
+                //
+                // Keep the conservative one-outstanding-read protocol, but issue
+                // the next DDR read in the same cycle that the current read data
+                // is consumed.  The stream becomes:
+                //   REQ -> VALID+REQ -> VALID+REQ -> ...
+                // This changes only the DMA preload schedule; it does not change
+                // weight layout, buffer banking, or Mode-1/Mode-2 read semantics.
                 if (ddr_rd_valid && !wgt_word_ready_q) begin
                     wgt_pack_n = wgt_pack_q;
                     base_bit   = wgt_pack_cnt_q * DDR_WORD_W;
@@ -640,12 +653,19 @@ module cnn_dma_direct #(
                     ddr_linear_idx_n = ddr_linear_idx_q + 1'b1;
 
                     if (wgt_pack_cnt_q + 1 >= WGT_SUBWORDS) begin
+                        // Full physical word assembled. Keep the original
+                        // pack-then-write behavior: write it to weight_buffer
+                        // on the following cycle through wgt_word_ready_q.
                         wgt_pack_cnt_n   = '0;
                         wgt_word_ready_n = 1'b1;
                     end
                     else begin
+                        // Request the next DDR subword immediately.  This avoids
+                        // the old extra ST_WGT_REQ bubble between subwords.
                         wgt_pack_cnt_n = wgt_pack_cnt_q + 1'b1;
-                        state_n        = ST_WGT_REQ;
+                        ddr_rd_req     = 1'b1;
+                        ddr_rd_addr    = ddr_addr_base_q + (ddr_linear_idx_q + 1'b1);
+                        state_n        = ST_WGT_WAIT;
                     end
                 end
 
@@ -656,8 +676,15 @@ module cnn_dma_direct #(
                     wgt_pack_cnt_n     = '0;
                     wgt_pack_n         = '0;
 
-                    if (wgt_word_idx_q + 1 < wgt_num_words_q)
-                        state_n = ST_WGT_REQ;
+                    if (wgt_word_idx_q + 1 < wgt_num_words_q) begin
+                        // Start the next physical word immediately.  At this
+                        // point ddr_linear_idx_q already points at the next
+                        // unread DDR subword because it was incremented when the
+                        // final subword of the previous physical word arrived.
+                        ddr_rd_req  = 1'b1;
+                        ddr_rd_addr = ddr_addr_base_q + ddr_linear_idx_q;
+                        state_n     = ST_WGT_WAIT;
+                    end
                     else begin
                         cmd_done_n = CMD_WGT;
                         state_n    = ST_DONE;

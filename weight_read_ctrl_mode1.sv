@@ -63,6 +63,7 @@ module weight_read_ctrl_mode1 #(
   localparam int FIFO_PTR_W   = (PREFETCH_DEPTH > 1) ? $clog2(PREFETCH_DEPTH) : 1;
   localparam int FIFO_CNT_W   = (PREFETCH_DEPTH > 1) ? $clog2(PREFETCH_DEPTH + 1) : 1;
   localparam int PREFETCH_MAX = (PREFETCH_DEPTH > 4) ? (PREFETCH_DEPTH - 2) : 1;
+  localparam int FIFO_DATA_W  = PF_MAX * DATA_W;
   localparam int OCC_W        = FIFO_CNT_W + 4;
   localparam logic [OCC_W-1:0] PREFETCH_MAX_C = PREFETCH_MAX;
 
@@ -229,7 +230,9 @@ module weight_read_ctrl_mode1 #(
   // --------------------------------------------------------------------------
   // Prefetch FIFO for returned Pf-bundles
   // --------------------------------------------------------------------------
-  logic [PF_MAX*DATA_W-1:0] data_fifo_q [0:PREFETCH_DEPTH-1];
+  // Keep FIFO payload storage out of the async-reset control block so Vivado
+  // can infer it as RAM/LUTRAM instead of dissolving it into registers.
+  (* ram_style = "distributed" *) logic [FIFO_DATA_W-1:0] data_fifo_q [0:PREFETCH_DEPTH-1];
   logic [FIFO_PTR_W-1:0]    data_wr_ptr_q;
   logic [FIFO_PTR_W-1:0]    data_rd_ptr_q;
   logic [PF_MAX*DATA_W-1:0] fifo_head_data;
@@ -275,6 +278,16 @@ module weight_read_ctrl_mode1 #(
         weight_in_logic[i] = load_data_mux[i*DATA_W +: DATA_W];
       else
         weight_in_logic[i] = '0;
+    end
+  end
+
+  // Payload RAM write port.  This block intentionally has no reset;
+  // data_count_q/data_{wr,rd}_ptr_q define FIFO validity.  Keeping the memory
+  // in a clock-only process avoids Synth 8-4767/Synth 8-7137 and lets Vivado
+  // map the FIFO payload as distributed RAM.
+  always_ff @(posedge clk) begin
+    if (push_to_fifo) begin
+      data_fifo_q[data_wr_ptr_q] <= wb_rd_data;
     end
   end
 
@@ -439,8 +452,7 @@ module weight_read_ctrl_mode1 #(
       // Returned-data FIFO update.  The bypass path lets a returning bundle load
       // the CE weight slot directly when the FIFO is empty.
       if (push_to_fifo) begin
-        data_fifo_q[data_wr_ptr_q] <= wb_rd_data;
-        data_wr_ptr_q              <= data_wr_ptr_q + 1'b1;
+        data_wr_ptr_q <= data_wr_ptr_q + 1'b1;
       end
       if (pop_from_fifo) begin
         data_rd_ptr_q <= data_rd_ptr_q + 1'b1;

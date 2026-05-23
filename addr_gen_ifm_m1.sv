@@ -38,6 +38,7 @@ module addr_gen_ifm_m1 #(
   input  logic        chan_done_pulse,
   input  logic [15:0] c_iter,
   input  logic [15:0] out_row,
+  input  logic [15:0] out_col,
 
   // --------------------------------------------------
   // Read port from ifm_buffer (mode 1)
@@ -92,7 +93,19 @@ module addr_gen_ifm_m1 #(
 
   logic [K_ROW_W-1:0] issue_row_q;
   logic [W_COL_W-1:0] issue_col_q;
+  logic [W_COL_W-1:0] issue_first_col_q;
+  logic [W_COL_W-1:0] issue_last_col_q;
   logic               issued_all_q;
+
+  // Mode1 performance optimization:
+  // Instead of reloading the full W row for every output-column block,
+  // load only the horizontal word groups that can be touched by the
+  // current Pv-wide output block and K-wide horizontal window.
+  // This preserves the data_register contract because data_register reads
+  // using GLOBAL x positions; stale entries outside the current block window
+  // are never selected by the CE for this pass/channel.
+  logic [W_COL_W-1:0] window_first_col_s;
+  logic [W_COL_W-1:0] window_last_col_s;
 
   // Metadata delayed by one cycle to match ifm_buffer read latency.
   logic               ret_valid_q;
@@ -128,6 +141,7 @@ module addr_gen_ifm_m1 #(
         (C_cur != 0) && (C_cur <= C_MAX) &&
         (H_cur != 0) && (H_cur <= H_MAX) &&
         (out_row < H_cur) &&
+        (out_col < W_cur) &&
         (W_cur != 0) && (W_cur <= W_MAX) &&
         (Pv_cur != 0) && (Pv_cur <= PV_MAX) &&
         (words_per_row != 0)) begin
@@ -160,8 +174,51 @@ module addr_gen_ifm_m1 #(
   assign issue_fire          = (state_q == ST_LOAD) && !issued_all_q;
   assign issue_is_last       = issue_fire &&
                                (issue_row_q == K_cur[K_ROW_W-1:0] - 1'b1) &&
-                               (issue_col_q == words_per_row[W_COL_W-1:0] - 1'b1);
-  assign issue_next_col_wrap = (issue_col_q == words_per_row[W_COL_W-1:0] - 1'b1);
+                               (issue_col_q == issue_last_col_q);
+  assign issue_next_col_wrap = (issue_col_q == issue_last_col_q);
+
+  always_comb begin : GEN_M1_WINDOW_COLS
+    int signed read_x_min_i;
+    int signed read_x_max_i;
+    int signed first_col_i;
+    int signed last_col_i;
+    int signed pv_i;
+    int signed k_i;
+    int signed w_i;
+    int signed pad_x_i;
+
+    window_first_col_s = '0;
+    window_last_col_s  = '0;
+
+    pv_i    = int'(Pv_cur);
+    k_i     = int'(K_cur);
+    w_i     = int'(W_cur);
+    // Match data_register_mode1's current horizontal-padding contract.
+    // For the current benchmark this is K3/P1; keeping PAD_X=1 here avoids
+    // changing existing functional behavior for any already-passing tests.
+    pad_x_i = 1;
+
+    if ((pv_i > 0) && (k_i > 0) && (w_i > 0)) begin
+      read_x_min_i = int'(out_col) - pad_x_i;
+      read_x_max_i = int'(out_col) + pv_i - 1 + k_i - 1 - pad_x_i;
+
+      if (read_x_min_i < 0)
+        read_x_min_i = 0;
+      if (read_x_max_i >= w_i)
+        read_x_max_i = w_i - 1;
+
+      first_col_i = read_x_min_i / pv_i;
+      last_col_i  = read_x_max_i / pv_i;
+
+      if (first_col_i < 0)
+        first_col_i = 0;
+      if (last_col_i < first_col_i)
+        last_col_i = first_col_i;
+
+      window_first_col_s = first_col_i;
+      window_last_col_s  = last_col_i;
+    end
+  end
 
   // --------------------------------------------------
   // K3/P1 vertical padding mapping
@@ -226,9 +283,11 @@ module addr_gen_ifm_m1 #(
     if (!rst_n) begin
       state_q          <= ST_IDLE;
       target_channel_q <= 16'd0;
-      issue_row_q      <= '0;
-      issue_col_q      <= '0;
-      issued_all_q     <= 1'b0;
+      issue_row_q       <= '0;
+      issue_col_q       <= '0;
+      issue_first_col_q <= '0;
+      issue_last_col_q  <= '0;
+      issued_all_q      <= 1'b0;
       ret_valid_q      <= 1'b0;
       ret_row_q        <= '0;
       ret_x_base_q     <= 16'd0;
@@ -254,9 +313,11 @@ module addr_gen_ifm_m1 #(
             else begin
               state_q          <= ST_LOAD;
               target_channel_q <= load_req_channel;
-              issue_row_q      <= '0;
-              issue_col_q      <= '0;
-              issued_all_q     <= 1'b0;
+              issue_row_q       <= '0;
+              issue_col_q       <= window_first_col_s;
+              issue_first_col_q <= window_first_col_s;
+              issue_last_col_q  <= window_last_col_s;
+              issued_all_q      <= 1'b0;
             end
           end
         end
@@ -279,7 +340,7 @@ module addr_gen_ifm_m1 #(
                 issue_col_q <= issue_col_q + 1'b1;
               end
               else begin
-                issue_col_q <= '0;
+                issue_col_q <= issue_first_col_q;
                 issue_row_q <= issue_row_q + 1'b1;
               end
             end
@@ -320,13 +381,16 @@ module addr_gen_ifm_m1 #(
 `ifndef SYNTHESIS
 always_ff @(posedge clk) begin : DBG_M1_AG_PADY_MAP
     if (rst_n && issue_fire && (K_cur == 4'd3) && (out_row < 16'd12)) begin
-        $display("DBG_M1_AG_PADY_MAP t=%0t out_row=%0d ky=%0d local_row=%0d zero=%0d col=%0d ch=%0d",
+        $display("DBG_M1_AG_PADY_MAP t=%0t out_row=%0d out_col=%0d ky=%0d local_row=%0d zero=%0d col=%0d win_first=%0d win_last=%0d ch=%0d",
             $time,
             out_row,
+            out_col,
             issue_row_q,
             issue_local_row_s,
             issue_zero_pad_s,
             issue_col_q,
+            issue_first_col_q,
+            issue_last_col_q,
             target_channel_q
         );
     end

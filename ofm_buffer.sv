@@ -1339,15 +1339,20 @@ module ofm_buffer #(
                         end
 
                         STRM_M2_DIRECT: begin
-                            // New Mode2 refill contract: one control command streams exactly
-                            // one IFM entry {row_g, col_g, cgrp_g}.  Do not auto-walk a
-                            // PC-wide spatial segment here; control_unit_top issues the next
-                            // exact column as a separate command after free/ready match.
-                            strm_ch_q       <= '0;
-                            strm_row_q      <= '0;
-                            strm_active_q   <= 1'b0;
-                            strm_mode_q     <= STRM_IDLE;
-                            ifm_stream_done <= 1'b1;
+                            // Mode2 direct stream command is exact in {col_g,cgrp_g},
+                            // but may now burst multiple consecutive rows.  Runtime refill
+                            // keeps strm_num_rows_q=1, while initial M2->M2 handoff uses
+                            // all destination rows for this {global_col,cgrp}.
+                            strm_ch_q <= '0;
+                            if ((strm_row_q + 1'b1) < strm_num_rows_q) begin
+                                strm_row_q <= strm_row_q + 1'b1;
+                            end
+                            else begin
+                                strm_row_q      <= '0;
+                                strm_active_q   <= 1'b0;
+                                strm_mode_q     <= STRM_IDLE;
+                                ifm_stream_done <= 1'b1;
+                            end
                         end
 
                         STRM_M1_TO_M2: begin

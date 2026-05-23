@@ -238,8 +238,20 @@ module ifm_buffer #(
     localparam int M2_SLOT_COUNT = C_MAX * DEPTH;
     localparam int M2_SLOT_AW    = (M2_SLOT_COUNT <= 1) ? 1 : $clog2(M2_SLOT_COUNT);
 
-    logic                 m2_slot_valid_flat   [0:M2_SLOT_COUNT-1];
-    logic [COL_W-1:0]     m2_slot_col_tag_flat [0:M2_SLOT_COUNT-1];
+    (* ram_style = "distributed" *) logic                 m2_slot_valid_flat   [0:M2_SLOT_COUNT-1];
+    (* ram_style = "distributed" *) logic [COL_W-1:0]     m2_slot_col_tag_flat [0:M2_SLOT_COUNT-1];
+
+    // Synthesis-friendly initialization for Mode2 metadata.
+    // Do not clear this large metadata array in an async-reset always_ff block:
+    // that turns it into thousands of resettable registers and makes Vivado
+    // optimization much heavier.  The metadata has a single clocked write port
+    // below; this initial block initializes simulation/FPGA configuration state.
+    initial begin : INIT_M2_SLOT_METADATA
+        for (int ti = 0; ti < M2_SLOT_COUNT; ti++) begin
+            m2_slot_valid_flat[ti]   = 1'b0;
+            m2_slot_col_tag_flat[ti] = '0;
+        end
+    end
 
     logic [M2_SLOT_AW-1:0] m2_wr_slot_idx;
     logic [M2_SLOT_AW-1:0] m2_rd_slot_idx;
@@ -397,10 +409,6 @@ module ifm_buffer #(
             m1_free_valid_q       <= 1'b0;
             m1_free_row_slot_l_q  <= '0;
             m1_free_row_g_q       <= '0;
-            for (int ti = 0; ti < M2_SLOT_COUNT; ti++) begin
-                m2_slot_valid_flat[ti]   <= 1'b0;
-                m2_slot_col_tag_flat[ti] <= '0;
-            end
         end
         else begin
             // default: free event is a 1-cycle pulse
@@ -444,14 +452,20 @@ module ifm_buffer #(
                 end
             end
 
-            // Mode2 metadata must be driven by the same sequential process that
-            // initializes it.  Driving m2_slot_* from a second always_ff creates
-            // multi-driven registers in Vivado.
-            if (wr_en_sel && wr_addr_valid) begin
-                if (wr_src_is_ofm && ofm_wr_mode2 && (wr_bank_phys_sel < C_MAX)) begin
-                    m2_slot_valid_flat[m2_wr_slot_idx]   <= 1'b1;
-                    m2_slot_col_tag_flat[m2_wr_slot_idx] <= ofm_wr_col_g[COL_W-1:0];
-                end
+        end
+    end
+
+    //==================================================
+    // Mode2 metadata write port
+    //==================================================
+    // Single procedural driver for Mode2 metadata.  This is intentionally a
+    // clock-only process (no async reset) so Vivado can map the metadata to
+    // distributed RAM/LUTRAM instead of a large resettable register array.
+    always_ff @(posedge clk) begin : M2_SLOT_METADATA_WRITE
+        if (wr_en_sel && wr_addr_valid) begin
+            if (wr_src_is_ofm && ofm_wr_mode2 && (wr_bank_phys_sel < C_MAX)) begin
+                m2_slot_valid_flat[m2_wr_slot_idx]   <= 1'b1;
+                m2_slot_col_tag_flat[m2_wr_slot_idx] <= ofm_wr_col_g[COL_W-1:0];
             end
         end
     end
