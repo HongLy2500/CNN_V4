@@ -244,7 +244,8 @@ module mode1_compute_top #(
 
   relu_mode1 #(
     .PSUM_W (PSUM_W),
-    .PTOTAL (PTOTAL)
+    .PTOTAL (PTOTAL),
+    .OUT_W  (DATA_W)
   ) u_relu_mode1 (
     .in_data  (ce_psum_out_lane),
     .out_data (relu_out_lane)
@@ -391,8 +392,11 @@ module mode1_compute_top #(
           direct_pv_count_q    <= direct_capture_pv_count_s;
           direct_pf_count_q    <= direct_capture_pf_count_s;
           direct_emit_idx_q    <= '0;
+          // relu_mode1 now preserves the pipeline stage while producing an
+          // OUT_W/DATA_W saturated ReLU payload in the low bits.  Do not
+          // re-run 32-bit saturation here; just capture the payload.
           for (i = 0; i < PTOTAL; i++) begin
-            direct_data_lane_q[i] <= sat_relu_to_data(relu_out_lane[i]);
+            direct_data_lane_q[i] <= relu_out_lane[i][DATA_W-1:0];
           end
         end
       end

@@ -72,6 +72,11 @@ module kv260_cnn_smoke_top_vgg16_like_32_p128
   output logic [$clog2(CFG_DEPTH)-1:0] perf_layer_current_idx,
   output logic        perf_layer_running,
 
+  // Lightweight selectable performance readout for VIO.
+  input  logic [3:0]  perf_mux_sel,
+  output logic [63:0] perf_mux_data,
+  output logic [31:0] perf_mux_status,
+
   output logic dbg_ddr_rd_req,
   output logic [DDR_ADDR_W-1:0] dbg_ddr_rd_addr,
   output logic dbg_ddr_rd_valid,

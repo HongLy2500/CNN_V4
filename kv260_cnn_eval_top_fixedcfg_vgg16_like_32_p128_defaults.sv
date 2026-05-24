@@ -103,6 +103,13 @@ module kv260_cnn_eval_top_fixedcfg_vgg16_like_32_p128_defaults
   output logic [CFG_AW-1:0] perf_layer_current_idx,
   output logic        perf_layer_running,
 
+  // Lightweight selectable performance readout for VIO.
+  // Use perf_mux_sel to choose one 64-bit counter instead of probing many
+  // wide counters in ILA.
+  input  logic [3:0]  perf_mux_sel,
+  output logic [63:0] perf_mux_data,
+  output logic [31:0] perf_mux_status,
+
   // Optional direct-DDR side visibility for ILA.
   output logic dbg_ddr_rd_req,
   output logic [DDR_ADDR_W-1:0] dbg_ddr_rd_addr,
@@ -476,6 +483,50 @@ end
         end
       end
     end
+  end
+
+  // --------------------------------------------------------------------------
+  // Lightweight performance counter mux for VIO readout.
+  // This does not feed back into the design; it only selects which already-
+  // existing counter appears on one 64-bit debug/status output bus.
+  // --------------------------------------------------------------------------
+  always_comb begin
+    unique case (perf_mux_sel)
+      4'd0: perf_mux_data = perf_cycle_count;
+      4'd1: perf_mux_data = perf_core_cycle_count;
+      4'd2: perf_mux_data = perf_axi_r_count;
+      4'd3: perf_mux_data = perf_axi_w_count;
+      4'd4: perf_mux_data = perf_ofm2ifm_word_count;
+      4'd5: perf_mux_data = perf_m1_mac_active_cycles;
+      4'd6: perf_mux_data = perf_m2_mac_active_cycles;
+      4'd7: perf_mux_data = perf_layer_cycle_count;
+      default: perf_mux_data = 64'd0;
+    endcase
+  end
+
+  always_comb begin
+    perf_mux_status = 32'd0;
+    perf_mux_status[0]    = done;
+    perf_mux_status[1]    = busy;
+    perf_mux_status[2]    = error;
+    perf_mux_status[3]    = core_done;
+    perf_mux_status[4]    = core_busy;
+    perf_mux_status[5]    = core_error;
+    perf_mux_status[6]    = bridge_busy;
+    perf_mux_status[7]    = bridge_error;
+    perf_mux_status[8]    = wr_fifo_overflow;
+    perf_mux_status[9]    = perf_cycle_valid;
+    perf_mux_status[10]   = perf_core_cycle_valid;
+    perf_mux_status[11]   = perf_layer_cycle_valid;
+    perf_mux_status[12]   = perf_running;
+    perf_mux_status[13]   = perf_core_running;
+    perf_mux_status[14]   = perf_layer_running;
+    perf_mux_status[18:15] = perf_layer_done_idx[3:0];
+    perf_mux_status[22:19] = perf_layer_current_idx[3:0];
+    perf_mux_status[26:23] = dbg_layer_idx[3:0];
+    perf_mux_status[27]    = dbg_mode;
+    perf_mux_status[28]    = dbg_weight_bank;
+    perf_mux_status[31:29] = dbg_error_vec[2:0];
   end
 
   assign dbg_ddr_rd_req   = ddr_rd_req_s;
