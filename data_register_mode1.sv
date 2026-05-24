@@ -10,57 +10,70 @@ module data_register_mode1 #(
   input  logic clk,
   input  logic rst_n,
 
-  // =====================================================
   // Runtime config
-  // =====================================================
   input  logic [3:0] K_cur,
   input  logic [15:0] W_cur,
   input  logic [7:0] Pv_cur,
 
-  // =====================================================
-  // Write control from CE controller / IFM path
-  // Only the low Pv_cur lanes of write_data are valid.
-  // =====================================================
+  // Load descriptor from local_dataflow/addr_gen.
+  // Stage3: data_register owns the two physical banks and selects the bank
+  // whose tag matches the current CE context.  No external read/write bank
+  // select is required for correctness.
+  input  logic        load_start,
+  input  logic        load_done,
+  input  logic [15:0] load_c,
+  input  logic [15:0] load_out_row,
+
+  // Current CE context used to select/validate the bank that should feed MACs.
+  input  logic [15:0] cur_c,
+  input  logic [15:0] cur_out_row,
+
+  // Write control from IFM path
   input  logic                      write_en,
   input  logic [$clog2(K_MAX)-1:0]  write_row_idx,
   input  logic [15:0]               write_x_base,
   input  logic [PV_MAX*DATA_W-1:0]  write_data,
+  // Kept for bankif interface compatibility; ignored in Stage3.
+  input  logic                      write_bank_sel,
 
-  // =====================================================
   // Read control from CE controller
-  // Mode-1 supports fixed horizontal padding PAD_X=1 for K3/P1 tests:
-  //   data_out_logic[pv] = reg_bank[ky][out_col + kx + pv - 1]
-  // Out-of-range x positions are zero-filled.
-  // Only the low Pv_cur lanes are valid.
-  // =====================================================
   input  logic [$clog2(K_MAX)-1:0]  ky,
   input  logic [$clog2(K_MAX)-1:0]  kx,
   input  logic [15:0]               out_col,
+  // Kept for bankif interface compatibility; ignored in Stage3.
+  input  logic                      read_bank_sel,
 
-  // =====================================================
   // Output to MAC array
-  // =====================================================
   output logic [PV_MAX*DATA_W-1:0]  data_out_logic,
   output logic                      data_ready
 );
 
-  // =====================================================
-  // Internal storage
-  // reg_bank[row][x]
-  // Stores K rows of one current channel at pixel granularity.
-  // =====================================================
-  logic [DATA_W-1:0] reg_bank [0:K_MAX-1][0:W_MAX-1];
+  logic [DATA_W-1:0] reg_bank0 [0:K_MAX-1][0:W_MAX-1];
+  logic [DATA_W-1:0] reg_bank1 [0:K_MAX-1][0:W_MAX-1];
 
   integer r, c;
-  logic [15:0] base_x;       // legacy/debug: out_col + kx before padding
-  logic [3:0]  pad_x;        // fixed horizontal padding, PAD_X=1
-  logic        data_valid_q;
   logic [$clog2(K_MAX)-1:0] write_row_idx_clamped;
   logic [$clog2(K_MAX)-1:0] ky_clamped;
 
-  // Clamp row selects to the physical array range.
-  // The controller should already provide legal values; this is only
-  // to keep addressing well-defined in simulation/synthesis.
+  logic load_active_q;
+  logic load_bank_q;
+  logic last_load_bank_q;
+
+  logic        bank_valid_q [0:1];
+  logic [15:0] bank_c_q     [0:1];
+  logic [15:0] bank_row_q   [0:1];
+
+  logic [15:0] load_c_q;
+  logic [15:0] load_row_q;
+
+  logic bank0_match_cur_s;
+  logic bank1_match_cur_s;
+  logic load_done_match_cur_s;
+  logic load_bank_next_s;
+  logic write_to_bank1_s;
+  logic read_from_bank1_s;
+  logic ready_s;
+
   always_comb begin
     if (write_row_idx < K_MAX)
       write_row_idx_clamped = write_row_idx;
@@ -71,63 +84,120 @@ module data_register_mode1 #(
       ky_clamped = ky;
     else
       ky_clamped = '0;
+
+    bank0_match_cur_s = bank_valid_q[0] && (bank_c_q[0] == cur_c) && (bank_row_q[0] == cur_out_row);
+    bank1_match_cur_s = bank_valid_q[1] && (bank_c_q[1] == cur_c) && (bank_row_q[1] == cur_out_row);
+
+    // Choose a load bank that is not currently feeding the CE context.
+    // If neither bank matches current context, alternate from the previous load.
+    if (bank0_match_cur_s && !bank1_match_cur_s)
+      load_bank_next_s = 1'b1;
+    else if (bank1_match_cur_s && !bank0_match_cur_s)
+      load_bank_next_s = 1'b0;
+    else
+      load_bank_next_s = ~last_load_bank_q;
+
+    // First write of a load can arrive in the same cycle as load_start.
+    write_to_bank1_s = load_active_q ? load_bank_q :
+                       (load_start ? load_bank_next_s : load_bank_next_s);
+
+    load_done_match_cur_s = load_done && load_active_q &&
+                            (load_c_q == cur_c) && (load_row_q == cur_out_row);
+
+    // Same-cycle done bypass: if the just-loaded descriptor is exactly the
+    // one CE wants, allow read/ready from load_bank_q immediately.
+    if (load_done_match_cur_s) begin
+      read_from_bank1_s = load_bank_q;
+      ready_s           = 1'b1;
+    end
+    else if (bank0_match_cur_s) begin
+      read_from_bank1_s = 1'b0;
+      ready_s           = 1'b1;
+    end
+    else if (bank1_match_cur_s) begin
+      read_from_bank1_s = 1'b1;
+      ready_s           = 1'b1;
+    end
+    else begin
+      read_from_bank1_s = 1'b0;
+      ready_s           = 1'b0;
+    end
   end
 
-  // =====================================================
-  // Storage write
-  // =====================================================
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-      data_valid_q <= 1'b0;
+      load_active_q    <= 1'b0;
+      load_bank_q      <= 1'b0;
+      last_load_bank_q <= 1'b1;
+      bank_valid_q[0]  <= 1'b0;
+      bank_valid_q[1]  <= 1'b0;
+      bank_c_q[0]      <= 16'd0;
+      bank_c_q[1]      <= 16'd0;
+      bank_row_q[0]    <= 16'd0;
+      bank_row_q[1]    <= 16'd0;
+      load_c_q         <= 16'd0;
+      load_row_q       <= 16'd0;
       for (r = 0; r < K_MAX; r++) begin
         for (c = 0; c < W_MAX; c++) begin
-          reg_bank[r][c] <= '0;
+          reg_bank0[r][c] <= '0;
+          reg_bank1[r][c] <= '0;
         end
       end
     end
-    else if (write_en) begin
-      data_valid_q <= 1'b1;
-      for (int i = 0; i < PV_MAX; i++) begin
-        if ((i < Pv_cur) &&
-            (write_row_idx < K_cur) &&
-            ((write_x_base + i) < W_cur) &&
-            ((write_x_base + i) < W_MAX)) begin
-          reg_bank[write_row_idx_clamped][write_x_base + i]
-            <= write_data[i*DATA_W +: DATA_W];
+    else begin
+      if (load_start) begin
+        load_active_q <= 1'b1;
+        load_bank_q   <= load_bank_next_s;
+        load_c_q      <= load_c;
+        load_row_q    <= load_out_row;
+        bank_valid_q[load_bank_next_s] <= 1'b0;
+      end
+
+      if (write_en) begin
+        for (int i = 0; i < PV_MAX; i++) begin
+          if ((i < Pv_cur) &&
+              (write_row_idx < K_cur) &&
+              ((write_x_base + i) < W_cur) &&
+              ((write_x_base + i) < W_MAX)) begin
+            if (write_to_bank1_s) begin
+              reg_bank1[write_row_idx_clamped][write_x_base + i]
+                <= write_data[i*DATA_W +: DATA_W];
+            end
+            else begin
+              reg_bank0[write_row_idx_clamped][write_x_base + i]
+                <= write_data[i*DATA_W +: DATA_W];
+            end
+          end
         end
+      end
+
+      if (load_done && load_active_q) begin
+        bank_valid_q[load_bank_q] <= 1'b1;
+        bank_c_q[load_bank_q]     <= load_c_q;
+        bank_row_q[load_bank_q]   <= load_row_q;
+        last_load_bank_q          <= load_bank_q;
+        load_active_q             <= 1'b0;
       end
     end
   end
 
-  // =====================================================
-  // Read path
-  // =====================================================
   always_comb begin
     int read_x_i;
     int pad_x_i;
 
-    // Keep the old unpadded expression for debug visibility.
-    base_x  = out_col + kx;
-
-    // Fixed K3/P1 horizontal padding.
-    // With kx=1, read_x_i = out_col + 1 + i - 1 = out_col + i.
-    // Vertical padding is intentionally NOT handled here; ky still selects
-    // reg_bank[ky]. Full K3/P1 vertical padding must be handled by the
-    // Mode1 IFM address/window loader so each reg_bank[ky] already contains
-    // the correct row, or a zero row at the top/bottom boundary.
-    pad_x   = 4'd1;
-    pad_x_i = 1;
+    pad_x_i = 1;  // fixed K3/P1 horizontal padding currently used by tests
 
     for (int i = 0; i < PV_MAX; i++) begin
       read_x_i = int'(out_col) + int'(kx) + i - pad_x_i;
 
-      if (data_valid_q &&
+      if (ready_s &&
           (i < Pv_cur) &&
           (ky < K_cur) &&
           (read_x_i >= 0) &&
           (read_x_i < int'(W_cur)) &&
           (read_x_i < W_MAX)) begin
-        data_out_logic[i*DATA_W +: DATA_W] = reg_bank[ky_clamped][read_x_i];
+        data_out_logic[i*DATA_W +: DATA_W] = read_from_bank1_s ?
+          reg_bank1[ky_clamped][read_x_i] : reg_bank0[ky_clamped][read_x_i];
       end
       else begin
         data_out_logic[i*DATA_W +: DATA_W] = '0;
@@ -135,69 +205,20 @@ module data_register_mode1 #(
     end
   end
 
-  assign data_ready = data_valid_q;
+  assign data_ready = ready_s;
 
 `ifndef SYNTHESIS
-always_ff @(posedge clk) begin : DBG_M1_CENTER_TAP_SPATIAL
-    int same_x_i;
-    int old_unpadded_x_i;
-    int fixed_x_i;
-
-    if (rst_n &&
-        data_valid_q &&
-        (K_cur == 4'd3) &&
-        (ky == 1) &&
-        (kx == 1) &&
-        (out_col < 16'd8)) begin
-
-        same_x_i         = int'(out_col);
-        old_unpadded_x_i = int'(out_col) + int'(kx);
-        fixed_x_i        = int'(out_col) + int'(kx) - int'(pad_x);
-
-        if ((same_x_i         >= 0) && (same_x_i         < W_MAX) &&
-            (old_unpadded_x_i >= 0) && (old_unpadded_x_i < W_MAX) &&
-            (fixed_x_i        >= 0) && (fixed_x_i        < W_MAX)) begin
-
-            $display("DBG_M1_CENTER_TAP_SPATIAL t=%0t out_col=%0d ky=%0d kx=%0d pad_x=%0d old_unpad_x=%0d fixed_x=%0d same_x=%0d lane0=%0d reg_same=%0d reg_old_unpad=%0d reg_fixed=%0d",
-                $time,
-                out_col,
-                ky,
-                kx,
-                pad_x,
-                old_unpadded_x_i,
-                fixed_x_i,
-                same_x_i,
-                $signed(data_out_logic[0*DATA_W +: DATA_W]),
-                $signed(reg_bank[ky_clamped][same_x_i]),
-                $signed(reg_bank[ky_clamped][old_unpadded_x_i]),
-                $signed(reg_bank[ky_clamped][fixed_x_i])
-            );
-        end
+  always_ff @(posedge clk) begin : DBG_M1_DR_STAGE3_TAGMATCH
+    if (rst_n && load_start) begin
+      $display("DBG_M1_DR_STAGE3_LOAD_START t=%0t load_bank=%0d c=%0d row=%0d cur_c=%0d cur_row=%0d b0v=%0d b0c=%0d b0r=%0d b1v=%0d b1c=%0d b1r=%0d",
+        $time, load_bank_next_s, load_c, load_out_row, cur_c, cur_out_row,
+        bank_valid_q[0], bank_c_q[0], bank_row_q[0], bank_valid_q[1], bank_c_q[1], bank_row_q[1]);
     end
-end
-`endif
-
-`ifndef SYNTHESIS
-always_ff @(posedge clk) begin : DBG_M1_CENTER_TAP_ROW_SPATIAL
-    if (rst_n &&
-        data_valid_q &&
-        (K_cur == 4'd3) &&
-        (ky == 1) &&
-        (kx == 1) &&
-        (out_col == 0)) begin
-
-        $display("DBG_M1_CENTER_TAP_ROW_SPATIAL t=%0t ky=%0d kx=%0d out_col=%0d data_lane0=%0d row0_lane0=%0d row1_lane0=%0d row2_lane0=%0d",
-            $time,
-            ky,
-            kx,
-            out_col,
-            $signed(data_out_logic[0*DATA_W +: DATA_W]),
-            $signed(reg_bank[0][0]),
-            $signed(reg_bank[1][0]),
-            $signed(reg_bank[2][0])
-        );
+    if (rst_n && load_done && load_active_q) begin
+      $display("DBG_M1_DR_STAGE3_LOAD_DONE t=%0t bank=%0d c=%0d row=%0d match_cur=%0d",
+        $time, load_bank_q, load_c_q, load_row_q, load_done_match_cur_s);
     end
-end
+  end
 `endif
 
 endmodule

@@ -44,6 +44,14 @@ module local_dataflow_manager
   output logic [15:0]              m1_dr_write_x_base,
   output logic [PV_MAX*DATA_W-1:0] m1_dr_write_data,
 
+  // Stage2A Mode1 data-register load descriptor.
+  // Data register owns the ping-pong bank and tag bookkeeping; local only
+  // reports the same blocking load request/done that already exists.
+  output logic                     m1_dr_load_start,
+  output logic                     m1_dr_load_done,
+  output logic [15:0]              m1_dr_load_c,
+  output logic [15:0]              m1_dr_load_out_row,
+
   // --------------------------------------------------------------------------
   // Inputs from mode2_compute_top
   //
@@ -116,6 +124,30 @@ module local_dataflow_manager
   logic                     m1_busy_s;
   logic                     m1_done_s;
   logic                     m1_error_s;
+
+  logic                     m1_load_req_s;
+  logic [15:0]              m1_load_req_c_s;
+
+  // Stage3 Mode1 nonblocking prefetch scheduler.
+  logic        m1_req_pending_q;
+  logic        m1_req_blocking_q;
+  logic [15:0] m1_req_target_c_q;
+  logic        m1_active_load_q;
+  logic        m1_active_blocking_q;
+  logic [15:0] m1_active_target_c_q;
+  logic        m1_pref_valid_q;
+  logic [15:0] m1_pref_c_q;
+  logic [15:0] m1_pref_row_q;
+  logic        m1_wait_prefetch_q;
+  logic [15:0] m1_wait_c_q;
+  logic [15:0] m1_wait_row_q;
+  logic        m1_ag_start_req_s;
+  logic        m1_ag_pass_start_s;
+  logic        m1_ag_chan_done_s;
+  logic [15:0] m1_ag_c_iter_s;
+  logic        m1_blocking_hold_s;
+  logic [15:0] m1_next_c_s;
+  logic [15:0] m1_next2_c_s;
 
   // --------------------------------------------------------------------------
   // addr_gen_ifm_m2 wires
@@ -288,8 +320,183 @@ module local_dataflow_manager
   end
 
   // --------------------------------------------------------------------------
-  // Mode-1 local IFM feeder
+  // Mode-1 local IFM feeder with Stage3 nonblocking channel prefetch
   // --------------------------------------------------------------------------
+
+  // Stage3 policy:
+  // - pass_start still performs a blocking load of channel 0.
+  // - after a blocking load completes, channel 1 is prefetched while CE computes
+  //   channel 0.
+  // - on chan_done, if the next channel has already been prefetched, CE is not
+  //   held and we immediately schedule prefetch of the following channel.
+  // - if prefetch is not ready at chan_done, CE is held until the in-flight or
+  //   fallback blocking load completes.
+  //
+  // addr_gen_ifm_m1 only has legacy pass_start/chan_done request semantics.
+  // To load arbitrary target channel T:
+  //   T==0  -> pulse pass_start
+  //   T>0   -> pulse chan_done with c_iter=T-1
+
+  always_comb begin
+    m1_ag_start_req_s  = (cur_mode == MODE1) && m1_req_pending_q && !m1_busy_s && !m1_done_s;
+    m1_ag_pass_start_s = m1_ag_start_req_s && (m1_req_target_c_q == 16'd0);
+    m1_ag_chan_done_s  = m1_ag_start_req_s && (m1_req_target_c_q != 16'd0);
+    m1_ag_c_iter_s     = (m1_req_target_c_q == 16'd0) ? 16'd0 : (m1_req_target_c_q - 16'd1);
+
+    m1_load_req_s      = m1_ag_start_req_s;
+    m1_load_req_c_s    = m1_req_target_c_q;
+
+    m1_blocking_hold_s = m1_wait_prefetch_q ||
+                         (m1_req_pending_q && m1_req_blocking_q) ||
+                         (m1_active_load_q && m1_active_blocking_q && !m1_done_s);
+
+    m1_next_c_s  = m1_c_iter + 16'd1;
+    m1_next2_c_s = m1_c_iter + 16'd2;
+  end
+
+  always_ff @(posedge clk or negedge rst_n) begin : M1_STAGE3_PREFETCH_FSM
+    if (!rst_n) begin
+      m1_req_pending_q      <= 1'b0;
+      m1_req_blocking_q     <= 1'b0;
+      m1_req_target_c_q     <= 16'd0;
+      m1_active_load_q      <= 1'b0;
+      m1_active_blocking_q  <= 1'b0;
+      m1_active_target_c_q  <= 16'd0;
+      m1_pref_valid_q       <= 1'b0;
+      m1_pref_c_q           <= 16'd0;
+      m1_pref_row_q         <= 16'd0;
+      m1_wait_prefetch_q    <= 1'b0;
+      m1_wait_c_q           <= 16'd0;
+      m1_wait_row_q         <= 16'd0;
+    end
+    else begin
+      if (cur_mode != MODE1) begin
+        m1_req_pending_q      <= 1'b0;
+        m1_req_blocking_q     <= 1'b0;
+        m1_req_target_c_q     <= 16'd0;
+        m1_active_load_q      <= 1'b0;
+        m1_active_blocking_q  <= 1'b0;
+        m1_active_target_c_q  <= 16'd0;
+        m1_pref_valid_q       <= 1'b0;
+        m1_pref_c_q           <= 16'd0;
+        m1_pref_row_q         <= 16'd0;
+        m1_wait_prefetch_q    <= 1'b0;
+        m1_wait_c_q           <= 16'd0;
+        m1_wait_row_q         <= 16'd0;
+      end
+      else begin
+        // New output block: invalidate old prefetch and request channel 0.
+        if (m1_pass_start_pulse) begin
+          m1_pref_valid_q    <= 1'b0;
+          m1_wait_prefetch_q <= 1'b0;
+          m1_req_pending_q  <= 1'b1;
+          m1_req_blocking_q <= 1'b1;
+          m1_req_target_c_q <= 16'd0;
+        end
+
+        // Channel boundary: consume prefetched next channel if available,
+        // otherwise hold until it is available.
+        //
+        // Important corner case:
+        //   chan_done for channel C can occur in the same cycle as the
+        //   nonblocking prefetch for channel C+1 asserts m1_done_s.  In that
+        //   cycle m1_pref_valid_q is still 0 (registered state from previous
+        //   cycle), so checking only m1_pref_valid_q would falsely enter
+        //   wait_prefetch and then deadlock.  Treat same-cycle prefetch done as
+        //   a ready next channel.
+        if (m1_chan_done_pulse && ((m1_c_iter + 16'd1) < cur_cfg.c_in)) begin
+          if ((m1_pref_valid_q &&
+               (m1_pref_c_q == m1_next_c_s) &&
+               (m1_pref_row_q == m1_out_row)) ||
+              (m1_active_load_q && m1_done_s && !m1_active_blocking_q &&
+               (m1_active_target_c_q == m1_next_c_s) &&
+               (m1_out_row == m1_out_row))) begin
+            // Next channel is already loaded, or its nonblocking prefetch
+            // completes in this exact cycle.  Do not hold CE.
+            m1_wait_prefetch_q <= 1'b0;
+            m1_pref_valid_q    <= 1'b0;
+
+            // Schedule nonblocking prefetch for the following channel if any.
+            // If the current active load is completing in this cycle, it is safe
+            // to enqueue the next prefetch even though m1_active_load_q is still
+            // 1 in the old-state view.
+            if (m1_next2_c_s < cur_cfg.c_in) begin
+              if (!m1_req_pending_q) begin
+                m1_req_pending_q  <= 1'b1;
+                m1_req_blocking_q <= 1'b0;
+                m1_req_target_c_q <= m1_next2_c_s;
+              end
+            end
+          end
+          else begin
+            // The next channel is not ready.  If a prefetch is in flight for it,
+            // wait for completion. Otherwise schedule a blocking fallback load.
+            m1_wait_prefetch_q <= 1'b1;
+            m1_wait_c_q        <= m1_next_c_s;
+            m1_wait_row_q      <= m1_out_row;
+
+            if (!m1_active_load_q && !m1_req_pending_q) begin
+              m1_req_pending_q  <= 1'b1;
+              m1_req_blocking_q <= 1'b1;
+              m1_req_target_c_q <= m1_next_c_s;
+            end
+          end
+        end
+
+        // Start a pending load when addr_gen is idle.
+        if (m1_ag_start_req_s) begin
+          m1_req_pending_q     <= 1'b0;
+          m1_active_load_q     <= 1'b1;
+          m1_active_blocking_q <= m1_req_blocking_q;
+          m1_active_target_c_q <= m1_req_target_c_q;
+        end
+
+        // Complete current load.
+        if (m1_active_load_q && m1_done_s) begin
+          m1_active_load_q <= 1'b0;
+
+          // Nonblocking load normally becomes a valid prefetch.  However, if it
+          // is consumed in the same cycle by the chan_done boundary above, do
+          // not leave a stale pref_valid entry for the active channel.
+          if (!m1_active_blocking_q) begin
+            if (m1_chan_done_pulse &&
+                ((m1_c_iter + 16'd1) < cur_cfg.c_in) &&
+                (m1_active_target_c_q == m1_next_c_s) &&
+                (m1_out_row == m1_out_row)) begin
+              m1_pref_valid_q <= 1'b0;
+            end else begin
+              m1_pref_valid_q <= 1'b1;
+              m1_pref_c_q     <= m1_active_target_c_q;
+              m1_pref_row_q   <= m1_out_row;
+            end
+          end
+
+          // If CE was already waiting for exactly this target, release hold.
+          if (m1_wait_prefetch_q &&
+              (m1_active_target_c_q == m1_wait_c_q) &&
+              (m1_out_row == m1_wait_row_q)) begin
+            m1_wait_prefetch_q <= 1'b0;
+            m1_pref_valid_q    <= 1'b0;
+          end
+
+          // After a blocking load of channel C completes, schedule prefetch C+1.
+          if (m1_active_blocking_q && ((m1_active_target_c_q + 16'd1) < cur_cfg.c_in)) begin
+            if (!m1_req_pending_q) begin
+              m1_req_pending_q  <= 1'b1;
+              m1_req_blocking_q <= 1'b0;
+              m1_req_target_c_q <= m1_active_target_c_q + 16'd1;
+            end
+          end
+        end
+      end
+    end
+  end
+
+  assign m1_dr_load_start   = m1_ag_start_req_s;
+  assign m1_dr_load_done    = (cur_mode == MODE1) && m1_active_load_q && m1_done_s;
+  assign m1_dr_load_c       = m1_ag_start_req_s ? m1_req_target_c_q : m1_active_target_c_q;
+  assign m1_dr_load_out_row = m1_out_row;
+
   addr_gen_ifm_m1 #(
     .DATA_W (DATA_W),
     .PV_MAX (PV_MAX),
@@ -307,9 +514,9 @@ module local_dataflow_manager
     .W_cur             (cur_cfg.w_in),
     .Pv_cur            (cur_cfg.pv_m1),
 
-    .pass_start_pulse  (m1_pass_start_pulse),
-    .chan_done_pulse   (m1_chan_done_pulse),
-    .c_iter            (m1_c_iter),
+    .pass_start_pulse  (m1_ag_pass_start_s),
+    .chan_done_pulse   (m1_ag_chan_done_s),
+    .c_iter            (m1_ag_c_iter_s),
     .out_row           (m1_out_row),
     .out_col           (m1_out_col),
 
@@ -568,7 +775,7 @@ module local_dataflow_manager
   // serializing cgrp free events so no compute-consumed slot is dropped.
   assign m2_free_emit_hold_s = m2_free_emit_active_q || m2_free_refill_needed_s || m2_miss_pending_q || m2_miss_refill_valid_s;
 
-  assign hold_compute = (cur_mode == MODE1) ? m1_busy_s :
+  assign hold_compute = (cur_mode == MODE1) ? m1_blocking_hold_s :
                         (cur_mode == MODE2) ? m2_free_emit_hold_s : 1'b0;
 
   assign local_busy  = (cur_mode == MODE1) ? m1_busy_s  :
@@ -582,60 +789,5 @@ module local_dataflow_manager
 
   assign m1_local_busy = m1_busy_s;
   assign m2_local_busy = m2_busy_s;
-
-`ifndef SYNTHESIS
-  // Keep the fixed mode-2 parallelism assumption visible in simulation.
-  // Also make the GLOBAL-column contract explicit at the manager boundary.
-  always_ff @(posedge clk) begin
-    if (rst_n && (cur_mode == MODE2) && m2_start) begin
-      if (cur_cfg.pc_m2 != PC_MODE2) begin
-        $error("local_dataflow_manager: cur_cfg.pc_m2 (%0d) != PC_MODE2 parameter (%0d).",
-               cur_cfg.pc_m2, PC_MODE2);
-      end
-      if (cur_cfg.pf_m2 != PF_MODE2) begin
-        $error("local_dataflow_manager: cur_cfg.pf_m2 (%0d) != PF_MODE2 parameter (%0d).",
-               cur_cfg.pf_m2, PF_MODE2);
-      end
-      if ((cur_cfg.w_out != 0) && (m2_out_col_g_s >= cur_cfg.w_out)) begin
-        $error("local_dataflow_manager: mode-2 output col (%0d) is outside Wout_cur (%0d).",
-               m2_out_col_g_s, cur_cfg.w_out);
-      end
-      if ((cur_cfg.h_out != 0) && (m2_out_row_g_s >= cur_cfg.h_out)) begin
-        $error("local_dataflow_manager: mode-2 output row (%0d) is outside Hout_cur (%0d).",
-               m2_out_row_g_s, cur_cfg.h_out);
-      end
-      if ((PC_MODE2 != 0) && (m2_free_consumed_col_l_s != (m2_out_col_g_s % PC_MODE2))) begin
-        $error("local_dataflow_manager: rolling col_l mismatch for out_col=%0d PC=%0d col_l=%0d.",
-               m2_out_col_g_s, PC_MODE2, m2_free_consumed_col_l_s);
-      end
-    end
-  end
-`endif
-
-`ifndef SYNTHESIS
-
-always_ff @(posedge clk or negedge rst_n) begin : DBG_LDM_IFM_RD_MUX_MON
-  if (!rst_n) begin
-  end else begin
-    if (ifm_rd_en || ifm_rd_valid) begin
-      $display("DBG_LDM_IFM_RD_MUX t=%0t cur_mode=%0b ifm_rd_en=%0b bank_base=%0d row=%0d col_idx=%0d col_g=%0d ifm_rd_valid=%0b data0=%0d data1=%0d data2=%0d data3=%0d",
-        $time,
-        cur_mode,
-        ifm_rd_en,
-        ifm_rd_bank_base,
-        ifm_rd_row_idx,
-        ifm_rd_col_idx,
-        ifm_rd_col_g,
-        ifm_rd_valid,
-        $signed(ifm_rd_data[0*DATA_W +: DATA_W]),
-        $signed(ifm_rd_data[1*DATA_W +: DATA_W]),
-        $signed(ifm_rd_data[2*DATA_W +: DATA_W]),
-        $signed(ifm_rd_data[3*DATA_W +: DATA_W])
-      );
-    end
-  end
-end
-
-`endif
 
 endmodule

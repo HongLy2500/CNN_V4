@@ -240,6 +240,12 @@ logic                        ifm_ofm_wr_mode2_s;
   logic [$clog2(K_MAX)-1:0]    m1_dr_write_row_idx_s;
   logic [15:0]                 m1_dr_write_x_base_s;
   logic [PV_MAX*DATA_W-1:0]    m1_dr_write_data_s;
+  logic                        m1_dr_write_bank_sel_s;
+  logic                        m1_dr_read_bank_sel_s;
+  logic                        m1_dr_load_start_s;
+  logic                        m1_dr_load_done_s;
+  logic [15:0]                 m1_dr_load_c_s;
+  logic [15:0]                 m1_dr_load_out_row_s;
 
   logic [15:0]                 m1_out_row_s, m1_out_col_s, m1_f_group_s, m1_c_iter_s;
   logic [$clog2(K_MAX)-1:0]    m1_ky_s, m1_kx_s;
@@ -456,6 +462,12 @@ logic                        ifm_ofm_wr_mode2_s;
     .m1_dr_write_row_idx    (m1_dr_write_row_idx_s),
     .m1_dr_write_x_base     (m1_dr_write_x_base_s),
     .m1_dr_write_data       (m1_dr_write_data_s),
+    .m1_dr_write_bank_sel   (m1_dr_write_bank_sel_s),
+    .m1_dr_read_bank_sel    (m1_dr_read_bank_sel_s),
+    .m1_dr_load_start       (m1_dr_load_start_s),
+    .m1_dr_load_done        (m1_dr_load_done_s),
+    .m1_dr_load_c           (m1_dr_load_c_s),
+    .m1_dr_load_out_row     (m1_dr_load_out_row_s),
     .m1_out_row             (m1_out_row_s),
     .m1_out_col             (m1_out_col_s),
     .m1_f_group             (m1_f_group_s),
@@ -756,6 +768,12 @@ logic                        ifm_ofm_wr_mode2_s;
     .dr_write_row_idx  (m1_dr_write_row_idx_s),
     .dr_write_x_base   (m1_dr_write_x_base_s),
     .dr_write_data     (m1_dr_write_data_s),
+    .dr_write_bank_sel (m1_dr_write_bank_sel_s),
+    .dr_read_bank_sel  (m1_dr_read_bank_sel_s),
+    .dr_load_start     (m1_dr_load_start_s),
+    .dr_load_done      (m1_dr_load_done_s),
+    .dr_load_c         (m1_dr_load_c_s),
+    .dr_load_out_row   (m1_dr_load_out_row_s),
     .weight_bank_sel   (m1_weight_bank_sel_s),
     .weight_bank_ready (m1_weight_bank_ready_s),
     .wb_rd_en          (m1_wb_rd_en_s),
