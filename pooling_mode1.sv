@@ -114,17 +114,11 @@ module pooling_mode1 #(
   function automatic logic signed [OUT_W-1:0] sat_to_out(
     input logic signed [DATA_W-1:0] din
   );
-    integer signed din_i;
-    integer signed sat_i;
     begin
-      din_i = din;
-      if (din_i > OUT_MAX)
-        sat_i = OUT_MAX;
-      else if (din_i < OUT_MIN)
-        sat_i = OUT_MIN;
-      else
-        sat_i = din_i;
-      sat_to_out = sat_i[OUT_W-1:0];
+      // Input is expected to come from relu_mode1's resource-oriented output:
+      // non-negative and already clamped to OUT_W. Keep only the payload bits
+      // to avoid re-building 32-bit saturation comparators inside pooling.
+      sat_to_out = din[OUT_W-1:0];
     end
   endfunction
 

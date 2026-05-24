@@ -1,0 +1,257 @@
+{
+  "convention": "SIGNED_INT8_HWC, weights SIGNED_INT8 F,C,K,K, bias INT32, output SIGNED_INT8_HWC",
+  "pkg_root": "D:\\sdh\\CNN_V4\\vgg16_like_32_p128_kv260_package",
+  "bench": "vgg16_like_32_p128",
+  "image": "img0000",
+  "layers_csv": "D:\\sdh\\CNN_V4\\vgg16_like_32_p128_kv260_package\\eval\\configs\\vgg16_like_32_p128_layers.csv",
+  "weights_dir": "D:\\sdh\\CNN_V4\\vgg16_like_32_p128_kv260_package\\eval\\assets\\vgg16_like_32_p128\\weights",
+  "input_npy": "D:\\sdh\\CNN_V4\\vgg16_like_32_p128_kv260_package\\eval\\assets\\vgg16_like_32_p128\\inputs\\img0000\\input_uint8_hwc.npy",
+  "input_original_dtype": "uint8",
+  "input_shape_hwc": [
+    32,
+    32,
+    3
+  ],
+  "input_signed_minmax": [
+    -128,
+    127
+  ],
+  "golden_npy": "D:\\sdh\\CNN_V4\\vgg16_like_32_p128_kv260_package\\eval\\golden\\vgg16_like_32_p128\\img0000\\golden_final_ofm_uint8_hwc.npy",
+  "golden_original_dtype": "uint8",
+  "golden_shape_hwc": [
+    1,
+    1,
+    64
+  ],
+  "golden_signed_minmax": [
+    0,
+    127
+  ],
+  "num_layers": 13,
+  "weights": [
+    {
+      "layer_id": 0,
+      "path": "D:\\sdh\\CNN_V4\\vgg16_like_32_p128_kv260_package\\eval\\assets\\vgg16_like_32_p128\\weights\\layers\\layer00_L0_weight_i8.npy",
+      "shape": [
+        16,
+        3,
+        3,
+        3
+      ]
+    },
+    {
+      "layer_id": 1,
+      "path": "D:\\sdh\\CNN_V4\\vgg16_like_32_p128_kv260_package\\eval\\assets\\vgg16_like_32_p128\\weights\\layers\\layer01_L1_weight_i8.npy",
+      "shape": [
+        16,
+        16,
+        3,
+        3
+      ]
+    },
+    {
+      "layer_id": 2,
+      "path": "D:\\sdh\\CNN_V4\\vgg16_like_32_p128_kv260_package\\eval\\assets\\vgg16_like_32_p128\\weights\\layers\\layer02_L2_weight_i8.npy",
+      "shape": [
+        32,
+        16,
+        3,
+        3
+      ]
+    },
+    {
+      "layer_id": 3,
+      "path": "D:\\sdh\\CNN_V4\\vgg16_like_32_p128_kv260_package\\eval\\assets\\vgg16_like_32_p128\\weights\\layers\\layer03_L3_weight_i8.npy",
+      "shape": [
+        32,
+        32,
+        3,
+        3
+      ]
+    },
+    {
+      "layer_id": 4,
+      "path": "D:\\sdh\\CNN_V4\\vgg16_like_32_p128_kv260_package\\eval\\assets\\vgg16_like_32_p128\\weights\\layers\\layer04_L4_weight_i8.npy",
+      "shape": [
+        64,
+        32,
+        3,
+        3
+      ]
+    },
+    {
+      "layer_id": 5,
+      "path": "D:\\sdh\\CNN_V4\\vgg16_like_32_p128_kv260_package\\eval\\assets\\vgg16_like_32_p128\\weights\\layers\\layer05_L5_weight_i8.npy",
+      "shape": [
+        64,
+        64,
+        3,
+        3
+      ]
+    },
+    {
+      "layer_id": 6,
+      "path": "D:\\sdh\\CNN_V4\\vgg16_like_32_p128_kv260_package\\eval\\assets\\vgg16_like_32_p128\\weights\\layers\\layer06_L6_weight_i8.npy",
+      "shape": [
+        64,
+        64,
+        3,
+        3
+      ]
+    },
+    {
+      "layer_id": 7,
+      "path": "D:\\sdh\\CNN_V4\\vgg16_like_32_p128_kv260_package\\eval\\assets\\vgg16_like_32_p128\\weights\\layers\\layer07_L7_weight_i8.npy",
+      "shape": [
+        64,
+        64,
+        3,
+        3
+      ]
+    },
+    {
+      "layer_id": 8,
+      "path": "D:\\sdh\\CNN_V4\\vgg16_like_32_p128_kv260_package\\eval\\assets\\vgg16_like_32_p128\\weights\\layers\\layer08_L8_weight_i8.npy",
+      "shape": [
+        64,
+        64,
+        3,
+        3
+      ]
+    },
+    {
+      "layer_id": 9,
+      "path": "D:\\sdh\\CNN_V4\\vgg16_like_32_p128_kv260_package\\eval\\assets\\vgg16_like_32_p128\\weights\\layers\\layer09_L9_weight_i8.npy",
+      "shape": [
+        64,
+        64,
+        3,
+        3
+      ]
+    },
+    {
+      "layer_id": 10,
+      "path": "D:\\sdh\\CNN_V4\\vgg16_like_32_p128_kv260_package\\eval\\assets\\vgg16_like_32_p128\\weights\\layers\\layer10_L10_weight_i8.npy",
+      "shape": [
+        64,
+        64,
+        3,
+        3
+      ]
+    },
+    {
+      "layer_id": 11,
+      "path": "D:\\sdh\\CNN_V4\\vgg16_like_32_p128_kv260_package\\eval\\assets\\vgg16_like_32_p128\\weights\\layers\\layer11_L11_weight_i8.npy",
+      "shape": [
+        64,
+        64,
+        3,
+        3
+      ]
+    },
+    {
+      "layer_id": 12,
+      "path": "D:\\sdh\\CNN_V4\\vgg16_like_32_p128_kv260_package\\eval\\assets\\vgg16_like_32_p128\\weights\\layers\\layer12_L12_weight_i8.npy",
+      "shape": [
+        64,
+        64,
+        3,
+        3
+      ]
+    }
+  ],
+  "biases": [
+    {
+      "layer_id": 0,
+      "path": "zeros_generated",
+      "shape": [
+        16
+      ]
+    },
+    {
+      "layer_id": 1,
+      "path": "zeros_generated",
+      "shape": [
+        16
+      ]
+    },
+    {
+      "layer_id": 2,
+      "path": "zeros_generated",
+      "shape": [
+        32
+      ]
+    },
+    {
+      "layer_id": 3,
+      "path": "zeros_generated",
+      "shape": [
+        32
+      ]
+    },
+    {
+      "layer_id": 4,
+      "path": "zeros_generated",
+      "shape": [
+        64
+      ]
+    },
+    {
+      "layer_id": 5,
+      "path": "zeros_generated",
+      "shape": [
+        64
+      ]
+    },
+    {
+      "layer_id": 6,
+      "path": "zeros_generated",
+      "shape": [
+        64
+      ]
+    },
+    {
+      "layer_id": 7,
+      "path": "zeros_generated",
+      "shape": [
+        64
+      ]
+    },
+    {
+      "layer_id": 8,
+      "path": "zeros_generated",
+      "shape": [
+        64
+      ]
+    },
+    {
+      "layer_id": 9,
+      "path": "zeros_generated",
+      "shape": [
+        64
+      ]
+    },
+    {
+      "layer_id": 10,
+      "path": "zeros_generated",
+      "shape": [
+        64
+      ]
+    },
+    {
+      "layer_id": 11,
+      "path": "zeros_generated",
+      "shape": [
+        64
+      ]
+    },
+    {
+      "layer_id": 12,
+      "path": "zeros_generated",
+      "shape": [
+        64
+      ]
+    }
+  ],
+  "note": "Current package may keep *_uint8_hwc.npy names, but raw bytes are exported and interpreted as signed int8 two's-complement values by the C++ baseline."
+}
