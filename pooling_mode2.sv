@@ -6,8 +6,8 @@
 // Main changes versus the original row_buf implementation:
 //   * No full row-buffer reset.
 //   * No 4-D row_buf with dynamic multi-port access.
-//   * Top row is stored as adjacent column-pairs per filter group.
-//   * Current odd-row left sample is held in a small per-filter-group register.
+//   * Top row is stored as saturated horizontal pair-max per filter group.
+//   * Current odd-row left sample is held after saturation in a small per-filter-group register.
 //   * Debug monitors are guarded with `ifndef SYNTHESIS.
 //   * f_base/PF conversion uses shift/case for common power-of-two PF values.
 //
@@ -28,13 +28,13 @@ module pooling_mode2_pair_linebuf_bank #(
 
   input  logic                  wr_en,
   input  logic [ADDR_W-1:0]     wr_addr,
-  input  logic [2*PF*DATA_W-1:0] wr_data,
+  input  logic [PF*DATA_W-1:0] wr_data,
 
-  input  logic [ADDR_W-1:0]      rd_addr,
-  output logic [2*PF*DATA_W-1:0] rd_data
+  input  logic [ADDR_W-1:0]     rd_addr,
+  output logic [PF*DATA_W-1:0] rd_data
 );
   (* ram_style = "distributed" *)
-  logic [2*PF*DATA_W-1:0] ram [0:DEPTH-1];
+  logic [PF*DATA_W-1:0] ram [0:DEPTH-1];
 
   // FPGA init + simulation init. Do not reset RAM in the clocked reset path.
   initial begin
@@ -94,7 +94,7 @@ module pooling_mode2 #(
   localparam int PAIR_DEPTH   = (W_MAX + 1) / 2;
   localparam int PAIR_ADDR_W  = (PAIR_DEPTH <= 1) ? 1 : $clog2(PAIR_DEPTH);
   localparam int IN_WORD_W    = PF * DATA_W;
-  localparam int PAIR_WORD_W  = 2 * IN_WORD_W;
+  localparam int OUT_WORD_W   = PF * OUT_W;
 
   localparam int signed OUT_MAX = (1 <<< (OUT_W-1)) - 1;
   localparam int signed OUT_MIN = -(1 <<< (OUT_W-1));
@@ -119,25 +119,30 @@ module pooling_mode2 #(
   //
   // For even input rows:
   //   even col: hold left sample for this fgrp
-  //   odd  col: write {right=current, left=held} pair to line buffer
+  //   odd  col: write max(sat(right=current), sat(left=held)) to line buffer
   //
   // For odd input rows:
   //   even col: hold bottom-left sample for this fgrp
-  //   odd  col: read top pair from line buffer, combine with bottom-left hold
+  //   odd  col: read top pair-max from line buffer, combine with bottom-left hold
   //             and current bottom-right sample, then emit pooled result.
   // --------------------------------------------------
-  logic [IN_WORD_W-1:0] top_left_hold [0:FGRP_MAX-1];
-  logic [IN_WORD_W-1:0] bot_left_hold [0:FGRP_MAX-1];
+  // Hold and line-buffer data are stored after ReLU/saturation to OUT_W.
+  // This keeps the 2x2 pooling result identical for monotonic saturation, while
+  // reducing the line-buffer width from 2*PF*DATA_W to PF*OUT_W.
+  logic [OUT_WORD_W-1:0] top_left_hold [0:FGRP_MAX-1];
+  logic [OUT_WORD_W-1:0] bot_left_hold [0:FGRP_MAX-1];
 
   logic [FGRP_MAX-1:0]          linebuf_wr_en;
   logic [PAIR_ADDR_W-1:0]       linebuf_wr_addr [0:FGRP_MAX-1];
-  logic [PAIR_WORD_W-1:0]       linebuf_wr_data [0:FGRP_MAX-1];
+  logic [OUT_WORD_W-1:0]        linebuf_wr_data [0:FGRP_MAX-1];
   logic [PAIR_ADDR_W-1:0]       linebuf_rd_addr [0:FGRP_MAX-1];
-  logic [PAIR_WORD_W-1:0]       linebuf_rd_data [0:FGRP_MAX-1];
+  logic [OUT_WORD_W-1:0]        linebuf_rd_data [0:FGRP_MAX-1];
 
   logic [PAIR_ADDR_W-1:0] pair_idx_s;
-  logic [PAIR_WORD_W-1:0] selected_top_pair_s;
-  logic [IN_WORD_W-1:0]   selected_bot_left_s;
+  logic [OUT_WORD_W-1:0]  selected_top_pair_s;
+  logic [OUT_WORD_W-1:0]  selected_bot_left_s;
+  logic [OUT_WORD_W-1:0]  in_sat_word_s;
+  logic [OUT_WORD_W-1:0]  top_pair_word_s [0:FGRP_MAX-1];
   logic [PF*OUT_W-1:0]    pool_word_s;
   logic [PF*OUT_W-1:0]    bypass_word_s;
 
@@ -191,7 +196,7 @@ module pooling_mode2 #(
   generate
     for (g_fgrp = 0; g_fgrp < FGRP_MAX; g_fgrp++) begin : G_TOP_PAIR_BUF
       pooling_mode2_pair_linebuf_bank #(
-        .DATA_W(DATA_W),
+        .DATA_W(OUT_W),
         .PF    (PF),
         .DEPTH (PAIR_DEPTH),
         .ADDR_W(PAIR_ADDR_W)
@@ -233,13 +238,43 @@ module pooling_mode2 #(
   end
 
   // --------------------------------------------------
+  // Saturate current PF word once and pre-compute the top-row horizontal max.
+  // The line buffer stores top_pair_max per PF lane, not the raw top-left/right
+  // 32-bit samples. This reduces the line-buffer word width substantially.
+  // --------------------------------------------------
+  always_comb begin
+    in_sat_word_s = '0;
+
+    for (int pf = 0; pf < PF; pf++) begin
+      logic signed [DATA_W-1:0] in_raw;
+      in_raw = signed'(in_data_q[pf*DATA_W +: DATA_W]);
+      in_sat_word_s[pf*OUT_W +: OUT_W] = sat_to_out(in_raw);
+    end
+  end
+
+  always_comb begin
+    for (int fg = 0; fg < FGRP_MAX; fg++) begin
+      top_pair_word_s[fg] = '0;
+
+      for (int pf = 0; pf < PF; pf++) begin
+        logic signed [OUT_W-1:0] top_left_s;
+        logic signed [OUT_W-1:0] top_right_s;
+        top_left_s  = signed'(top_left_hold[fg][pf*OUT_W +: OUT_W]);
+        top_right_s = signed'(in_sat_word_s[pf*OUT_W +: OUT_W]);
+        top_pair_word_s[fg][pf*OUT_W +: OUT_W] =
+          (top_right_s > top_left_s) ? top_right_s : top_left_s;
+      end
+    end
+  end
+
+  // --------------------------------------------------
   // Line-buffer write/read command generation.
   // --------------------------------------------------
   always_comb begin
     for (int fg = 0; fg < FGRP_MAX; fg++) begin
       linebuf_wr_en[fg]   = 1'b0;
       linebuf_wr_addr[fg] = pair_idx_s;
-      linebuf_wr_data[fg] = {in_data_q, top_left_hold[fg]};
+      linebuf_wr_data[fg] = top_pair_word_s[fg];
 
       linebuf_rd_addr[fg] = pair_idx_s;
     end
@@ -249,7 +284,7 @@ module pooling_mode2 #(
         if (in_fgrp_idx_q == fg) begin
           linebuf_wr_en[fg]   = 1'b1;
           linebuf_wr_addr[fg] = pair_idx_s;
-          linebuf_wr_data[fg] = {in_data_q, top_left_hold[fg]};
+          linebuf_wr_data[fg] = top_pair_word_s[fg];
         end
       end
     end
@@ -273,31 +308,29 @@ module pooling_mode2 #(
 
   // --------------------------------------------------
   // Combinational output word generation.
+  // Pooling is performed in OUT_W domain after monotonic saturation:
+  //   max(sat(a), sat(b), sat(c), sat(d)) == sat(max(a,b,c,d)).
   // --------------------------------------------------
   always_comb begin
     pool_word_s   = '0;
     bypass_word_s = '0;
 
     for (int pf = 0; pf < PF; pf++) begin
-      logic signed [DATA_W-1:0] top_left;
-      logic signed [DATA_W-1:0] top_right;
-      logic signed [DATA_W-1:0] bot_left;
-      logic signed [DATA_W-1:0] bot_right;
-      logic signed [DATA_W-1:0] top_max;
-      logic signed [DATA_W-1:0] bot_max;
-      logic signed [DATA_W-1:0] final_max;
+      logic signed [OUT_W-1:0] top_pair;
+      logic signed [OUT_W-1:0] bot_left;
+      logic signed [OUT_W-1:0] bot_right;
+      logic signed [OUT_W-1:0] bot_pair;
+      logic signed [OUT_W-1:0] final_max;
 
-      top_left  = signed'(selected_top_pair_s[pf*DATA_W +: DATA_W]);
-      top_right = signed'(selected_top_pair_s[(PF+pf)*DATA_W +: DATA_W]);
-      bot_left  = signed'(selected_bot_left_s[pf*DATA_W +: DATA_W]);
-      bot_right = signed'(in_data_q[pf*DATA_W +: DATA_W]);
+      top_pair = signed'(selected_top_pair_s[pf*OUT_W +: OUT_W]);
+      bot_left = signed'(selected_bot_left_s[pf*OUT_W +: OUT_W]);
+      bot_right = signed'(in_sat_word_s[pf*OUT_W +: OUT_W]);
 
-      top_max = (top_right > top_left) ? top_right : top_left;
-      bot_max = (bot_right > bot_left) ? bot_right : bot_left;
-      final_max = (bot_max > top_max) ? bot_max : top_max;
+      bot_pair = (bot_right > bot_left) ? bot_right : bot_left;
+      final_max = (bot_pair > top_pair) ? bot_pair : top_pair;
 
-      pool_word_s[pf*OUT_W +: OUT_W]   = sat_to_out(final_max);
-      bypass_word_s[pf*OUT_W +: OUT_W] = sat_to_out(bot_right);
+      pool_word_s[pf*OUT_W +: OUT_W]   = final_max;
+      bypass_word_s[pf*OUT_W +: OUT_W] = bot_right;
     end
   end
 
@@ -339,12 +372,12 @@ module pooling_mode2 #(
           if (coord_valid_s) begin
             if (!in_row_g_q[0] && !in_col_g_q[0]) begin
               // Even row, even col: remember top-left candidate.
-              top_left_hold[in_fgrp_idx_q] <= in_data_q;
+              top_left_hold[in_fgrp_idx_q] <= in_sat_word_s;
             end
 
             if (bot_left_store_s) begin
               // Odd row, even col: remember bottom-left candidate.
-              bot_left_hold[in_fgrp_idx_q] <= in_data_q;
+              bot_left_hold[in_fgrp_idx_q] <= in_sat_word_s;
             end
           end
 

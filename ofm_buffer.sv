@@ -170,6 +170,9 @@ module ofm_buffer #(
     output logic                        ifm_ofm_wr_mode2,
     input  logic                        ifm_ofm_wr_ready,
 
+    // Minimal performance counter: accepted OFM->IFM stream words.
+    output logic [63:0]                 perf_ofm2ifm_word_count,
+
     // ============================================================
     // Same-mode ready-token visibility
     //

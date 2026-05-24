@@ -86,7 +86,11 @@ module cnn_dma_to_axi_bridge_kv260 #(
   input  logic [1:0]              m_axi_rresp,
   input  logic                    m_axi_rlast,
   input  logic                    m_axi_rvalid,
-  output logic                    m_axi_rready
+  output logic                    m_axi_rready,
+
+  // Minimal performance counters: actual AXI read/write data beats.
+  output logic [63:0]             perf_axi_r_count,
+  output logic [63:0]             perf_axi_w_count
 );
 
   localparam int DDR_WORD_BYTES = DDR_WORD_W / 8;
@@ -324,6 +328,8 @@ module cnn_dma_to_axi_bridge_kv260 #(
 
       error_q            <= 1'b0;
       wr_fifo_overflow_q <= 1'b0;
+      perf_axi_r_count   <= 64'd0;
+      perf_axi_w_count   <= 64'd0;
 
       for (i = 0; i < WR_FIFO_DEPTH; i++) begin
         wr_fifo_addr_q[i] <= '0;
@@ -355,6 +361,15 @@ module cnn_dma_to_axi_bridge_kv260 #(
 
       error_q            <= error_n;
       wr_fifo_overflow_q <= wr_fifo_overflow_n;
+
+      // Count completed AXI data beats. The bridge currently uses single-beat
+      // AXI transactions, so these are also the DDR word counts.
+      if (m_axi_rvalid && m_axi_rready) begin
+        perf_axi_r_count <= perf_axi_r_count + 64'd1;
+      end
+      if (m_axi_wvalid && m_axi_wready) begin
+        perf_axi_w_count <= perf_axi_w_count + 64'd1;
+      end
     end
   end
 

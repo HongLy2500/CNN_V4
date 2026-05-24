@@ -109,7 +109,12 @@ module cnn_top
   output logic [$clog2(CFG_DEPTH)-1:0] dbg_layer_idx,
   output logic                         dbg_mode,
   output logic                         dbg_weight_bank,
-  output logic [3:0]                   dbg_error_vec
+  output logic [3:0]                   dbg_error_vec,
+
+  // Minimal performance counters for system evaluation.
+  output logic [63:0]                  perf_ofm2ifm_word_count,
+  output logic [63:0]                  perf_m1_mac_active_cycles,
+  output logic [63:0]                  perf_m2_mac_active_cycles
 );
 
   // Mode-1 IFM column group index is based on runtime cfg_pv_cur.
@@ -960,8 +965,33 @@ logic                        ifm_ofm_wr_mode2_s;
     .layer_num_pixels   (),
     .layer_pixels_written(),
     .layer_write_done   (ofm_layer_write_done_s),
-    .error              (ofm_error_s)
+    .error              (ofm_error_s),
+    .perf_ofm2ifm_word_count(perf_ofm2ifm_word_count)
   );
+
+
+
+  // --------------------------------------------------------------------------
+  // Minimal compute-active counters for system evaluation.
+  // Count cycles where the Mode1/Mode2 MAC arrays actually consume operands.
+  // Reset by cnn_top start, which is one pulse per measured inference run.
+  // --------------------------------------------------------------------------
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      perf_m1_mac_active_cycles <= 64'd0;
+      perf_m2_mac_active_cycles <= 64'd0;
+    end else if (start) begin
+      perf_m1_mac_active_cycles <= 64'd0;
+      perf_m2_mac_active_cycles <= 64'd0;
+    end else begin
+      if (m1_mac_en_s) begin
+        perf_m1_mac_active_cycles <= perf_m1_mac_active_cycles + 64'd1;
+      end
+      if (m2_mac_en_s) begin
+        perf_m2_mac_active_cycles <= perf_m2_mac_active_cycles + 64'd1;
+      end
+    end
+  end
 
 `ifndef SYNTHESIS
 

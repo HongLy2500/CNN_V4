@@ -34,7 +34,9 @@ module mac_array_mode2 #(
   // --------------------------------------------------
   logic signed [DATA_W-1:0] data_lane   [0:PC-1];
   logic signed [DATA_W-1:0] weight_lane [0:PF-1][0:PC-1];
-  logic signed [PROD_W-1:0] mult_res    [0:PF-1][0:PC-1];
+  // Force MAC multipliers into DSPs to trade abundant DSP resources for LUT reduction.
+  // This is only a synthesis mapping hint; it does not change arithmetic behavior.
+  (* use_dsp = "yes" *) logic signed [PROD_W-1:0] mult_res    [0:PF-1][0:PC-1];
 
   // psum luu noi bo trong tung MAC
   logic signed [PSUM_W-1:0] psum_reg    [0:PF-1][0:PC-1];

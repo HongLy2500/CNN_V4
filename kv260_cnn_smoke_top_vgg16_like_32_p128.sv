@@ -53,6 +53,25 @@ module kv260_cnn_smoke_top_vgg16_like_32_p128
   output logic dbg_weight_bank,
   output logic [3:0] dbg_error_vec,
 
+  // Minimal performance counters for ILA/system evaluation.
+  output logic [63:0] perf_cycle_count,
+  output logic        perf_cycle_valid,
+  output logic        perf_running,
+  output logic [63:0] perf_core_cycle_count,
+  output logic        perf_core_cycle_valid,
+  output logic        perf_core_running,
+  output logic [63:0] perf_axi_r_count,
+  output logic [63:0] perf_axi_w_count,
+  output logic [63:0] perf_ofm2ifm_word_count,
+  output logic [63:0] perf_m1_mac_active_cycles,
+  output logic [63:0] perf_m2_mac_active_cycles,
+
+  output logic [63:0] perf_layer_cycle_count,
+  output logic        perf_layer_cycle_valid,
+  output logic [$clog2(CFG_DEPTH)-1:0] perf_layer_done_idx,
+  output logic [$clog2(CFG_DEPTH)-1:0] perf_layer_current_idx,
+  output logic        perf_layer_running,
+
   output logic dbg_ddr_rd_req,
   output logic [DDR_ADDR_W-1:0] dbg_ddr_rd_addr,
   output logic dbg_ddr_rd_valid,

@@ -83,6 +83,26 @@ module kv260_cnn_eval_top_fixedcfg_vgg16_like_32_p128_defaults
   output logic dbg_weight_bank,
   output logic [3:0] dbg_error_vec,
 
+  // Minimal performance counters for ILA/system evaluation.
+  output logic [63:0] perf_cycle_count,
+  output logic        perf_cycle_valid,
+  output logic        perf_running,
+  output logic [63:0] perf_core_cycle_count,
+  output logic        perf_core_cycle_valid,
+  output logic        perf_core_running,
+  output logic [63:0] perf_axi_r_count,
+  output logic [63:0] perf_axi_w_count,
+  output logic [63:0] perf_ofm2ifm_word_count,
+  output logic [63:0] perf_m1_mac_active_cycles,
+  output logic [63:0] perf_m2_mac_active_cycles,
+
+  // Per-layer runtime event counter for ILA/system evaluation.
+  output logic [63:0] perf_layer_cycle_count,
+  output logic        perf_layer_cycle_valid,
+  output logic [CFG_AW-1:0] perf_layer_done_idx,
+  output logic [CFG_AW-1:0] perf_layer_current_idx,
+  output logic        perf_layer_running,
+
   // Optional direct-DDR side visibility for ILA.
   output logic dbg_ddr_rd_req,
   output logic [DDR_ADDR_W-1:0] dbg_ddr_rd_addr,
@@ -357,6 +377,107 @@ end
   assign done        = done_q;
   assign error       = core_error | bridge_error | wr_fifo_overflow;
 
+  // --------------------------------------------------------------------------
+  // Minimal runtime counters for ILA/system evaluation.
+  // - perf_core_* counts from start to core_done/core_error.
+  // - perf_cycle_* counts from start to top-level done/error, so if done is
+  //   bridge-drain gated this is end-to-end board-visible latency.
+  // --------------------------------------------------------------------------
+  always_ff @(posedge clk or negedge rst_core_n) begin
+    if (!rst_core_n) begin
+      perf_cycle_count      <= 64'd0;
+      perf_cycle_valid      <= 1'b0;
+      perf_running          <= 1'b0;
+      perf_core_cycle_count <= 64'd0;
+      perf_core_cycle_valid <= 1'b0;
+      perf_core_running     <= 1'b0;
+    end else begin
+      perf_cycle_valid      <= 1'b0;
+      perf_core_cycle_valid <= 1'b0;
+
+      if (start_s) begin
+        perf_cycle_count      <= 64'd0;
+        perf_cycle_valid      <= 1'b0;
+        perf_running          <= 1'b1;
+        perf_core_cycle_count <= 64'd0;
+        perf_core_cycle_valid <= 1'b0;
+        perf_core_running     <= 1'b1;
+      end else begin
+        if (perf_running) begin
+          if (done_q || core_error || bridge_error || wr_fifo_overflow) begin
+            perf_cycle_valid <= 1'b1;
+            perf_running     <= 1'b0;
+          end else begin
+            perf_cycle_count <= perf_cycle_count + 64'd1;
+          end
+        end
+
+        if (perf_core_running) begin
+          if (core_done || core_error) begin
+            perf_core_cycle_valid <= 1'b1;
+            perf_core_running     <= 1'b0;
+          end else begin
+            perf_core_cycle_count <= perf_core_cycle_count + 64'd1;
+          end
+        end
+      end
+    end
+  end
+
+  // --------------------------------------------------------------------------
+  // Per-layer runtime counter for ILA/system evaluation.
+  // This lightweight counter treats a dbg_layer_idx change as the completion
+  // event for the previous layer. The reported cycle count is the elapsed
+  // scheduler-level cycles for that layer.
+  // --------------------------------------------------------------------------
+  logic [63:0] perf_layer_cycle_acc_q;
+  logic [CFG_AW-1:0] perf_layer_idx_q;
+
+  always_ff @(posedge clk or negedge rst_core_n) begin
+    if (!rst_core_n) begin
+      perf_layer_cycle_acc_q <= 64'd0;
+      perf_layer_cycle_count <= 64'd0;
+      perf_layer_cycle_valid <= 1'b0;
+      perf_layer_done_idx    <= '0;
+      perf_layer_current_idx <= '0;
+      perf_layer_running     <= 1'b0;
+      perf_layer_idx_q       <= '0;
+    end else begin
+      // 1-cycle pulse for ILA trigger/capture.
+      perf_layer_cycle_valid <= 1'b0;
+
+      if (start_s) begin
+        perf_layer_cycle_acc_q <= 64'd0;
+        perf_layer_cycle_count <= 64'd0;
+        perf_layer_cycle_valid <= 1'b0;
+        perf_layer_done_idx    <= '0;
+        perf_layer_current_idx <= dbg_layer_idx;
+        perf_layer_running     <= 1'b1;
+        perf_layer_idx_q       <= dbg_layer_idx;
+      end else if (perf_layer_running) begin
+        perf_layer_current_idx <= dbg_layer_idx;
+
+        if (core_done || core_error) begin
+          // Final layer or aborted core: emit the last accumulated interval.
+          perf_layer_cycle_count <= perf_layer_cycle_acc_q;
+          perf_layer_cycle_valid <= 1'b1;
+          perf_layer_done_idx    <= perf_layer_idx_q;
+          perf_layer_running     <= 1'b0;
+        end else if (dbg_layer_idx != perf_layer_idx_q) begin
+          // Layer index advanced: emit completed layer and restart accumulation.
+          perf_layer_cycle_count <= perf_layer_cycle_acc_q;
+          perf_layer_cycle_valid <= 1'b1;
+          perf_layer_done_idx    <= perf_layer_idx_q;
+          perf_layer_idx_q       <= dbg_layer_idx;
+          perf_layer_current_idx <= dbg_layer_idx;
+          perf_layer_cycle_acc_q <= 64'd0;
+        end else begin
+          perf_layer_cycle_acc_q <= perf_layer_cycle_acc_q + 64'd1;
+        end
+      end
+    end
+  end
+
   assign dbg_ddr_rd_req   = ddr_rd_req_s;
   assign dbg_ddr_rd_addr  = ddr_rd_addr_s;
   assign dbg_ddr_rd_valid = ddr_rd_valid_s;
@@ -429,7 +550,10 @@ end
     .dbg_layer_idx          (dbg_layer_idx),
     .dbg_mode               (dbg_mode),
     .dbg_weight_bank        (dbg_weight_bank),
-    .dbg_error_vec          (dbg_error_vec)
+    .dbg_error_vec          (dbg_error_vec),
+    .perf_ofm2ifm_word_count(perf_ofm2ifm_word_count),
+    .perf_m1_mac_active_cycles(perf_m1_mac_active_cycles),
+    .perf_m2_mac_active_cycles(perf_m2_mac_active_cycles)
   );
 
   // --------------------------------------------------------------------------
@@ -495,7 +619,9 @@ end
     .m_axi_rresp    (m_axi_rresp),
     .m_axi_rlast    (m_axi_rlast),
     .m_axi_rvalid   (m_axi_rvalid),
-    .m_axi_rready   (m_axi_rready)
+    .m_axi_rready   (m_axi_rready),
+    .perf_axi_r_count(perf_axi_r_count),
+    .perf_axi_w_count(perf_axi_w_count)
   );
 
 endmodule

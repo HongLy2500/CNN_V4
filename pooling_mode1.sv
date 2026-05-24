@@ -1,22 +1,22 @@
 // Mode1 2x2 maxpool optimized for the current P128 benchmark shape.
 //
-// This version is intentionally more specialized than pooling_mode1_wordbuf_fast.sv:
-//   - It assumes the hot-path Mode1 beat uses Pv_cur == PV_MAX and Pf_cur == PF_MAX.
-//   - It keeps the original interface and output contract for the P128 build:
-//       input  lane = pf * PV_MAX + pv
-//       output lane = pf * (PV_MAX/2) + pool_x
-//   - It stores only the previous even row in packed PV_MAX-lane words.
-//   - It organizes the line buffer as [filter-group][PF lane][col-group], but without
-//     runtime pf_base/Pv compacting logic.
-//   - It does not reset RAM contents; validity is controlled by row/col/F masks.
+// This version is based on pooling_mode1_outw_linebuf_fast.sv, but stores only
+// the top-row horizontal pair maxima in the line buffer:
+//   old linebuf word: PV_MAX lanes x OUT_W  = 8 x 8 = 64 bit for P128
+//   new linebuf word: PV_MAX/2 lanes x OUT_W = 4 x 8 = 32 bit for P128
 //
-// Use this for the current 32x32/P128 flow where PV_MAX=8 and PF_MAX=16. If a future
-// Mode1 layer genuinely uses smaller Pv_cur/Pf_cur with compact lane packing, this
-// module must be extended or the stream must be normalized before pooling.
+// For a 2x2 window:
+//   top_pair = max(top0, top1)    // stored on even row
+//   bot_pair = max(bot0, bot1)    // computed on odd row
+//   pool     = max(top_pair, bot_pair)
+//
+// This avoids storing both top-row pixels and removes the 64-bit top-row word
+// mux from the previous fast version. It keeps the same module interface and
+// output lane contract for the current 32x32/P128 build.
 
 module pooling_mode1_linebuf_bank #(
-  parameter int DATA_W = 32,
-  parameter int LANES  = 8,
+  parameter int DATA_W = 8,
+  parameter int LANES  = 4,
   parameter int DEPTH  = 4,
   parameter int ADDR_W = 2
 )(
@@ -76,27 +76,27 @@ module pooling_mode1 #(
   localparam int signed OUT_MIN = -(1 <<< (OUT_W-1));
 
   localparam int WORD_LANES = PV_MAX;
-  localparam int WORD_W     = DATA_W * WORD_LANES;
-  localparam int COLGRP_MAX = (WOUT_MAX + WORD_LANES - 1) / WORD_LANES;
-  localparam int COLGRP_W   = (COLGRP_MAX <= 1) ? 1 : $clog2(COLGRP_MAX);
-  localparam int FGRP_MAX   = (F_MAX + PF_MAX - 1) / PF_MAX;
-
   localparam int POOL_LANES_PER_PF = (PV_MAX / 2);
+  localparam int PAIR_WORD_LANES   = POOL_LANES_PER_PF;
+  localparam int PAIR_WORD_W       = OUT_W * PAIR_WORD_LANES;
+  localparam int COLGRP_MAX        = (WOUT_MAX + WORD_LANES - 1) / WORD_LANES;
+  localparam int COLGRP_W          = (COLGRP_MAX <= 1) ? 1 : $clog2(COLGRP_MAX);
+  localparam int FGRP_MAX          = (F_MAX + PF_MAX - 1) / PF_MAX;
   localparam int POOL_TOTAL_LANES  = PF_MAX * POOL_LANES_PER_PF;
 
   logic                  lb_wr_en   [0:FGRP_MAX-1][0:PF_MAX-1];
   logic [COLGRP_W-1:0]   lb_wr_addr [0:FGRP_MAX-1][0:PF_MAX-1];
-  logic [WORD_W-1:0]     lb_wr_data [0:FGRP_MAX-1][0:PF_MAX-1];
+  logic [PAIR_WORD_W-1:0] lb_wr_data [0:FGRP_MAX-1][0:PF_MAX-1];
   logic [COLGRP_W-1:0]   lb_rd_addr [0:FGRP_MAX-1][0:PF_MAX-1];
-  logic [WORD_W-1:0]     lb_rd_data [0:FGRP_MAX-1][0:PF_MAX-1];
+  logic [PAIR_WORD_W-1:0] lb_rd_data [0:FGRP_MAX-1][0:PF_MAX-1];
 
   genvar g_fg, g_pf;
   generate
     for (g_fg = 0; g_fg < FGRP_MAX; g_fg++) begin : G_POOL_M1_FGRP
       for (g_pf = 0; g_pf < PF_MAX; g_pf++) begin : G_POOL_M1_PF
         pooling_mode1_linebuf_bank #(
-          .DATA_W(DATA_W),
-          .LANES (WORD_LANES),
+          .DATA_W(OUT_W),
+          .LANES (PAIR_WORD_LANES),
           .DEPTH (COLGRP_MAX),
           .ADDR_W(COLGRP_W)
         ) u_linebuf_bank (
@@ -170,12 +170,12 @@ module pooling_mode1 #(
     end
   endfunction
 
-  function automatic logic signed [DATA_W-1:0] get_lane(
-    input logic [WORD_W-1:0] word,
+  function automatic logic signed [OUT_W-1:0] get_pair_lane(
+    input logic [PAIR_WORD_W-1:0] word,
     input int lane
   );
     begin
-      get_lane = $signed(word[lane*DATA_W +: DATA_W]);
+      get_pair_lane = $signed(word[lane*OUT_W +: OUT_W]);
     end
   endfunction
 
@@ -198,14 +198,26 @@ module pooling_mode1 #(
                         (Pf_cur == PF_MAX[7:0]);
   end
 
-  // Even row: store the full PV_MAX word for each active PF lane.
+  // Even row: store the top-row horizontal pair max for each active PF lane.
   always_comb begin
     int fg;
     int pf;
-    int pv;
+    int px;
+    int pv0;
+    int pv1;
     int abs_filter;
-    int lane_idx;
-    logic [WORD_W-1:0] next_word;
+    int lane0_idx;
+    int lane1_idx;
+    int col0;
+    int col1;
+    logic [PAIR_WORD_W-1:0] next_word;
+    logic signed [OUT_W-1:0] top0_s;
+    logic signed [OUT_W-1:0] top1_s;
+    logic signed [OUT_W-1:0] top_pair_s;
+
+    top0_s    = '0;
+    top1_s    = '0;
+    top_pair_s = '0;
 
     for (fg = 0; fg < FGRP_MAX; fg++) begin
       for (pf = 0; pf < PF_MAX; pf++) begin
@@ -223,11 +235,19 @@ module pooling_mode1 #(
             abs_filter = (fg * PF_MAX) + pf;
             if ((abs_filter < int'(F_cur)) && (abs_filter < F_MAX)) begin
               next_word = lb_rd_data[fg][pf];
-              for (pv = 0; pv < PV_MAX; pv++) begin
-                if ((int'(in_col) + pv) < int'(Wout_cur)) begin
-                  lane_idx = (pf * PV_MAX) + pv;
-                  if (lane_idx < PTOTAL) begin
-                    next_word[pv*DATA_W +: DATA_W] = in_data[lane_idx];
+              for (px = 0; px < POOL_LANES_PER_PF; px++) begin
+                pv0 = px << 1;
+                pv1 = pv0 + 1;
+                col0 = int'(in_col) + pv0;
+                col1 = int'(in_col) + pv1;
+                if ((col1 < int'(Wout_cur)) && (col1 < WOUT_MAX)) begin
+                  lane0_idx = (pf * PV_MAX) + pv0;
+                  lane1_idx = lane0_idx + 1;
+                  if (lane1_idx < PTOTAL) begin
+                    top0_s = sat_to_out(in_data[lane0_idx]);
+                    top1_s = sat_to_out(in_data[lane1_idx]);
+                    top_pair_s = (top0_s > top1_s) ? top0_s : top1_s;
+                    next_word[px*OUT_W +: OUT_W] = top_pair_s;
                   end
                 end
               end
@@ -253,11 +273,13 @@ module pooling_mode1 #(
     int lane1_idx;
     int out_lane;
     int abs_filter;
-    int col0;
     int col1;
     int valid_count;
-    logic signed [DATA_W-1:0] top0, top1, bot0, bot1;
-    logic signed [DATA_W-1:0] max_top, max_bot, max_all;
+    logic signed [OUT_W-1:0] top_pair;
+    logic signed [OUT_W-1:0] bot0;
+    logic signed [OUT_W-1:0] bot1;
+    logic signed [OUT_W-1:0] bot_pair;
+    logic signed [OUT_W-1:0] max_all;
 
     ofm_write_en          = 1'b0;
     ofm_write_filter_base = filter_base_i[15:0];
@@ -266,13 +288,11 @@ module pooling_mode1 #(
     ofm_write_count       = 16'd0;
     valid_count           = 0;
 
-    top0    = '0;
-    top1    = '0;
-    bot0    = '0;
-    bot1    = '0;
-    max_top = '0;
-    max_bot = '0;
-    max_all = '0;
+    top_pair = '0;
+    bot0     = '0;
+    bot1     = '0;
+    bot_pair = '0;
+    max_all  = '0;
 
     for (i = 0; i < PTOTAL; i++) begin
       ofm_write_data[i] = '0;
@@ -287,25 +307,22 @@ module pooling_mode1 #(
               for (px = 0; px < POOL_LANES_PER_PF; px++) begin
                 pv0 = px << 1;
                 pv1 = pv0 + 1;
-                col0 = int'(in_col) + pv0;
                 col1 = int'(in_col) + pv1;
                 if ((col1 < int'(Wout_cur)) && (col1 < WOUT_MAX)) begin
                   lane0_idx = (pf * PV_MAX) + pv0;
                   lane1_idx = lane0_idx + 1;
+                  if (lane1_idx < PTOTAL) begin
+                    top_pair = get_pair_lane(lb_rd_data[fg][pf], px);
+                    bot0     = sat_to_out(in_data[lane0_idx]);
+                    bot1     = sat_to_out(in_data[lane1_idx]);
+                    bot_pair = (bot0 > bot1) ? bot0 : bot1;
+                    max_all  = (top_pair > bot_pair) ? top_pair : bot_pair;
 
-                  top0 = get_lane(lb_rd_data[fg][pf], pv0);
-                  top1 = get_lane(lb_rd_data[fg][pf], pv1);
-                  bot0 = in_data[lane0_idx];
-                  bot1 = in_data[lane1_idx];
-
-                  max_top = (top0 > top1) ? top0 : top1;
-                  max_bot = (bot0 > bot1) ? bot0 : bot1;
-                  max_all = (max_top > max_bot) ? max_top : max_bot;
-
-                  out_lane = (pf * POOL_LANES_PER_PF) + px;
-                  if (out_lane < PTOTAL) begin
-                    ofm_write_data[out_lane] = sat_to_out(max_all);
-                    valid_count = valid_count + 1;
+                    out_lane = (pf * POOL_LANES_PER_PF) + px;
+                    if (out_lane < PTOTAL) begin
+                      ofm_write_data[out_lane] = max_all;
+                      valid_count = valid_count + 1;
+                    end
                   end
                 end
               end

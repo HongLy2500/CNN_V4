@@ -80,6 +80,17 @@ module mode1_compute_top #(
 );
 
   localparam int PV_IDX_W = (PV_MAX <= 1) ? 1 : $clog2(PV_MAX);
+  // Synthesis-friendly Mode1 direct-write fast path.
+  // Physical Mode1 lanes are treated as fixed [pf][pv] = pf*PV_MAX + pv.
+  // Pv_cur/Pf_cur are kept as runtime config inputs for CE/pooling, but the
+  // direct non-pooling OFM emission path below uses the fixed P128 layout.
+  localparam int DIRECT_PV_STATIC = PV_MAX;
+  localparam int DIRECT_PF_STATIC = (PV_MAX > 0) ? (PTOTAL / PV_MAX) : PF_MAX;
+  localparam logic [15:0] DIRECT_PV_STATIC_U16 = DIRECT_PV_STATIC;
+  localparam logic [15:0] DIRECT_PF_STATIC_U16 = DIRECT_PF_STATIC;
+  localparam logic [7:0]  DIRECT_PV_STATIC_U8  = DIRECT_PV_STATIC;
+  localparam logic [7:0]  DIRECT_PF_STATIC_U8  = DIRECT_PF_STATIC;
+
 
   logic ce_done_int, ce_busy_int;
   logic ce_step_en_s;
@@ -104,7 +115,7 @@ module mode1_compute_top #(
   logic [15:0]                   direct_pv_count_q;
   logic [15:0]                   direct_pf_count_q;
   logic [15:0]                   direct_emit_idx_q;
-  logic signed [PSUM_W-1:0]      direct_relu_lane_q [0:PTOTAL-1];
+  logic signed [DATA_W-1:0]       direct_data_lane_q [0:PTOTAL-1];
 
   logic                          direct_ofm_write_en_s;
   logic [15:0]                   direct_ofm_write_filter_base_s;
@@ -283,19 +294,23 @@ module mode1_compute_top #(
       direct_ofm_write_data_s[i] = '0;
     end
 
-    for (pf = 0; pf < PTOTAL; pf++) begin
-      lane_idx = (pf * direct_pv_stride_q) + direct_emit_idx_q;
-      if ((pf < direct_pf_count_q) && (lane_idx >= 0) && (lane_idx < PTOTAL)) begin
-        direct_ofm_write_data_s[pf] = sat_relu_to_data(direct_relu_lane_q[lane_idx]);
+    // Fixed physical lane mapping: lane = pf*PV_MAX + pv.
+    // This avoids the old dynamic lane_idx = pf*Pv_cur + emit_idx scatter/gather
+    // cone that made mode1_compute_top extremely large.
+    for (pf = 0; pf < DIRECT_PF_STATIC; pf++) begin
+      lane_idx = (pf * DIRECT_PV_STATIC) + direct_emit_idx_q;
+      if ((pf < direct_pf_count_q) && (direct_emit_idx_q < direct_pv_count_q) &&
+          (lane_idx >= 0) && (lane_idx < PTOTAL)) begin
+        direct_ofm_write_data_s[pf] = direct_data_lane_q[lane_idx];
       end
     end
   end
 
   always_comb begin
-    if (Pv_cur == 0)
-      direct_capture_pv_stride_s = 16'd1;
-    else
-      direct_capture_pv_stride_s = Pv_cur;
+    // Direct non-pooling output is specialized to the physical P128 layout:
+    // PV_MAX pixels per filter and PTOTAL/PV_MAX filters per beat.
+    // Partial right-edge/F-tail groups are still masked by *_count_s.
+    direct_capture_pv_stride_s = DIRECT_PV_STATIC_U16;
 
     if (out_col >= Wout_cur)
       direct_capture_pv_count_s = 16'd0;
@@ -304,20 +319,31 @@ module mode1_compute_top #(
     else
       direct_capture_pv_count_s = direct_capture_pv_stride_s;
 
-    direct_capture_filter_base_s = f_group * Pf_cur;
+    direct_capture_filter_base_s = f_group * DIRECT_PF_STATIC;
 
     if (direct_capture_filter_base_s >= F_cur)
       direct_capture_pf_count_s = 16'd0;
-    else if ((F_cur - direct_capture_filter_base_s) < Pf_cur)
+    else if ((F_cur - direct_capture_filter_base_s) < DIRECT_PF_STATIC)
       direct_capture_pf_count_s = F_cur - direct_capture_filter_base_s;
     else
-      direct_capture_pf_count_s = Pf_cur;
+      direct_capture_pf_count_s = DIRECT_PF_STATIC_U16;
   end
 
   assign direct_capture_s = (!pool_en_eff_s) && ce_out_valid &&
                             (direct_capture_pv_count_s != 0) &&
                             (direct_capture_pf_count_s != 0) &&
                             !direct_valid_q;
+
+  `ifndef SYNTHESIS
+  always_ff @(posedge clk) begin
+    if (rst_n && direct_capture_s) begin
+      if ((Pv_cur != DIRECT_PV_STATIC_U8) || (Pf_cur != DIRECT_PF_STATIC_U8)) begin
+        $display("MODE1_DIRECT_WARN_STATIC_LAYOUT t=%0t Pv_cur=%0d Pf_cur=%0d expected Pv=%0d Pf=%0d",
+                 $time, Pv_cur, Pf_cur, DIRECT_PV_STATIC, DIRECT_PF_STATIC);
+      end
+    end
+  end
+  `endif
 
   always_ff @(posedge clk or negedge rst_n) begin
     integer i;
@@ -332,7 +358,7 @@ module mode1_compute_top #(
       direct_pf_count_q    <= '0;
       direct_emit_idx_q    <= '0;
       for (i = 0; i < PTOTAL; i++) begin
-        direct_relu_lane_q[i] <= '0;
+        direct_data_lane_q[i] <= '0;
       end
     end
     else begin
@@ -366,7 +392,7 @@ module mode1_compute_top #(
           direct_pf_count_q    <= direct_capture_pf_count_s;
           direct_emit_idx_q    <= '0;
           for (i = 0; i < PTOTAL; i++) begin
-            direct_relu_lane_q[i] <= relu_out_lane[i];
+            direct_data_lane_q[i] <= sat_relu_to_data(relu_out_lane[i]);
           end
         end
       end

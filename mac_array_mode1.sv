@@ -1,3 +1,4 @@
+(* use_dsp = "yes" *)
 module mac_array_mode1 #(
   parameter int DATA_W = 8,
   parameter int PSUM_W = 8,
@@ -36,8 +37,7 @@ module mac_array_mode1 #(
   // =====================================================
   // Weight input from weight_register_mode1
   // - fixed width = PTOTAL lanes
-  // - for this synth-friendly path, the expected physical
-  //   lane mapping is:
+  // - expected physical lane mapping:
   //     lane = pf * PV_MAX + pv
   // =====================================================
   input  logic signed [DATA_W-1:0] weight_in_lane [0:PTOTAL-1],
@@ -54,8 +54,7 @@ module mac_array_mode1 #(
   localparam logic [7:0] PV_MAX_CFG    = PV_MAX;
   localparam logic [7:0] PF_STATIC_CFG = PF_STATIC;
 
-  logic signed [DATA_W-1:0]     data_logic_lane [0:PV_MAX-1];
-  logic signed [(2*DATA_W)-1:0] prod_lane       [0:PTOTAL-1];
+  logic signed [DATA_W-1:0] data_logic_lane [0:PV_MAX-1];
 
   // =====================================================
   // Unpack logic data lanes from packed input bus
@@ -70,30 +69,45 @@ module mac_array_mode1 #(
   endgenerate
 
   // =====================================================
-  // One multiplier per physical MAC lane
+  // One multiply-accumulate lane per physical MAC lane.
   //
-  // Old implementation built a dynamic scatter network:
-  //   lane_idx = pf * Pv_cur + pv
-  //   data_lane[lane_idx] = data_logic_lane[pv]
-  // This is very expensive for Vivado because Pv_cur is a
-  // runtime value and PTOTAL=128.  The P128 physical layout
-  // is static, so each physical lane can directly select its
-  // pv index by compile-time modulo:
-  //   pv = lane % PV_MAX
-  //   pf = lane / PV_MAX
+  // Previous DSP-hint attempt put use_dsp on the unpacked
+  // prod_lane array, which Vivado did not map to DSPs.  This
+  // version places the DSP hint on each per-lane product signal
+  // inside the generate block and keeps the multiply-add pattern
+  // local to the lane.  Functionality is unchanged:
+  //   clear_psum clears all psums
+  //   mac_en accumulates data*weight for valid lanes
+  //   invalid lanes add zero / hold their psum
   // =====================================================
   generate
     genvar gl;
-    for (gl = 0; gl < PTOTAL; gl++) begin : GEN_MULT
+    for (gl = 0; gl < PTOTAL; gl++) begin : GEN_MAC_LANE
       localparam int PV_IDX = gl % PV_MAX;
       localparam int PF_IDX = gl / PV_MAX;
 
+      logic lane_active;
+      (* use_dsp = "yes" *) logic signed [(2*DATA_W)-1:0] prod_dsp;
+
       always_comb begin
-        if ((PV_IDX < Pv_cur) && (PF_IDX < Pf_cur)) begin
-          prod_lane[gl] = data_logic_lane[PV_IDX] * weight_in_lane[gl];
+        lane_active = (PV_IDX < Pv_cur) && (PF_IDX < Pf_cur);
+        prod_dsp    = $signed(data_logic_lane[PV_IDX]) * $signed(weight_in_lane[gl]);
+      end
+
+      always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+          psum_out_lane[gl] <= '0;
         end
-        else begin
-          prod_lane[gl] = '0;
+        else if (clear_psum) begin
+          psum_out_lane[gl] <= '0;
+        end
+        else if (mac_en) begin
+          if (lane_active) begin
+            psum_out_lane[gl] <= psum_out_lane[gl] + $signed(prod_dsp);
+          end
+          else begin
+            psum_out_lane[gl] <= psum_out_lane[gl];
+          end
         end
       end
     end
@@ -114,29 +128,5 @@ module mac_array_mode1 #(
     end
   end
 `endif
-
-  // =====================================================
-  // One accumulator per physical MAC lane
-  // No adder tree in mode 1
-  // =====================================================
-  always_ff @(posedge clk or negedge rst_n) begin
-    if (!rst_n) begin
-      for (int i = 0; i < PTOTAL; i++) begin
-        psum_out_lane[i] <= '0;
-      end
-    end
-    else begin
-      if (clear_psum) begin
-        for (int i = 0; i < PTOTAL; i++) begin
-          psum_out_lane[i] <= '0;
-        end
-      end
-      else if (mac_en) begin
-        for (int i = 0; i < PTOTAL; i++) begin
-          psum_out_lane[i] <= psum_out_lane[i] + $signed(prod_lane[i]);
-        end
-      end
-    end
-  end
 
 endmodule
